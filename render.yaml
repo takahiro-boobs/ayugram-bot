@@ -1,0 +1,24 @@
+services:
+  - type: worker
+    name: ayugram-bot
+    runtime: python
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "python3 bot.py"
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+      - key: REVIEW_BOT_TOKEN
+        sync: false
+      - key: REVIEW_ADMIN_ID
+        sync: false
+
+  - type: worker
+    name: ayugram-review-bot
+    runtime: python
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "python3 review_bot.py"
+    envVars:
+      - key: REVIEW_BOT_TOKEN
+        sync: false
+      - key: REVIEW_ADMIN_ID
+        sync: false

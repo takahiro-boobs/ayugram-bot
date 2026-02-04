@@ -1,0 +1,19 @@
+__pycache__/
+*.pyc
+*.pyo
+*.log
+.env
+.DS_Store
+
+# data / queues
+training_data/
+training_queue/
+training_processed/
+review_queue/
+review_decisions/
+
+# temp images
+temp_*.jpg
+*.jpg
+*.jpeg
+*.png
