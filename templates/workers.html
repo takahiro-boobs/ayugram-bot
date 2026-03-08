@@ -1,0 +1,102 @@
+{% extends "base.html" %}
+{% block title %}Работники{% endblock %}
+{% block content %}
+  <div class="grid">
+    <section class="card">
+      <header class="card__header">
+        <h2 class="card__title">Сводка работников</h2>
+      </header>
+      <div class="card__body">
+        <div class="grid cols-3">
+          <div class="kpi">
+            <div class="kpi__label">Всего работников</div>
+            <div class="kpi__value">{{ overview.workers_total or 0 }}</div>
+          </div>
+          <div class="kpi">
+            <div class="kpi__label">Аккаунты работников</div>
+            <div class="kpi__value">{{ overview.assigned_accounts_total or 0 }}</div>
+          </div>
+          <div class="kpi">
+            <div class="kpi__label">Уникальные старты (работники)</div>
+            <div class="kpi__value">{{ overview.worker_starts_unique_total or 0 }}</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <header class="card__header">
+        <h2 class="card__title">Добавить работника</h2>
+      </header>
+      <div class="card__body">
+        {% if error %}
+          <div class="error mb-sm">{{ error }}</div>
+        {% endif %}
+        {% if success %}
+          <div class="hint mb-sm">{{ success }}</div>
+        {% endif %}
+        <form method="post" action="{{ urlp('/workers') }}" class="grid accounts-grid">
+          <input type="hidden" name="q" value="{{ q or '' }}">
+          <div class="field">
+            <label class="label">Имя</label>
+            <input class="input" name="name" required>
+          </div>
+          <div class="field">
+            <label class="label">Логин</label>
+            <input class="input" name="username" required>
+          </div>
+          <div class="field accounts-grid-wide">
+            <label class="label">Пароль</label>
+            <input class="input" name="password" required>
+          </div>
+          <div class="accounts-grid-wide row">
+            <button class="btn primary" type="submit">Создать работника</button>
+          </div>
+        </form>
+      </div>
+    </section>
+
+    <section class="card">
+      <header class="card__header">
+        <h2 class="card__title">Список работников</h2>
+      </header>
+      <div class="card__body">
+        <form method="get" action="{{ urlp('/workers') }}" class="row filters-row">
+          <input class="input input-sm" name="q" value="{{ q or '' }}" placeholder="Поиск по имени или логину">
+          <button class="btn primary sm" type="submit">Применить</button>
+          {% if q %}
+            <a class="btn ghost sm" href="{{ urlp('/workers') }}">Сброс</a>
+          {% endif %}
+        </form>
+
+        <div class="workers-grid mt-sm">
+          {% for w in workers %}
+            <article class="worker-card">
+              <div class="worker-card__head">
+                <div class="listitem__title">{{ w.name }} · @{{ w.username }}</div>
+                <a class="btn primary sm" href="{{ urlp('/workers') }}/{{ w.id }}">Открыть</a>
+              </div>
+              <div class="worker-meta">
+                <span class="pill">Аккаунтов: {{ w.accounts_total }}</span>
+                <span class="pill">Перешло: {{ w.starts_unique_total }}</span>
+                <span class="hint">Обновлено: {{ w.updated_at|dt }}</span>
+              </div>
+              <div class="row">
+                <span class="hint mono">Логин: {{ w.username }}</span>
+                <button class="btn action copy" type="button" onclick='copyToClipboard({{ w.username|tojson }})'>Копировать логин</button>
+              </div>
+              <div class="row">
+                <span class="hint mono">Пароль: {{ w.plain_password }}</span>
+                <button class="btn action copy" type="button" onclick='copyToClipboard({{ w.plain_password|tojson }})'>Копировать пароль</button>
+              </div>
+            </article>
+          {% endfor %}
+        </div>
+
+        {% if workers|length == 0 %}
+          <div class="hint mt-sm">Работников пока нет.</div>
+        {% endif %}
+      </div>
+    </section>
+  </div>
+{% endblock %}

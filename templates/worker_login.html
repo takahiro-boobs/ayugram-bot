@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8">
+    <title>Вход работника · СЛЕЖКА</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+    <link rel="stylesheet" href="{{ urlp('/static/ios26.css') }}">
+  </head>
+  <body>
+    <div class="auth-wrap">
+      <section class="card">
+        <header class="card__header">
+          <h2 class="card__title">Кабинет работника</h2>
+          <span class="brand__tag">СЛЕЖКА</span>
+        </header>
+        <div class="card__body">
+          {% if error %}
+            <div class="error">{{ error }}</div>
+          {% endif %}
+          <form method="post" action="{{ urlp('/worker/login') }}" class="grid form-gap-md mt-sm">
+            <div class="field">
+              <label class="label">Логин</label>
+              <input class="input" name="username" autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false" required>
+              <div class="hint mt-xs">Можно вводить с @, регистр не важен.</div>
+            </div>
+            <div class="field">
+              <label class="label">Пароль</label>
+              <input class="input" type="password" name="password" autocomplete="current-password" autocapitalize="none" autocorrect="off" spellcheck="false" required>
+            </div>
+            <button class="btn primary" type="submit">Войти</button>
+            <div class="hint">После входа сразу откроется раздел «Мои аккаунты».</div>
+          </form>
+        </div>
+      </section>
+    </div>
+  </body>
+</html>

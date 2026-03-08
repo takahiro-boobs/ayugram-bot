@@ -1,0 +1,100 @@
+{% extends "base.html" %}
+{% block title %}Публикации{% endblock %}
+{% block content %}
+  <div class="grid cols-2">
+    <section class="card">
+      <header class="card__header">
+        <h2 class="card__title">Новый batch</h2>
+      </header>
+      <div class="card__body">
+        {% if error %}
+          <div class="error mb-sm">{{ error }}</div>
+        {% endif %}
+        {% if success %}
+          <div class="hint mb-sm">{{ success }}</div>
+        {% endif %}
+
+        <div class="detail-stats mb-sm">
+          <span class="pill">Workflow: {{ publish_workflow_key }}</span>
+          <span class="pill mono">Staging: {{ staging_root }}</span>
+          <span class="status-pill {% if n8n_webhook_configured %}on{% else %}off{% endif %}">
+            {% if n8n_webhook_configured %}n8n webhook настроен{% else %}n8n webhook не настроен{% endif %}
+          </span>
+        </div>
+        <div class="hint mb-sm">Batch в v1 всегда запускает один fixed workflow в `n8n`. Для участия показываются только Instagram-аккаунты с логином, паролем и `emulator serial`.</div>
+
+        <form method="post" action="{{ urlp('/publishing/batches') }}" class="grid form-gap-md">
+          <div class="list">
+            {% for account in accounts %}
+              <label class="listitem" style="display:block; cursor:pointer;">
+                <div class="row row-between row-start">
+                  <div>
+                    <div class="listitem__title">
+                      <input type="checkbox" name="account_ids" value="{{ account.id }}" style="margin-right:10px;">
+                      @{{ account.username }}
+                    </div>
+                    <div class="listitem__meta">
+                      <span class="pill">ID: {{ account.id }}</span>
+                      <span class="pill mono">{{ account.account_login }}</span>
+                      <span class="pill mono">{{ account.instagram_emulator_serial }}</span>
+                      <span class="brand__tag">{{ account.owner_label }}</span>
+                      <span class="status-pill {{ account.instagram_publish_status_class }}">{{ account.instagram_publish_status_label }}</span>
+                    </div>
+                    {% if account.instagram_publish_detail %}
+                      <div class="hint mt-sm">{{ account.instagram_publish_detail }}</div>
+                    {% endif %}
+                  </div>
+                  <a class="btn action sm" href="{{ urlp('/accounts') }}/{{ account.id }}">Открыть</a>
+                </div>
+              </label>
+            {% endfor %}
+          </div>
+
+          {% if accounts|length == 0 %}
+            <div class="hint">Нет готовых Instagram-аккаунтов. Заполни у аккаунта логин, пароль и `Instagram emulator serial`.</div>
+          {% else %}
+            <div class="row row-end">
+              <button class="btn primary" type="submit">Запустить batch</button>
+            </div>
+          {% endif %}
+        </form>
+      </div>
+    </section>
+
+    <section class="card">
+      <header class="card__header">
+        <h2 class="card__title">Последние batch</h2>
+      </header>
+      <div class="card__body">
+        <div class="list">
+          {% for batch in batches %}
+            <div class="listitem">
+              <div class="row row-between row-start">
+                <div>
+                  <div class="listitem__title">Batch #{{ batch.id }}</div>
+                  <div class="listitem__meta">
+                    <span class="status-pill {{ batch.state_class }}">{{ batch.state_label }}</span>
+                    <span class="pill">Аккаунтов: {{ batch.accounts_total }}</span>
+                    <span class="pill">Видео: {{ batch.artifacts_total }}</span>
+                    <span class="pill">Jobs: {{ batch.jobs_total }}</span>
+                    <span class="pill">OK: {{ batch.published_jobs }}</span>
+                    <span class="pill">Fail: {{ batch.failed_jobs + batch.canceled_jobs }}</span>
+                    <span class="hint">{{ batch.created_at|dt }}</span>
+                  </div>
+                  {% if batch.detail %}
+                    <div class="hint mt-sm">{{ batch.detail }}</div>
+                  {% endif %}
+                </div>
+                <a class="btn primary sm" href="{{ urlp('/publishing/batches') }}/{{ batch.id }}">Открыть</a>
+              </div>
+            </div>
+          {% endfor %}
+        </div>
+
+        {% if batches|length == 0 %}
+          <div class="hint">Batch-история пока пустая.</div>
+        {% endif %}
+      </div>
+    </section>
+  </div>
+{% endblock %}

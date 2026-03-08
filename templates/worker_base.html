@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8">
+    <title>{% block title %}Кабинет работника{% endblock %}</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+    <link rel="stylesheet" href="{{ urlp('/static/ios26.css') }}">
+  </head>
+  <body>
+    <div class="worker-shell">
+      <header class="worker-topbar">
+        <div>
+          <h1 class="topbar__title">Кабинет работника</h1>
+          <p class="topbar__sub">СЛЕЖКА</p>
+        </div>
+        <div class="row topbar__right">
+          <a class="btn ghost sm" href="{{ urlp('/worker/accounts') }}">Мои аккаунты</a>
+          <a class="btn ghost sm" href="{{ urlp('/worker/logout') }}">Выйти</a>
+        </div>
+      </header>
+      <main class="worker-main">
+        {% block content %}{% endblock %}
+      </main>
+    </div>
+
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <script>
+      function showToast(msg) {
+        const el = document.getElementById('toast');
+        if (!el) return;
+        el.textContent = msg;
+        el.classList.add('show');
+        window.clearTimeout(el.__t);
+        el.__t = window.setTimeout(() => el.classList.remove('show'), 1100);
+      }
+
+      async function copyToClipboard(text, okMessage = 'Скопировано') {
+        try {
+          await navigator.clipboard.writeText(text || '');
+          showToast(okMessage);
+        } catch (e) {
+          try {
+            const temp = document.createElement('input');
+            temp.value = text || '';
+            document.body.appendChild(temp);
+            temp.select();
+            document.execCommand('copy');
+            document.body.removeChild(temp);
+            showToast(okMessage);
+          } catch (e2) {
+            showToast('Не удалось скопировать');
+          }
+        }
+      }
+    </script>
+  </body>
+</html>

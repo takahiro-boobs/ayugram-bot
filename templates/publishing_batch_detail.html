@@ -1,0 +1,198 @@
+{% extends "base.html" %}
+{% block title %}Batch публикации{% endblock %}
+{% block content %}
+  <div class="grid">
+    <section class="card">
+      <header class="card__header">
+        <h2 class="card__title">Batch</h2>
+      </header>
+      <div class="card__body">
+        <div class="row">
+          <a class="btn ghost sm" href="{{ urlp('/publishing') }}">Назад к batch-ам</a>
+        </div>
+        {% if error %}
+          <div class="error mt-sm">{{ error }}</div>
+        {% endif %}
+        {% if success %}
+          <div class="hint mt-sm">{{ success }}</div>
+        {% endif %}
+      </div>
+    </section>
+
+    {% if not batch %}
+      <section class="card">
+        <div class="card__body">
+          <div class="hint">Batch не найден.</div>
+        </div>
+      </section>
+    {% else %}
+      <section class="card">
+        <header class="card__header">
+          <h2 class="card__title">Batch #{{ batch.id }}</h2>
+        </header>
+        <div class="card__body">
+          <div class="detail-stats">
+            <span class="status-pill {{ batch.state_class }}">{{ batch.state_label }}</span>
+            <span class="pill">Аккаунтов: {{ batch.accounts_total }}</span>
+            <span class="pill">Видео: {{ batch.artifacts_total }}</span>
+            <span class="pill">Jobs: {{ batch.jobs_total }}</span>
+            <span class="pill">Queued: {{ batch.queued_jobs }}</span>
+            <span class="pill">Running: {{ batch.leased_jobs + batch.running_jobs }}</span>
+            <span class="pill">OK: {{ batch.published_jobs }}</span>
+            <span class="pill">Fail: {{ batch.failed_jobs + batch.canceled_jobs }}</span>
+          </div>
+          <div class="list mt-sm">
+            <div class="listitem">
+              <div class="listitem__title">Сводка</div>
+              <div class="listitem__meta">
+                <span class="pill">Workflow: {{ batch.workflow_key }}</span>
+                <span class="pill">Создан: {{ batch.created_at|dt }}</span>
+                <span class="pill">Обновлён: {{ batch.updated_at|dt }}</span>
+                <span class="pill mono">Staging: {{ batch_stage_dir }}</span>
+              </div>
+              {% if batch.generation_started_at or batch.generation_completed_at or batch.completed_at %}
+                <div class="hint mt-sm">
+                  {% if batch.generation_started_at %}n8n start: {{ batch.generation_started_at|dt }}.{% endif %}
+                  {% if batch.generation_completed_at %} n8n done: {{ batch.generation_completed_at|dt }}.{% endif %}
+                  {% if batch.completed_at %} Final: {{ batch.completed_at|dt }}.{% endif %}
+                </div>
+              {% endif %}
+              {% if batch.detail %}
+                <div class="hint mt-sm">{{ batch.detail }}</div>
+              {% endif %}
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="card">
+        <header class="card__header">
+          <h2 class="card__title">Аккаунты</h2>
+        </header>
+        <div class="card__body">
+          <div class="list">
+            {% for account in accounts %}
+              <div class="listitem">
+                <div class="row row-between row-start">
+                  <div>
+                    <div class="listitem__title">@{{ account.username }}</div>
+                    <div class="listitem__meta">
+                      <span class="pill">ID: {{ account.id }}</span>
+                      <span class="pill mono">{{ account.instagram_emulator_serial }}</span>
+                      <span class="brand__tag">{{ account.owner_label }}</span>
+                      <span class="status-pill {{ account.instagram_publish_status_class }}">{{ account.instagram_publish_status_label }}</span>
+                    </div>
+                  </div>
+                  <a class="btn action sm" href="{{ urlp('/accounts') }}/{{ account.id }}">Открыть</a>
+                </div>
+              </div>
+            {% endfor %}
+          </div>
+        </div>
+      </section>
+
+      <section class="card">
+        <header class="card__header">
+          <h2 class="card__title">Видео batch-а</h2>
+        </header>
+        <div class="card__body">
+          <div class="list">
+            {% for artifact in artifacts %}
+              <div class="listitem">
+                <div class="listitem__title">{{ artifact.filename }}</div>
+                <div class="listitem__meta">
+                  <span class="pill">ID: {{ artifact.id }}</span>
+                  <span class="pill">{{ artifact.size_label }}</span>
+                  <span class="pill">{{ artifact.duration_label }}</span>
+                  <span class="hint">{{ artifact.created_at|dt }}</span>
+                </div>
+                <div class="hint mt-sm mono">{{ artifact.path }}</div>
+              </div>
+            {% endfor %}
+          </div>
+          {% if artifacts|length == 0 %}
+            <div class="hint">n8n пока не прислал ни одного видео.</div>
+          {% endif %}
+        </div>
+      </section>
+
+      <section class="card">
+        <header class="card__header">
+          <h2 class="card__title">Jobs</h2>
+        </header>
+        <div class="card__body">
+          <div class="list">
+            {% for job in jobs %}
+              <div class="listitem">
+                <div class="row row-between row-start">
+                  <div>
+                    <div class="listitem__title">Job #{{ job.id }} · @{{ job.identity_handle }} · {{ job.source_name }}</div>
+                    <div class="listitem__meta">
+                      <span class="status-pill {{ job.state_class }}">{{ job.state_label }}</span>
+                      <span class="pill mono">{{ job.emulator_serial }}</span>
+                      <span class="pill">Создан: {{ job.created_at|dt }}</span>
+                      {% if job.started_at %}<span class="pill">Старт: {{ job.started_at|dt }}</span>{% endif %}
+                      {% if job.completed_at %}<span class="pill">Финиш: {{ job.completed_at|dt }}</span>{% endif %}
+                    </div>
+                    {% if job.detail %}
+                      <div class="hint mt-sm">{{ job.detail }}</div>
+                    {% endif %}
+                    <div class="hint mt-sm mono">{{ job.source_path }}</div>
+                  </div>
+                </div>
+              </div>
+            {% endfor %}
+          </div>
+          {% if jobs|length == 0 %}
+            <div class="hint">Jobs пока не созданы.</div>
+          {% endif %}
+        </div>
+      </section>
+
+      <section class="card">
+        <header class="card__header">
+          <h2 class="card__title">Event log</h2>
+        </header>
+        <div class="card__body">
+          <div class="list">
+            {% for event in events %}
+              <div class="listitem">
+                <div class="row row-between row-start">
+                  <div>
+                    <div class="listitem__title">{{ event.state }}</div>
+                    <div class="listitem__meta">
+                      <span class="hint">{{ event.created_at|dt }}</span>
+                      {% if event.account_username %}
+                        <span class="brand__tag">@{{ event.account_username }}</span>
+                      {% endif %}
+                      {% if event.source_name %}
+                        <span class="pill">{{ event.source_name }}</span>
+                      {% endif %}
+                    </div>
+                    {% if event.detail %}
+                      <div class="hint mt-sm">{{ event.detail }}</div>
+                    {% endif %}
+                    {% if event.payload_preview %}
+                      <div class="hint mt-sm mono">{{ event.payload_preview }}</div>
+                    {% endif %}
+                  </div>
+                </div>
+              </div>
+            {% endfor %}
+          </div>
+          {% if events|length == 0 %}
+            <div class="hint">Лог ещё пустой.</div>
+          {% endif %}
+        </div>
+      </section>
+    {% endif %}
+  </div>
+
+  {% if poll_interval_seconds and poll_interval_seconds > 0 %}
+    <script>
+      window.setTimeout(function () {
+        window.location.reload();
+      }, {{ poll_interval_seconds * 1000 }});
+    </script>
+  {% endif %}
+{% endblock %}

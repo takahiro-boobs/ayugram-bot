@@ -1,0 +1,395 @@
+{% extends "base.html" %}
+{% block title %}Аккаунт{% endblock %}
+{% block content %}
+  <div class="grid">
+    <section class="card">
+      <header class="card__header">
+        <h2 class="card__title">Аккаунт</h2>
+      </header>
+      <div class="card__body">
+        <div class="row">
+          <a class="btn ghost sm" href="{{ urlp(back_url) }}">Назад к списку</a>
+        </div>
+        {% if error %}
+          <div class="error mt-sm">{{ error }}</div>
+        {% endif %}
+        {% if success %}
+          <div class="hint mt-sm">{{ success }}</div>
+        {% endif %}
+      </div>
+    </section>
+
+    {% if not account %}
+      <section class="card">
+        <div class="card__body">
+          <div class="hint">Аккаунт не найден.</div>
+        </div>
+      </section>
+    {% else %}
+      <section class="card">
+        <header class="card__header">
+          <h2 class="card__title">Профиль</h2>
+        </header>
+        <div class="card__body">
+          <div class="account-card__head">
+            <div class="listitem__title">{{ account.type_label }} · @{{ account.username }}</div>
+            <div class="hint">Обновлено: {{ account.updated_at|dt }}</div>
+          </div>
+          <div class="list mt-sm">
+            <div class="listitem">
+              <div class="listitem__title">Идентификация</div>
+              <div class="listitem__meta">
+                <span class="pill">ID: {{ account.id }}</span>
+                <span class="pill">Handle: @{{ account.identity_handle }}</span>
+                {% if account.instagram_emulator_serial %}
+                  <span class="pill mono">Emulator: {{ account.instagram_emulator_serial }}</span>
+                {% endif %}
+              </div>
+              <div class="listitem__meta">
+                <span class="hint mono">Username: @{{ account.username }}</span>
+                <span class="hint mono">Логин: {{ account.account_login }}</span>
+                <span class="hint mono">Почта: {{ account.email }}</span>
+              </div>
+            </div>
+          </div>
+          {% if account.has_profile_url or account.can_launch_instagram %}
+            <div class="row mt-sm">
+              {% if account.has_profile_url %}
+                <a class="btn action" href="{{ account.profile_url }}" target="_blank" rel="noopener noreferrer">
+                  <span>Открыть в {{ account.type_label }}</span>
+                </a>
+              {% endif %}
+              {% if account.can_launch_instagram %}
+                <form method="post" action="{{ urlp('/accounts') }}/{{ account.id }}/launch/instagram" class="inline-form">
+                  <input type="hidden" name="return_to" value="{{ return_to }}">
+                  <button class="btn primary sm" type="submit">Войти в Instagram</button>
+                </form>
+              {% endif %}
+            </div>
+          {% endif %}
+          <div class="hint mt-sm">Владелец: {{ account.owner_label }}</div>
+
+          <div class="detail-stats mt-sm">
+            <span class="pill">Перешло: {{ stats.starts_unique_total }}</span>
+            <span class="pill">Старты: {{ stats.starts_total }}</span>
+            <span class="pill">First-touch: {{ stats.first_touch_total }}</span>
+            <span class="pill">Ссылок: {{ stats.links_total }}</span>
+            <span class="status-pill {{ account.rotation_state_class }}">{{ account.rotation_state_label }}</span>
+            <span class="status-pill {{ account.views_state_class }}">{{ account.views_state_label }}</span>
+            <span class="status-pill {{ account.instagram_launch_status_class }}">{{ account.instagram_launch_status_label }}</span>
+            <span class="status-pill {{ account.instagram_publish_status_class }}">{{ account.instagram_publish_status_label }}</span>
+          </div>
+          {% if account.instagram_launch_updated_at or account.instagram_launch_detail %}
+            <div class="hint mt-sm">
+              {% if account.instagram_launch_updated_at %}Instagram helper: {{ account.instagram_launch_updated_at|dt }}.{% endif %}
+              {% if account.instagram_launch_detail %} {{ account.instagram_launch_detail }}{% endif %}
+            </div>
+          {% endif %}
+          {% if account.instagram_publish_updated_at or account.instagram_publish_detail %}
+            <div class="hint mt-sm">
+              {% if account.instagram_publish_updated_at %}Публикация: {{ account.instagram_publish_updated_at|dt }}.{% endif %}
+              {% if account.instagram_publish_detail %} {{ account.instagram_publish_detail }}{% endif %}
+            </div>
+          {% endif %}
+        </div>
+      </section>
+
+      <section class="card">
+        <header class="card__header">
+          <h2 class="card__title">Данные аккаунта</h2>
+        </header>
+        <div class="card__body">
+          <form method="post" action="{{ urlp('/accounts') }}/{{ account.id }}/update" class="grid accounts-grid">
+            <input type="hidden" name="next_url" value="{{ detail_self_url }}">
+            <input type="hidden" name="return_to" value="{{ return_to }}">
+
+            <div class="field">
+              <label class="label">Тип</label>
+              <select class="input" name="type" required>
+                {% for t in type_options %}
+                  <option value="{{ t.key }}" {% if account.type == t.key %}selected{% endif %}>{{ t.label }}</option>
+                {% endfor %}
+              </select>
+            </div>
+
+            <div class="field">
+              <label class="label">Username</label>
+              <input class="input" name="username" value="{{ account.username }}" required>
+            </div>
+
+            <div class="field">
+              <label class="label">Логин аккаунта</label>
+              <input class="input" name="account_login" value="{{ account.account_login }}" required>
+            </div>
+
+            <div class="field">
+              <label class="label">Пароль аккаунта</label>
+              <input class="input" name="account_password" value="{{ account.account_password }}" required>
+            </div>
+
+            <div class="field">
+              <label class="label">Почта</label>
+              <input class="input" name="email" value="{{ account.email }}" required>
+            </div>
+
+            <div class="field">
+              <label class="label">Пароль почты</label>
+              <input class="input" name="email_password" value="{{ account.email_password }}" required>
+            </div>
+
+            <div class="field accounts-grid-wide">
+              <label class="label">2FA</label>
+              <input class="input mono" name="twofa" value="{{ account.twofa }}">
+            </div>
+
+            <div class="field accounts-grid-wide">
+              <label class="label">Instagram emulator serial</label>
+              <input class="input mono" name="instagram_emulator_serial" value="{{ account.instagram_emulator_serial or '' }}" placeholder="например: emulator-5554">
+            </div>
+
+            <div class="field">
+              <label class="label">Состояние аккаунта</label>
+              <select class="input" name="rotation_state">
+                {% for item in rotation_state_options %}
+                  <option value="{{ item.key }}" {% if account.rotation_state == item.key %}selected{% endif %}>{{ item.label }}</option>
+                {% endfor %}
+              </select>
+            </div>
+
+            <div class="field">
+              <label class="label">Состояние по просмотрам</label>
+              <select class="input" name="views_state">
+                {% for item in views_state_options %}
+                  <option value="{{ item.key }}" {% if account.views_state == item.key %}selected{% endif %}>{{ item.label }}</option>
+                {% endfor %}
+              </select>
+            </div>
+
+            <div class="field accounts-grid-wide">
+              <label class="label">Proxy</label>
+              <input class="input mono" name="proxy" value="{{ account.proxy }}">
+            </div>
+
+            <div class="field accounts-grid-wide">
+              <label class="label">Работник-владелец</label>
+              <select class="input" name="owner_worker_id">
+                <option value="">Без работника</option>
+                {% for w in workers %}
+                  <option value="{{ w.id }}" {% if (account.owner_worker_id|string) == (w.id|string) %}selected{% endif %}>{{ w.name }} (@{{ w.username }})</option>
+                {% endfor %}
+              </select>
+            </div>
+
+            <div class="accounts-grid-wide row">
+              <button class="btn primary sm" type="submit">Сохранить</button>
+            </div>
+          </form>
+
+          <form method="post" action="{{ urlp('/accounts') }}/{{ account.id }}/delete" class="mt-sm">
+            <input type="hidden" name="next_url" value="{{ back_url }}">
+            <button class="btn danger sm" type="submit">Удалить аккаунт</button>
+          </form>
+        </div>
+      </section>
+
+      <section class="card">
+        <header class="card__header">
+          <h2 class="card__title">Reel</h2>
+        </header>
+        <div class="card__body">
+          <div class="hint">Источник: <span class="mono">{{ instagram_publish_source_dir }}</span></div>
+          <div class="detail-stats mt-sm">
+            <span class="status-pill {{ account.instagram_publish_status_class }}">{{ account.instagram_publish_status_label }}</span>
+            <span class="pill">Последний опубликованный файл: {{ account.instagram_publish_last_file or '—' }}</span>
+          </div>
+          <div id="instagram-publish-source-box"
+               class="list mt-sm"
+               data-source-url="{{ instagram_publish_source_info_url }}"
+               data-source-dir="{{ instagram_publish_source_dir }}">
+            <div class="listitem">
+              <div class="listitem__title">Локальная папка</div>
+              <div class="listitem__meta">
+                <span class="hint">Проверяю helper на этом Mac…</span>
+              </div>
+              <div class="hint mt-sm mono" data-role="source-dir">{{ instagram_publish_source_dir }}</div>
+              <div class="hint mt-sm" data-role="source-file">Последний файл: —</div>
+              <div class="hint mt-sm" data-role="source-updated">Изменён: —</div>
+              <div class="hint mt-sm" data-role="source-status">Если helper недоступен, нажми кнопку — helper сам проверит папку перед публикацией.</div>
+            </div>
+          </div>
+          {% if account.can_publish_instagram %}
+            <div class="row mt-sm">
+              <form method="post" action="{{ urlp('/accounts') }}/{{ account.id }}/publish/latest-reel" class="inline-form">
+                <input type="hidden" name="return_to" value="{{ return_to }}">
+                <button class="btn primary sm" type="submit">Опубликовать последний Reel</button>
+              </form>
+            </div>
+            <div class="hint mt-sm">Flow: helper возьмёт самый новый <span class="mono">.mp4/.mov</span>, импортирует его в эмулятор, опубликует как Reel без подписи и удалит локальный файл только после подтверждённого успеха.</div>
+          {% else %}
+            <div class="hint mt-sm">Для автопубликации нужен Instagram-аккаунт с заполненными логином и паролем.</div>
+          {% endif %}
+        </div>
+      </section>
+
+      <section class="card">
+        <header class="card__header">
+          <h2 class="card__title">Почта</h2>
+        </header>
+        <div class="card__body">
+          <div class="row">
+            <form method="post" action="{{ urlp('/accounts') }}/{{ account.id }}/mail/check" class="inline-form">
+              <input type="hidden" name="return_to" value="{{ return_to }}">
+              <button class="btn primary sm" type="submit">Проверить почту</button>
+            </form>
+          </div>
+
+          <div class="detail-stats mt-sm">
+            <span class="status-pill {{ account.mail_status_class }}">{{ account.mail_status_label }}</span>
+            <span class="pill">Провайдер: {{ account.mail_provider|upper }}</span>
+            <span class="pill">Проверка: {{ account.mail_last_checked_at|dt }}</span>
+            {% if latest_mail and latest_mail.received_at %}
+              <span class="pill">Последнее письмо: {{ latest_mail.received_at|dt }}</span>
+            {% endif %}
+          </div>
+
+          {% if account.mail_last_error %}
+            <div class="hint mt-sm">{{ account.mail_last_error }}</div>
+          {% endif %}
+
+          {% if latest_mail %}
+            <div class="list mt-sm">
+              <div class="listitem">
+                <div class="listitem__title">Последнее письмо</div>
+                <div class="listitem__meta">
+                  <span class="brand__tag">{{ latest_mail.from_text or '—' }}</span>
+                  <span class="hint">{{ latest_mail.received_at|dt }}</span>
+                </div>
+                <div class="mt-sm"><strong>{{ latest_mail.subject or '(без темы)' }}</strong></div>
+                {% if latest_mail.snippet %}
+                  <div class="hint mt-sm">{{ latest_mail.snippet }}</div>
+                {% endif %}
+              </div>
+            </div>
+          {% endif %}
+
+          {% if mail_messages %}
+            <div class="list mt-sm">
+              {% for item in mail_messages %}
+                <div class="listitem">
+                  <div class="row row-between row-start">
+                    <div>
+                      <div class="listitem__title">{{ item.subject or '(без темы)' }}</div>
+                      <div class="listitem__meta">
+                        <span class="brand__tag">{{ item.from_text or '—' }}</span>
+                        <span class="hint">{{ item.received_at|dt }}</span>
+                      </div>
+                    </div>
+                  </div>
+                  {% if item.snippet %}
+                    <div class="hint mt-sm">{{ item.snippet }}</div>
+                  {% endif %}
+                </div>
+              {% endfor %}
+            </div>
+          {% else %}
+            <div class="hint mt-sm">Кэш последних писем пока пустой.</div>
+          {% endif %}
+        </div>
+      </section>
+
+      <section class="card">
+        <header class="card__header">
+          <h2 class="card__title">Ссылки аккаунта</h2>
+        </header>
+        <div class="card__body">
+          {% if links|length > 0 %}
+            <div class="links-list">
+              {% for l in links %}
+                <div class="link-row">
+                  <div class="link-row__top">
+                    <div class="mono"><strong>{{ l.name }}</strong> · {{ l.code }}</div>
+                    <span class="status-pill {% if l.is_active %}on{% else %}off{% endif %}">
+                      {% if l.is_active %}Активна{% else %}Выключена{% endif %}
+                    </span>
+                  </div>
+
+                  <div class="link-meta">
+                    <span class="hint mono">Ссылка: {{ l.bot_url }}</span>
+                    <span class="hint">Обновлено: {{ l.updated_at|dt }}</span>
+                  </div>
+
+                  <div class="link-stats">
+                    <span class="pill">Перешло: {{ l.starts_unique }}</span>
+                    <span class="pill">Старты: {{ l.starts_total }}</span>
+                    <span class="pill">First-touch: {{ l.first_touch_users }}</span>
+                  </div>
+
+                  <div class="link-actions">
+                    <button class="btn action copy" type="button" onclick='copyToClipboard({{ l.bot_url|tojson }})'>
+                      <span>Копировать ссылку</span>
+                    </button>
+
+                    <form method="post" action="{{ urlp('/accounts/links') }}/{{ l.code }}/toggle" class="inline-form">
+                      <input type="hidden" name="next_url" value="{{ detail_self_url }}">
+                      <input type="hidden" name="active" value="{% if l.is_active %}0{% else %}1{% endif %}">
+                      <button class="btn action" type="submit">
+                        <span>{% if l.is_active %}Выключить{% else %}Включить{% endif %}</span>
+                      </button>
+                    </form>
+
+                    <form method="post" action="{{ urlp('/accounts/links') }}/{{ l.code }}/delete" class="inline-form">
+                      <input type="hidden" name="next_url" value="{{ detail_self_url }}">
+                      <button class="btn action delete" type="submit">
+                        <span>Удалить</span>
+                      </button>
+                    </form>
+                  </div>
+                </div>
+              {% endfor %}
+            </div>
+          {% else %}
+            <div class="hint">Ссылка не создана.</div>
+            <form method="post" action="{{ urlp('/accounts') }}/{{ account.id }}/links" class="mt-sm">
+              <input type="hidden" name="next_url" value="{{ detail_self_url }}">
+              <input type="hidden" name="return_to" value="{{ return_to }}">
+              <input type="hidden" name="name" value="Основная ссылка">
+              <button class="btn primary sm" type="submit">Создать системную ссылку</button>
+            </form>
+          {% endif %}
+        </div>
+      </section>
+    {% endif %}
+  </div>
+  {% if account and account.can_publish_instagram %}
+    <script>
+      (function () {
+        const box = document.getElementById("instagram-publish-source-box");
+        if (!box) return;
+        const url = box.dataset.sourceUrl;
+        const fileNode = box.querySelector('[data-role="source-file"]');
+        const updatedNode = box.querySelector('[data-role="source-updated"]');
+        const statusNode = box.querySelector('[data-role="source-status"]');
+        fetch(url, { credentials: "omit" })
+          .then((response) => {
+            if (!response.ok) throw new Error("helper_unavailable");
+            return response.json();
+          })
+          .then((payload) => {
+            const latest = payload.latest_video || null;
+            if (!latest) {
+              fileNode.textContent = "Последний файл: —";
+              updatedNode.textContent = "Изменён: —";
+              statusNode.textContent = "В локальной папке сейчас нет подходящих .mp4/.mov файлов.";
+              return;
+            }
+            fileNode.textContent = `Последний файл: ${latest.name || "—"}`;
+            updatedNode.textContent = `Изменён: ${latest.modified_at_label || "—"}`;
+            statusNode.textContent = payload.status_text || "Helper видит локальную папку и готов к публикации.";
+          })
+          .catch(() => {
+            statusNode.textContent = "Локальный helper сейчас недоступен. Кнопка публикации всё равно запустит проверку папки на этом Mac.";
+          });
+      })();
+    </script>
+  {% endif %}
+{% endblock %}

@@ -1,0 +1,338 @@
+{% extends "base.html" %}
+{% block title %}Аккаунты{% endblock %}
+{% block content %}
+  <div class="grid">
+    <section class="card">
+      <header class="card__header">
+        <h2 class="card__title">Сводка</h2>
+      </header>
+      <div class="card__body">
+        <div class="grid cols-4">
+          {% set kpi_label = 'Всего аккаунтов' %}{% set kpi_value = overview.total %}{% include "_kpi.html" %}
+          {% set kpi_label = 'YouTube' %}{% set kpi_value = overview.youtube %}{% include "_kpi.html" %}
+          {% set kpi_label = 'TikTok' %}{% set kpi_value = overview.tiktok %}{% include "_kpi.html" %}
+          {% set kpi_label = 'Instagram' %}{% set kpi_value = overview.instagram %}{% include "_kpi.html" %}
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <header class="card__header">
+        <h2 class="card__title">Добавить аккаунт</h2>
+      </header>
+      <div class="card__body">
+        {% if error %}
+          <div class="error mb-sm">{{ error }}</div>
+        {% endif %}
+        {% if success %}
+          <div class="hint mb-sm">{{ success }}</div>
+        {% endif %}
+
+        <form method="post" action="{{ urlp('/accounts') }}" class="grid accounts-grid">
+          <input type="hidden" name="q" value="{{ q or '' }}">
+          <input type="hidden" name="filter_type" value="{{ type or '' }}">
+          <input type="hidden" name="filter_worker" value="{{ worker or '' }}">
+          <input type="hidden" name="filter_rotation_state" value="{{ rotation_state or '' }}">
+          <input type="hidden" name="filter_views_state" value="{{ views_state or '' }}">
+
+          <div class="field">
+            <label class="label">Тип</label>
+            <select class="input" name="type" required>
+              {% for t in type_options %}
+                <option value="{{ t.key }}">{{ t.label }}</option>
+              {% endfor %}
+            </select>
+          </div>
+
+          <div class="field">
+            <label class="label">Логин аккаунта</label>
+            <input class="input" name="account_login" required>
+          </div>
+
+          <div class="field">
+            <label class="label">Пароль аккаунта</label>
+            <input class="input" name="account_password" required>
+          </div>
+
+          <div class="field">
+            <label class="label">Username</label>
+            <input class="input" name="username" required>
+          </div>
+
+          <div class="field">
+            <label class="label">Почта</label>
+            <input class="input" name="email" required>
+          </div>
+
+          <div class="field">
+            <label class="label">Пароль почты</label>
+            <input class="input" name="email_password" required>
+          </div>
+
+          <div class="field accounts-grid-wide">
+            <label class="label">2FA</label>
+            <input class="input mono" name="twofa" placeholder="Код или секрет 2FA">
+          </div>
+
+          <div class="field accounts-grid-wide">
+            <label class="label">Instagram emulator serial</label>
+            <input class="input mono" name="instagram_emulator_serial" placeholder="например: emulator-5554">
+          </div>
+
+          <div class="field">
+            <label class="label">Состояние аккаунта</label>
+            <select class="input" name="rotation_state">
+              {% for item in rotation_state_options %}
+                <option value="{{ item.key }}" {% if item.key == 'review' %}selected{% endif %}>{{ item.label }}</option>
+              {% endfor %}
+            </select>
+          </div>
+
+          <div class="field">
+            <label class="label">Состояние по просмотрам</label>
+            <select class="input" name="views_state">
+              {% for item in views_state_options %}
+                <option value="{{ item.key }}" {% if item.key == 'unknown' %}selected{% endif %}>{{ item.label }}</option>
+              {% endfor %}
+            </select>
+          </div>
+
+          <div class="field accounts-grid-wide">
+            <label class="label">Proxy (одной строкой)</label>
+            <input class="input mono" name="proxy" placeholder="user:pass@host:port">
+          </div>
+
+          <div class="field accounts-grid-wide">
+            <label class="label">Работник-владелец</label>
+            <select class="input" name="owner_worker_id">
+              <option value="">Без работника</option>
+              {% for w in workers %}
+                <option value="{{ w.id }}">{{ w.name }} (@{{ w.username }})</option>
+              {% endfor %}
+            </select>
+          </div>
+
+          <div class="accounts-grid-wide row">
+            <button class="btn primary" type="submit">Добавить</button>
+          </div>
+        </form>
+      </div>
+    </section>
+
+    <section class="card">
+      <header class="card__header">
+        <h2 class="card__title">Импорт аккаунтов</h2>
+      </header>
+      <div class="card__body">
+        <form method="post" action="{{ urlp('/accounts/import') }}" class="grid accounts-grid" enctype="multipart/form-data">
+          <input type="hidden" name="q" value="{{ q or '' }}">
+          <input type="hidden" name="filter_type" value="{{ type or '' }}">
+          <input type="hidden" name="filter_worker" value="{{ worker or '' }}">
+          <input type="hidden" name="filter_rotation_state" value="{{ rotation_state or '' }}">
+          <input type="hidden" name="filter_views_state" value="{{ views_state or '' }}">
+
+          <div class="field">
+            <label class="label">Тип для всех строк</label>
+            <select class="input" name="import_type" required>
+              {% for t in type_options %}
+                <option value="{{ t.key }}">{{ t.label }}</option>
+              {% endfor %}
+            </select>
+          </div>
+
+          <div class="field">
+            <label class="label">Работник-владелец</label>
+            <select class="input" name="import_owner_worker_id">
+              <option value="">Без работника</option>
+              {% for w in workers %}
+                <option value="{{ w.id }}">{{ w.name }} (@{{ w.username }})</option>
+              {% endfor %}
+            </select>
+          </div>
+
+          <div class="field accounts-grid-wide">
+            <label class="label">Файл `csv` или `txt`</label>
+            <input class="input" type="file" name="import_file" accept=".csv,.txt,text/plain,text/csv" required>
+          </div>
+
+          <div class="field accounts-grid-wide">
+            <div class="hint">
+              Формат строки: <span class="mono">login;password;email;email_password;2fa</span><br>
+              Обязательные поля: <span class="mono">login</span>, <span class="mono">password</span>, <span class="mono">email</span>, <span class="mono">email_password</span>. Поле <span class="mono">2fa</span> можно не указывать.<br>
+              Поддерживаются разделители: <span class="mono">;</span>, <span class="mono">,</span>, <span class="mono">tab</span>, <span class="mono">|</span>, <span class="mono">:</span>.<br>
+              Для импортированных аккаунтов <span class="mono">username</span> временно берётся из логина.
+            </div>
+          </div>
+
+          <div class="accounts-grid-wide row">
+            <button class="btn primary" type="submit">Импортировать файл</button>
+          </div>
+        </form>
+
+        {% if import_summary %}
+          <div class="mt-sm">
+            <div class="detail-stats">
+              <span class="pill">Файл: {{ import_summary.filename or '—' }}</span>
+              <span class="pill">Импортировано: {{ import_summary.imported }}</span>
+              <span class="pill">Ошибок: {{ import_summary.failed }}</span>
+            </div>
+            <div class="hint mt-sm">{{ import_summary.username_rule }}</div>
+          </div>
+        {% endif %}
+
+        {% if import_errors and import_errors|length > 0 %}
+          <div class="list mt-sm">
+            {% for item in import_errors[:20] %}
+              <div class="listitem">
+                <div class="hint">{{ item }}</div>
+              </div>
+            {% endfor %}
+          </div>
+          {% if import_errors|length > 20 %}
+            <div class="hint mt-sm">Показаны первые 20 ошибок из {{ import_errors|length }}.</div>
+          {% endif %}
+        {% endif %}
+      </div>
+    </section>
+
+    <section class="card">
+      <header class="card__header">
+        <h2 class="card__title">Список аккаунтов</h2>
+      </header>
+      <div class="card__body">
+        <form method="get" action="{{ urlp('/accounts') }}" class="row filters-row">
+          <input class="input input-sm" name="q" value="{{ q or '' }}" placeholder="Поиск по логину / username / почте / proxy">
+          <select class="input input-sm" name="type">
+            <option value="">Все типы</option>
+            {% for t in type_options %}
+              <option value="{{ t.key }}" {% if type == t.key %}selected{% endif %}>{{ t.label }}</option>
+            {% endfor %}
+          </select>
+          <select class="input input-sm" name="worker">
+            <option value="" {% if (worker or '') == '' %}selected{% endif %}>Все работники</option>
+            <option value="none" {% if (worker or '') == 'none' %}selected{% endif %}>Без работника</option>
+            {% for w in workers %}
+              <option value="{{ w.id }}" {% if (worker|string) == (w.id|string) %}selected{% endif %}>{{ w.name }} (@{{ w.username }})</option>
+            {% endfor %}
+          </select>
+          <select class="input input-sm" name="rotation_state">
+            <option value="">Все статусы аккаунта</option>
+            {% for item in rotation_state_options %}
+              <option value="{{ item.key }}" {% if rotation_state == item.key %}selected{% endif %}>{{ item.label }}</option>
+            {% endfor %}
+          </select>
+          <select class="input input-sm" name="views_state">
+            <option value="">Все статусы просмотров</option>
+            {% for item in views_state_options %}
+              <option value="{{ item.key }}" {% if views_state == item.key %}selected{% endif %}>{{ item.label }}</option>
+            {% endfor %}
+          </select>
+          <button class="btn primary sm" type="submit">Применить</button>
+          {% if q or type or worker or rotation_state or views_state %}
+            <a class="btn ghost sm" href="{{ urlp('/accounts') }}">Сброс</a>
+          {% endif %}
+        </form>
+
+        <div class="accounts-cards mt-sm">
+          {% for a in accounts %}
+            <article class="account-card">
+              <div class="account-card__head">
+                <div class="listitem__title">Аккаунт {{ a.type_label }} · @{{ a.username }}</div>
+                <div class="row">
+                  <a class="btn primary sm" href="{{ urlp('/accounts') }}/{{ a.id }}">Открыть</a>
+                  {% if a.has_profile_url %}
+                    <a class="btn action" href="{{ a.profile_url }}" target="_blank" rel="noopener noreferrer">
+                      <span>Открыть профиль</span>
+                    </a>
+                  {% endif %}
+                </div>
+              </div>
+
+              <div class="account-card__meta">
+                <span class="pill">Перешло: {{ a.starts_unique_total }}</span>
+                <span class="pill">Ссылок: {{ a.links_total }}</span>
+                <span class="pill">ID: {{ a.id }}</span>
+                <span class="pill">Handle: @{{ a.identity_handle }}</span>
+                {% if a.instagram_emulator_serial %}
+                  <span class="pill mono">Emulator: {{ a.instagram_emulator_serial }}</span>
+                {% endif %}
+                <span class="status-pill {{ a.rotation_state_class }}">{{ a.rotation_state_label }}</span>
+                <span class="status-pill {{ a.views_state_class }}">{{ a.views_state_label }}</span>
+                <span class="status-pill {{ a.mail_status_class }}">{{ a.mail_status_label }}</span>
+                <span class="status-pill {{ a.instagram_launch_status_class }}">{{ a.instagram_launch_status_label }}</span>
+                <span class="status-pill {{ a.instagram_publish_status_class }}">{{ a.instagram_publish_status_label }}</span>
+                <span class="brand__tag">{{ a.owner_label }}</span>
+                {% if a.mail_last_checked_at %}
+                  <span class="hint">Почта: {{ a.mail_last_checked_at|dt }}</span>
+                {% endif %}
+                {% if a.instagram_launch_updated_at %}
+                  <span class="hint">Instagram helper: {{ a.instagram_launch_updated_at|dt }}</span>
+                {% endif %}
+                <span class="hint">Обновлено: {{ a.updated_at|dt }}</span>
+              </div>
+              {% if a.instagram_launch_detail %}
+                <div class="hint">{{ a.instagram_launch_detail }}</div>
+              {% endif %}
+              {% if a.instagram_publish_detail %}
+                <div class="hint mt-sm">{{ a.instagram_publish_detail }}</div>
+              {% endif %}
+
+              {% if a.primary_bot_url %}
+                <div class="account-card__actions">
+                  <span class="hint mono">{{ a.primary_bot_url }}</span>
+                  <button class="btn action copy" type="button" onclick='copyToClipboard({{ a.primary_bot_url|tojson }})'>
+                    <span>Копировать ссылку</span>
+                  </button>
+                </div>
+              {% else %}
+                <div class="hint">Ссылка пока не создана.</div>
+              {% endif %}
+            </article>
+          {% endfor %}
+        </div>
+
+        {% if accounts|length == 0 %}
+          <div class="hint mt-sm">Аккаунтов пока нет.</div>
+        {% endif %}
+      </div>
+    </section>
+
+    <section class="card">
+      <header class="card__header">
+        <h2 class="card__title">Заявки на передачу аккаунтов</h2>
+      </header>
+      <div class="card__body">
+        {% if claim_requests and claim_requests|length > 0 %}
+          <div class="list">
+            {% for item in claim_requests %}
+              <div class="listitem">
+                <div class="row row-between row-start">
+                  <div>
+                    <div class="listitem__title">{{ item.type_label }} · {{ item.account_login }}</div>
+                    <div class="listitem__meta">
+                      <span class="brand__tag">Текущий владелец: <strong>{{ item.owner_label }}</strong></span>
+                      <span class="brand__tag">Запросил: <strong>{{ item.requested_label }}</strong></span>
+                      <span class="hint">Создано: {{ item.created_at|dt }}</span>
+                    </div>
+                  </div>
+                  <div class="listitem__actions actions no-margin-top">
+                    <form method="post" action="{{ urlp('/accounts/claim-requests') }}/{{ item.id }}/approve" class="inline-form">
+                      <input type="hidden" name="next_url" value="{{ accounts_list_url|default(urlp('/accounts')) }}">
+                      <button class="btn primary sm" type="submit">Передать аккаунт</button>
+                    </form>
+                    <form method="post" action="{{ urlp('/accounts/claim-requests') }}/{{ item.id }}/reject" class="inline-form">
+                      <input type="hidden" name="next_url" value="{{ accounts_list_url|default(urlp('/accounts')) }}">
+                      <button class="btn action delete" type="submit">Отклонить</button>
+                    </form>
+                  </div>
+                </div>
+              </div>
+            {% endfor %}
+          </div>
+        {% else %}
+          <div class="hint">Заявок пока нет.</div>
+        {% endif %}
+      </div>
+    </section>
+  </div>
+{% endblock %}

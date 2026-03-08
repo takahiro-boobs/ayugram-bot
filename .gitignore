@@ -4,6 +4,7 @@ __pycache__/
 *.log
 .env
 .DS_Store
+admin.db
 
 # data / queues
 training_data/

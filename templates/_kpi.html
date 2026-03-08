@@ -1,0 +1,8 @@
+{# Shared KPI component (keep it tiny + consistent everywhere) #}
+<div class="kpi{% if kpi_tone %} kpi--{{ kpi_tone }}{% endif %}">
+  <div class="kpi__label">{{ kpi_label }}</div>
+  <div class="kpi__value">{{ kpi_value }}</div>
+  {% if kpi_hint is defined and kpi_hint %}
+    <div class="hint">{{ kpi_hint }}</div>
+  {% endif %}
+</div>

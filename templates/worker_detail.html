@@ -1,0 +1,127 @@
+{% extends "base.html" %}
+{% block title %}Работник{% endblock %}
+{% block content %}
+  <div class="grid">
+    <section class="card">
+      <header class="card__header">
+        <h2 class="card__title">Работник</h2>
+      </header>
+      <div class="card__body">
+        <div class="row">
+          <a class="btn ghost sm" href="{{ urlp('/workers') }}">Назад к списку</a>
+        </div>
+        {% if error %}
+          <div class="error mt-sm">{{ error }}</div>
+        {% endif %}
+        {% if success %}
+          <div class="hint mt-sm">{{ success }}</div>
+        {% endif %}
+      </div>
+    </section>
+
+    {% if not worker %}
+      <section class="card">
+        <div class="card__body">
+          <div class="hint">Работник не найден.</div>
+        </div>
+      </section>
+    {% else %}
+      <section class="card">
+        <header class="card__header">
+          <h2 class="card__title">Профиль</h2>
+        </header>
+        <div class="card__body">
+          <div class="listitem__title">{{ worker.name }} · @{{ worker.username }}</div>
+          <div class="detail-stats mt-sm">
+            <span class="pill">Аккаунтов: {{ stats.accounts_total }}</span>
+            <span class="pill">Старты: {{ stats.starts_total }}</span>
+            <span class="pill">Перешло: {{ stats.starts_unique_total }}</span>
+            <span class="pill">First-touch: {{ stats.first_touch_total }}</span>
+          </div>
+          <div class="row mt-sm">
+            <span class="hint mono">Логин: {{ worker.username }}</span>
+            <button class="btn action copy" type="button" onclick='copyToClipboard({{ worker.username|tojson }})'>Копировать логин</button>
+          </div>
+          <div class="row">
+            <span class="hint mono">Пароль: {{ worker.plain_password }}</span>
+            <button class="btn action copy" type="button" onclick='copyToClipboard({{ worker.plain_password|tojson }})'>Копировать пароль</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="card">
+        <header class="card__header">
+          <h2 class="card__title">Редактирование</h2>
+        </header>
+        <div class="card__body">
+          <form method="post" action="{{ urlp('/workers') }}/{{ worker.id }}/update" class="grid accounts-grid">
+            <div class="field">
+              <label class="label">Имя</label>
+              <input class="input" name="name" value="{{ worker.name }}" required>
+            </div>
+            <div class="field">
+              <label class="label">Логин</label>
+              <input class="input" name="username" value="{{ worker.username }}" required>
+            </div>
+            <div class="field accounts-grid-wide">
+              <label class="label">Новый пароль (необязательно)</label>
+              <input class="input" name="password" placeholder="Оставь пустым, чтобы не менять">
+            </div>
+            <div class="accounts-grid-wide row">
+              <button class="btn primary sm" type="submit">Сохранить</button>
+            </div>
+          </form>
+
+          <form method="post" action="{{ urlp('/workers') }}/{{ worker.id }}/delete" class="mt-sm">
+            <button class="btn danger sm" type="submit">Удалить работника</button>
+          </form>
+        </div>
+      </section>
+
+      <section class="card">
+        <header class="card__header">
+          <h2 class="card__title">Аккаунты работника</h2>
+        </header>
+        <div class="card__body">
+          <form method="get" action="{{ urlp('/workers') }}/{{ worker.id }}" class="row filters-row">
+            <input class="input input-sm" name="q" value="{{ q or '' }}" placeholder="Поиск по логину / username / почте / proxy">
+            <select class="input input-sm" name="type">
+              <option value="">Все типы</option>
+              {% for t in type_options %}
+                <option value="{{ t.key }}" {% if type == t.key %}selected{% endif %}>{{ t.label }}</option>
+              {% endfor %}
+            </select>
+            <button class="btn primary sm" type="submit">Применить</button>
+            {% if q or type %}
+              <a class="btn ghost sm" href="{{ urlp('/workers') }}/{{ worker.id }}">Сброс</a>
+            {% endif %}
+          </form>
+
+          <div class="accounts-cards mt-sm">
+            {% for a in accounts %}
+              <article class="account-card" id="{{ a.card_id }}">
+                <div class="account-card__head">
+                  <div class="listitem__title">{{ a.type_label }} · @{{ a.username }}</div>
+                  <a class="btn primary sm" href="{{ urlp(a.detail_url) }}">Открыть</a>
+                </div>
+                <div class="account-card__meta">
+                  <span class="pill">Перешло: {{ a.starts_unique_total }}</span>
+                  <span class="pill">Ссылок: {{ a.links_total }}</span>
+                </div>
+                {% if a.primary_bot_url %}
+                  <div class="account-card__actions">
+                    <span class="hint mono">{{ a.primary_bot_url }}</span>
+                    <button class="btn action copy" type="button" onclick='copyToClipboard({{ a.primary_bot_url|tojson }})'>Копировать ссылку</button>
+                  </div>
+                {% endif %}
+              </article>
+            {% endfor %}
+          </div>
+          {% if accounts|length == 0 %}
+            <div class="hint">У работника пока нет аккаунтов.</div>
+          {% endif %}
+        </div>
+      </section>
+    {% endif %}
+  </div>
+{% endblock %}

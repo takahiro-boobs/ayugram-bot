@@ -1,0 +1,8 @@
+fastapi==0.115.6
+uvicorn==0.30.6
+requests==2.32.3
+python-dotenv==1.0.1
+playwright==1.54.0
+pyotp==2.9.0
+uiautomator2==3.2.9
+adbutils==2.9.3

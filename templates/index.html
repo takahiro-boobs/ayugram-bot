@@ -1,0 +1,159 @@
+{% extends "base.html" %}
+{% block title %}Статистика{% endblock %}
+{% block content %}
+  {% set funnel_data = funnel if funnel is defined and funnel else {"updated_at": None, "total_users": 0, "start_users": 0, "final_users": 0, "steps": []} %}
+  {% set workers_data = workers_overview if workers_overview is defined and workers_overview else {"workers_total": 0, "assigned_accounts_total": 0, "worker_starts_unique_total": 0} %}
+  {% set start_users = funnel_data.start_users or 0 %}
+  {% set final_users = funnel_data.final_users or 0 %}
+  {% set conversion = ((final_users / start_users) * 100) if start_users else 0 %}
+  <div class="grid">
+    <section class="card">
+      <header class="card__header">
+        <h2 class="card__title">KPI</h2>
+      </header>
+      <div class="card__body">
+        <div class="grid cols-4">
+          <div class="kpi">
+            <div class="kpi__label">Всего пользователей</div>
+            <div class="kpi__value" id="kpi-total-users">{{ funnel_data.total_users or 0 }}</div>
+          </div>
+          <div class="kpi">
+            <div class="kpi__label">Стартовали</div>
+            <div class="kpi__value" id="kpi-start-users">{{ start_users }}</div>
+          </div>
+          <div class="kpi">
+            <div class="kpi__label">Дошли до финала</div>
+            <div class="kpi__value" id="kpi-final-users">{{ final_users }}</div>
+          </div>
+          <div class="kpi">
+            <div class="kpi__label">Конверсия старт → финал</div>
+            <div class="kpi__value" id="kpi-conversion">{{ "%.2f"|format(conversion) }}%</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <header class="card__header">
+        <h2 class="card__title">Работники</h2>
+      </header>
+      <div class="card__body">
+        <div class="grid cols-3">
+          <div class="kpi">
+            <div class="kpi__label">Всего работников</div>
+            <div class="kpi__value">{{ workers_data.workers_total or 0 }}</div>
+          </div>
+          <div class="kpi">
+            <div class="kpi__label">Аккаунты работников</div>
+            <div class="kpi__value">{{ workers_data.assigned_accounts_total or 0 }}</div>
+          </div>
+          <div class="kpi">
+            <div class="kpi__label">Уникальные старты (работники)</div>
+            <div class="kpi__value">{{ workers_data.worker_starts_unique_total or 0 }}</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <header class="card__header">
+        <h2 class="card__title">Воронка</h2>
+        <span class="hint" id="funnel-updated">
+          Обновлено: {% if funnel_data.updated_at %}{{ funnel_data.updated_at|dt }}{% else %}-{% endif %}
+        </span>
+      </header>
+      <div class="card__body tablewrap">
+        <table class="table funnel-table">
+          <thead>
+            <tr>
+              <th>Шаг</th>
+              <th>Пользователи</th>
+              <th>% от старта</th>
+            </tr>
+          </thead>
+          <tbody id="funnel-rows">
+            {% for step in funnel_data.steps %}
+              <tr>
+                <td data-label="Шаг">{{ step.label }}</td>
+                <td data-label="Пользователи"><span class="pill">{{ step.users }}</span></td>
+                <td data-label="% от старта" class="mono">{{ "%.2f"|format(step.pct_from_start) }}%</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+
+  <script>
+    (function () {
+      const endpoint = "{{ urlp('/api/stats/funnel') }}";
+      const state = {{ funnel_data|tojson }};
+
+      function formatNumber(v) {
+        return Number(v || 0).toLocaleString("ru-RU");
+      }
+
+      function formatPct(v) {
+        return `${Number(v || 0).toFixed(2)}%`;
+      }
+
+      function formatUpdatedAt(ts) {
+        if (!ts) return "-";
+        const dt = new Date(Number(ts) * 1000);
+        if (Number.isNaN(dt.getTime())) return "-";
+        return dt.toLocaleString("ru-RU", { hour12: false });
+      }
+
+      function renderRows(steps) {
+        const tbody = document.getElementById("funnel-rows");
+        if (!tbody) return;
+        tbody.innerHTML = "";
+        (steps || []).forEach((step) => {
+          const tr = document.createElement("tr");
+          tr.innerHTML = `
+            <td data-label="Шаг">${step.label || ""}</td>
+            <td data-label="Пользователи"><span class="pill">${formatNumber(step.users)}</span></td>
+            <td data-label="% от старта" class="mono">${formatPct(step.pct_from_start)}</td>
+          `;
+          tbody.appendChild(tr);
+        });
+      }
+
+      function render(data) {
+        const total = Number(data.total_users || 0);
+        const start = Number(data.start_users || 0);
+        const finalUsers = Number(data.final_users || 0);
+        const conversion = start ? (finalUsers / start) * 100 : 0;
+
+        const totalEl = document.getElementById("kpi-total-users");
+        const startEl = document.getElementById("kpi-start-users");
+        const finalEl = document.getElementById("kpi-final-users");
+        const convEl = document.getElementById("kpi-conversion");
+        const updatedEl = document.getElementById("funnel-updated");
+
+        if (totalEl) totalEl.textContent = formatNumber(total);
+        if (startEl) startEl.textContent = formatNumber(start);
+        if (finalEl) finalEl.textContent = formatNumber(finalUsers);
+        if (convEl) convEl.textContent = formatPct(conversion);
+        if (updatedEl) updatedEl.textContent = `Обновлено: ${formatUpdatedAt(data.updated_at)}`;
+
+        renderRows(data.steps || []);
+      }
+
+      async function refresh() {
+        try {
+          const resp = await fetch(endpoint, { headers: { Accept: "application/json" } });
+          if (!resp.ok) return;
+          const data = await resp.json();
+          render(data);
+        } catch (e) {
+          // No-op: keep previous values if network blips.
+        }
+      }
+
+      render(state || {});
+      setInterval(refresh, 5000);
+    })();
+  </script>
+{% endblock %}

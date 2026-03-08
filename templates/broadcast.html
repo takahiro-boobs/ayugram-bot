@@ -1,0 +1,194 @@
+{% extends "base.html" %}
+{% block title %}Рассылка{% endblock %}
+{% block content %}
+  <div class="grid cols-2">
+    <section class="card">
+      <header class="card__header">
+        <h2 class="card__title">Рассылка</h2>
+      </header>
+      <div class="card__body">
+        {% if error %}
+          <div class="error mb-sm">{{ error }}</div>
+        {% endif %}
+
+        <form id="broadcastForm" method="post" action="{{ urlp('/broadcast') }}" class="grid form-gap-md" enctype="multipart/form-data">
+          <div class="grid cols-1 form-gap-md">
+            <div class="field">
+              <label class="label">Кому</label>
+              <select class="input" name="scope" id="scope">
+                <option value="all" {% if filters.scope == 'all' %}selected{% endif %}>Всем</option>
+                <option value="installed" {% if filters.scope == 'installed' %}selected{% endif %}>Только установили</option>
+                <option value="not_installed" {% if filters.scope == 'not_installed' %}selected{% endif %}>Только не установили</option>
+              </select>
+            </div>
+
+            <div class="field">
+              <label class="label">Этап воронки</label>
+              <select class="input" name="stage_key" id="stage_key">
+                <option value="" {% if not filters.stage_key %}selected{% endif %}>Любой этап</option>
+                {% for s in step_options %}
+                  <option value="{{ s.key }}" {% if filters.stage_key == s.key %}selected{% endif %}>{{ s.label }}</option>
+                {% endfor %}
+              </select>
+            </div>
+
+            <div class="field">
+              <label class="label">Тип этапа</label>
+              <select class="input" name="stage_mode" id="stage_mode">
+                <option value="reached" {% if filters.stage_mode == 'reached' %}selected{% endif %}>Дошли до этапа и выше</option>
+                <option value="exact" {% if filters.stage_mode == 'exact' %}selected{% endif %}>Только на этом этапе</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="field">
+            <label class="label">Сообщение</label>
+            <textarea class="textarea" name="message" id="message">{{ message or '' }}</textarea>
+          </div>
+
+          <div class="grid cols-2 form-gap-md">
+            <div class="field">
+              <label class="label">Тип файла (если нужен)</label>
+              <select class="input" name="media_kind" id="media_kind">
+                <option value="" {% if not media_kind %}selected{% endif %}>Без файла</option>
+                <option value="photo" {% if media_kind == 'photo' %}selected{% endif %}>Фото</option>
+                <option value="video" {% if media_kind == 'video' %}selected{% endif %}>Видео</option>
+              </select>
+            </div>
+            <div class="field">
+              <label class="label">Файл</label>
+              <input class="input" type="file" name="media_file" id="media_file" accept="image/*,video/*">
+            </div>
+          </div>
+
+          <div class="hint" id="media_hint">Файл не выбран.</div>
+
+          <div class="row row-between">
+            <div class="hint">Получателей: <strong id="recipients">{{ recipients }}</strong></div>
+            {% if sent is not none %}
+              <div class="hint">
+                {% if mode == 'test' %}Тест{% else %}Отправка{% endif %}:
+                <strong>{{ sent }}</strong> · Ошибок: <strong>{{ failed }}</strong>
+              </div>
+            {% endif %}
+          </div>
+
+          <div class="row row-end">
+            <button class="btn primary" type="submit">Отправить</button>
+
+            <div class="field test-chat-field">
+              <label class="label">Тестовый chat_id</label>
+              <input class="input mono" name="test_chat_id" id="test_chat_id" value="{{ test_chat_id or '' }}" placeholder="например: 123456789">
+            </div>
+
+            <button class="btn ghost" type="button" id="testSend">Отправить тест</button>
+          </div>
+
+          <div class="hint">Подсказка: chat_id можно узнать у бота <span class="mono">@userinfobot</span>.</div>
+        </form>
+      </div>
+    </section>
+
+    <div class="grid form-gap-md">
+      <section class="card">
+        <header class="card__header">
+          <h2 class="card__title">Предпросмотр</h2>
+          <button class="btn action copy" type="button" onclick="copyToClipboard(document.getElementById('message').value)">
+            <span>Копировать текст</span>
+          </button>
+        </header>
+        <div class="card__body">
+          <pre class="preview" id="preview">{{ message or '—' }}</pre>
+        </div>
+      </section>
+
+      <section class="card">
+        <header class="card__header">
+          <h2 class="card__title">История</h2>
+        </header>
+        <div class="card__body">
+          <div class="list">
+            {% for h in history %}
+              <div class="listitem">
+                <div class="row row-between row-start">
+                  <div>
+                    <div class="listitem__title">
+                      {% if h.is_test %}<span class="pill">TEST</span>{% else %}<span class="pill">SEND</span>{% endif %}
+                      <span class="mono">{{ h.created_at|dt }}</span>
+                    </div>
+                    <div class="listitem__meta">
+                      <span class="brand__tag">Кому: <strong>{{ h.recipients }}</strong></span>
+                      <span class="brand__tag">Sent: <strong>{{ h.sent }}</strong></span>
+                      <span class="brand__tag">Fail: <strong>{{ h.failed }}</strong></span>
+                      <span class="brand__tag">{{ h.scope }}</span>
+                    </div>
+                    <div class="hint mt-sm">{{ (h.message or '')[:140] }}{% if (h.message or '')|length > 140 %}…{% endif %}</div>
+                  </div>
+                  <div class="listitem__actions actions no-margin-top">
+                    <button class="btn action copy" type="button" onclick="copyToClipboard(document.getElementById('bmsg-{{ h.id }}').textContent)">
+                      <span>Копировать</span>
+                    </button>
+                  </div>
+                </div>
+                <pre id="bmsg-{{ h.id }}" class="hidden">{{ h.message or '' }}</pre>
+              </div>
+            {% endfor %}
+          </div>
+
+          {% if history|length == 0 %}
+            <div class="hint mt-sm">Истории пока нет.</div>
+          {% endif %}
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <script>
+    const scopeEl = document.getElementById('scope');
+    const stageKeyEl = document.getElementById('stage_key');
+    const stageModeEl = document.getElementById('stage_mode');
+    const recipientsEl = document.getElementById('recipients');
+    const msgEl = document.getElementById('message');
+    const previewEl = document.getElementById('preview');
+    const mediaEl = document.getElementById('media_file');
+    const mediaKindEl = document.getElementById('media_kind');
+    const mediaHintEl = document.getElementById('media_hint');
+
+    async function updateRecipients() {
+      const params = new URLSearchParams({
+        scope: scopeEl.value,
+        stage_key: stageKeyEl.value,
+        stage_mode: stageModeEl.value
+      });
+      try {
+        const r = await fetch('{{ urlp('/broadcast/count') }}?' + params.toString());
+        const j = await r.json();
+        recipientsEl.textContent = String(j.recipients ?? 0);
+      } catch (e) {}
+    }
+
+    function updatePreview() {
+      previewEl.textContent = msgEl.value.trim() || '—';
+      const file = mediaEl.files && mediaEl.files[0] ? mediaEl.files[0] : null;
+      if (file) {
+        mediaHintEl.textContent = `Файл: ${file.name} (${mediaKindEl.value || 'auto'})`;
+      } else {
+        mediaHintEl.textContent = 'Файл не выбран.';
+      }
+    }
+
+    [scopeEl, stageKeyEl, stageModeEl].forEach((el) => el.addEventListener('change', updateRecipients));
+    mediaEl.addEventListener('change', updatePreview);
+    mediaKindEl.addEventListener('change', updatePreview);
+    msgEl.addEventListener('input', updatePreview);
+
+    updatePreview();
+    updateRecipients();
+
+    document.getElementById('testSend').addEventListener('click', () => {
+      const form = document.getElementById('broadcastForm');
+      form.action = '{{ urlp('/broadcast/test') }}';
+      form.submit();
+    });
+  </script>
+{% endblock %}

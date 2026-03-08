@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8">
+    <title>СЛЕЖКА Admin</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+    <link rel="stylesheet" href="{{ urlp('/static/ios26.css') }}">
+  </head>
+  <body>
+    {% set path = request.url.path %}
+    <div class="app">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="brand__title">СЛЕЖКА</div>
+          <div class="brand__tag">Admin</div>
+        </div>
+        <nav class="nav">
+          <a href="{{ urlp('/') }}" class="{% if path == '/' %}active{% endif %}">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M3 13h8V3H3v10zM13 21h8V11h-8v10zM13 3h8v6h-8V3zM3 17h8v4H3v-4z"/>
+            </svg>
+            <span>Статистика</span>
+          </a>
+          <a href="{{ urlp('/users') }}" class="{% if path == '/users' %}active{% endif %}">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/>
+              <circle cx="9" cy="7" r="4"/>
+              <path d="M22 21v-2a4 4 0 0 0-3-3.87"/>
+              <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+            </svg>
+            <span>Пользователи</span>
+          </a>
+          <a href="{{ urlp('/accounts') }}" class="{% if path.startswith('/accounts') %}active{% endif %}">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="3" y="4" width="18" height="16" rx="2"/>
+              <path d="M7 8h10M7 12h6M7 16h8"/>
+            </svg>
+            <span>Аккаунты</span>
+          </a>
+          <a href="{{ urlp('/workers') }}" class="{% if path.startswith('/workers') %}active{% endif %}">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/>
+              <circle cx="9" cy="7" r="4"/>
+              <path d="M22 21v-2a4 4 0 0 0-3-3.87"/>
+              <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+            </svg>
+            <span>Работники</span>
+          </a>
+          <a href="{{ urlp('/broadcast') }}" class="{% if path.startswith('/broadcast') %}active{% endif %}">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M3 11l18-5-5 18-4-7-7-6z"/>
+              <path d="M12 17l0 0"/>
+            </svg>
+            <span>Рассылка</span>
+          </a>
+          <a href="{{ urlp('/publishing') }}" class="{% if path.startswith('/publishing') %}active{% endif %}">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M12 2v20"/>
+              <path d="M4 7h16"/>
+              <path d="M4 17h16"/>
+              <path d="M7 12h10"/>
+            </svg>
+            <span>Публикации</span>
+          </a>
+        </nav>
+      </aside>
+
+      <section class="content">
+        <header class="topbar">
+          <div>
+            <h1 class="topbar__title">{% block title %}Dashboard{% endblock %}</h1>
+            <p class="topbar__sub">СЛЕЖКА Admin</p>
+          </div>
+          <div class="row topbar__right">
+            <span class="brand__tag">Private</span>
+            <a class="btn ghost sm" href="{{ urlp('/logout') }}">Выйти</a>
+          </div>
+        </header>
+        <main class="main">
+          {% block content %}{% endblock %}
+        </main>
+      </section>
+    </div>
+
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <script>
+      function showToast(msg) {
+        const el = document.getElementById('toast');
+        if (!el) return;
+        el.textContent = msg;
+        el.classList.add('show');
+        window.clearTimeout(el.__t);
+        el.__t = window.setTimeout(() => el.classList.remove('show'), 1100);
+      }
+
+      async function copyToClipboard(text, okMessage = 'Скопировано') {
+        try {
+          await navigator.clipboard.writeText(text || '');
+          showToast(okMessage);
+        } catch (e) {
+          try {
+            const temp = document.createElement('input');
+            temp.value = text || '';
+            document.body.appendChild(temp);
+            temp.select();
+            document.execCommand('copy');
+            document.body.removeChild(temp);
+            showToast(okMessage);
+          } catch (e2) {
+            showToast('Не удалось скопировать');
+          }
+        }
+      }
+    </script>
+  </body>
+</html>

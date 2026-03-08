@@ -1,0 +1,176 @@
+{% extends "worker_base.html" %}
+{% block title %}Аккаунт{% endblock %}
+{% block content %}
+  <div class="grid">
+    <section class="card">
+      <header class="card__header">
+        <h2 class="card__title">Аккаунт</h2>
+      </header>
+      <div class="card__body">
+        <div class="row">
+          <a class="btn ghost sm" href="{{ urlp(back_url) }}">Назад к списку</a>
+        </div>
+        {% if error %}
+          <div class="error mt-sm">{{ error }}</div>
+        {% endif %}
+        {% if success %}
+          <div class="hint mt-sm">{{ success }}</div>
+        {% endif %}
+      </div>
+    </section>
+
+    {% if not account %}
+      <section class="card">
+        <div class="card__body">
+          <div class="hint">Аккаунт не найден.</div>
+        </div>
+      </section>
+    {% else %}
+      <section class="card">
+        <header class="card__header">
+          <h2 class="card__title">Профиль</h2>
+        </header>
+        <div class="card__body">
+          <div class="account-card__head">
+            <div class="listitem__title">{{ account.type_label }} · @{{ account.username }}</div>
+            <div class="hint">Обновлено: {{ account.updated_at|dt }}</div>
+          </div>
+
+          <div class="detail-stats mt-sm">
+            <span class="pill">Перешло: {{ stats.starts_unique_total }}</span>
+            <span class="pill">Старты: {{ stats.starts_total }}</span>
+            <span class="pill">First-touch: {{ stats.first_touch_total }}</span>
+            <span class="pill">Ссылок: {{ stats.links_total }}</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="card">
+        <header class="card__header">
+          <h2 class="card__title">Данные аккаунта</h2>
+        </header>
+        <div class="card__body">
+          <form method="post" action="{{ urlp('/worker/accounts') }}/{{ account.id }}/update" class="grid accounts-grid">
+            <input type="hidden" name="next_url" value="{{ detail_self_url }}">
+            <input type="hidden" name="return_to" value="{{ return_to }}">
+
+            <div class="field">
+              <label class="label">Тип</label>
+              <select class="input" name="type" required>
+                {% for t in type_options %}
+                  <option value="{{ t.key }}" {% if account.type == t.key %}selected{% endif %}>{{ t.label }}</option>
+                {% endfor %}
+              </select>
+            </div>
+
+            <div class="field">
+              <label class="label">Username</label>
+              <input class="input" name="username" value="{{ account.username }}" required>
+            </div>
+
+            <div class="field">
+              <label class="label">Логин аккаунта</label>
+              <input class="input" name="account_login" value="{{ account.account_login }}" required>
+            </div>
+
+            <div class="field">
+              <label class="label">Пароль аккаунта</label>
+              <input class="input" name="account_password" value="{{ account.account_password }}" required>
+            </div>
+
+            <div class="field">
+              <label class="label">Почта</label>
+              <input class="input" name="email" value="{{ account.email }}" required>
+            </div>
+
+            <div class="field">
+              <label class="label">Пароль почты</label>
+              <input class="input" name="email_password" value="{{ account.email_password }}" required>
+            </div>
+
+            <div class="field accounts-grid-wide">
+              <label class="label">2FA</label>
+              <input class="input mono" name="twofa" value="{{ account.twofa }}">
+            </div>
+
+            <div class="field accounts-grid-wide">
+              <label class="label">Proxy</label>
+              <input class="input mono" name="proxy" value="{{ account.proxy }}">
+            </div>
+
+            <div class="accounts-grid-wide row">
+              <button class="btn primary sm" type="submit">Сохранить</button>
+            </div>
+          </form>
+
+          <form method="post" action="{{ urlp('/worker/accounts') }}/{{ account.id }}/delete" class="mt-sm">
+            <input type="hidden" name="next_url" value="{{ back_url }}">
+            <button class="btn danger sm" type="submit">Удалить аккаунт</button>
+          </form>
+        </div>
+      </section>
+
+      <section class="card">
+        <header class="card__header">
+          <h2 class="card__title">Ссылки аккаунта</h2>
+        </header>
+        <div class="card__body">
+          {% if links|length > 0 %}
+            <div class="links-list">
+              {% for l in links %}
+                <div class="link-row">
+                  <div class="link-row__top">
+                    <div class="mono"><strong>{{ l.name }}</strong> · {{ l.code }}</div>
+                    <span class="status-pill {% if l.is_active %}on{% else %}off{% endif %}">
+                      {% if l.is_active %}Активна{% else %}Выключена{% endif %}
+                    </span>
+                  </div>
+
+                  <div class="link-meta">
+                    <span class="hint mono">Ссылка: {{ l.bot_url }}</span>
+                    <span class="hint">Обновлено: {{ l.updated_at|dt }}</span>
+                  </div>
+
+                  <div class="link-stats">
+                    <span class="pill">Перешло: {{ l.starts_unique }}</span>
+                    <span class="pill">Старты: {{ l.starts_total }}</span>
+                    <span class="pill">First-touch: {{ l.first_touch_users }}</span>
+                  </div>
+
+                  <div class="link-actions">
+                    <button class="btn action copy" type="button" onclick='copyToClipboard({{ l.bot_url|tojson }})'>
+                      <span>Копировать ссылку</span>
+                    </button>
+
+                    <form method="post" action="{{ urlp('/worker/accounts/links') }}/{{ l.code }}/toggle" class="inline-form">
+                      <input type="hidden" name="next_url" value="{{ detail_self_url }}">
+                      <input type="hidden" name="active" value="{% if l.is_active %}0{% else %}1{% endif %}">
+                      <button class="btn action" type="submit">
+                        <span>{% if l.is_active %}Выключить{% else %}Включить{% endif %}</span>
+                      </button>
+                    </form>
+
+                    <form method="post" action="{{ urlp('/worker/accounts/links') }}/{{ l.code }}/delete" class="inline-form">
+                      <input type="hidden" name="next_url" value="{{ detail_self_url }}">
+                      <button class="btn action delete" type="submit">
+                        <span>Удалить</span>
+                      </button>
+                    </form>
+                  </div>
+                </div>
+              {% endfor %}
+            </div>
+          {% else %}
+            <div class="hint">Ссылка не создана.</div>
+            <form method="post" action="{{ urlp('/worker/accounts') }}/{{ account.id }}/links" class="mt-sm">
+              <input type="hidden" name="next_url" value="{{ detail_self_url }}">
+              <input type="hidden" name="return_to" value="{{ return_to }}">
+              <input type="hidden" name="name" value="Основная ссылка">
+              <button class="btn primary sm" type="submit">Создать системную ссылку</button>
+            </form>
+          {% endif %}
+        </div>
+      </section>
+    {% endif %}
+  </div>
+{% endblock %}
