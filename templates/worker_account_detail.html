@@ -27,27 +27,41 @@
         </header>
         <div class="card__body">
           <div class="account-card__head">
-            <div class="listitem__title">{{ account.type_label }} · @{{ account.username }}</div>
-            <div class="hint">Обновлено: {{ account.updated_at|dt }}</div>
+            <div>
+              <div class="listitem__title">Аккаунт {{ account.type_label }}</div>
+              <div class="hint mono">@{{ account.username }}</div>
+            </div>
           </div>
 
           <div class="detail-stats mt-sm">
             <span class="pill">Переходов: {{ stats.starts_unique_total }}</span>
-            <span class="pill">Старты: {{ stats.starts_total }}</span>
-            <span class="pill">Первый контакт: {{ stats.first_touch_total }}</span>
-            <span class="pill">Ссылок: {{ stats.links_total }}</span>
+            <span class="status-pill {% if account.rotation_state == 'working' %}working{% else %}not_working{% endif %}">
+              {% if account.rotation_state == 'working' %}Рабочий{% else %}Нерабочий{% endif %}
+            </span>
           </div>
+
+          <details class="service-details mt-sm">
+            <summary class="service-details__summary">Детали</summary>
+            <div class="service-details__body">
+              <div class="detail-stats">
+                <span class="hint">Обновлено: {{ account.updated_at|dt }}</span>
+                <span class="pill">Старты: {{ stats.starts_total }}</span>
+                <span class="pill">Первый контакт: {{ stats.first_touch_total }}</span>
+                <span class="pill">Ссылок: {{ stats.links_total }}</span>
+              </div>
+            </div>
+          </details>
         </div>
       </section>
 
       <section class="card">
-        <header class="card__header">
-          <h2 class="card__title">Данные аккаунта</h2>
-        </header>
         <div class="card__body">
-          <form method="post" action="{{ urlp('/worker/accounts') }}/{{ account.id }}/update" class="grid accounts-grid">
-            <input type="hidden" name="next_url" value="{{ detail_self_url }}">
-            <input type="hidden" name="return_to" value="{{ return_to }}">
+          <details class="service-details">
+            <summary class="service-details__summary">Данные аккаунта</summary>
+            <div class="service-details__body">
+              <form method="post" action="{{ urlp('/worker/accounts') }}/{{ account.id }}/update" class="grid accounts-grid">
+                <input type="hidden" name="next_url" value="{{ detail_self_url }}">
+                <input type="hidden" name="return_to" value="{{ return_to }}">
 
             <div class="field">
               <label class="label">Тип</label>
@@ -93,77 +107,80 @@
               <input class="input mono" name="proxy" value="{{ account.proxy }}">
             </div>
 
-            <div class="accounts-grid-wide row">
-              <button class="btn primary sm" type="submit">Сохранить</button>
-            </div>
-          </form>
+                <div class="accounts-grid-wide row">
+                  <button class="btn primary sm" type="submit">Сохранить</button>
+                </div>
+              </form>
 
-          <form method="post" action="{{ urlp('/worker/accounts') }}/{{ account.id }}/delete" class="mt-sm">
-            <input type="hidden" name="next_url" value="{{ back_url }}">
-            <button class="btn danger sm" type="submit">Удалить аккаунт</button>
-          </form>
+              <form method="post" action="{{ urlp('/worker/accounts') }}/{{ account.id }}/delete" class="mt-sm">
+                <input type="hidden" name="next_url" value="{{ back_url }}">
+                <button class="btn danger sm" type="submit">Удалить аккаунт</button>
+              </form>
+            </div>
+          </details>
         </div>
       </section>
 
       <section class="card">
-        <header class="card__header">
-          <h2 class="card__title">Ссылки аккаунта</h2>
-        </header>
         <div class="card__body">
-          {% if links|length > 0 %}
-            <div class="links-list">
-              {% for l in links %}
-                <div class="link-row">
-                  <div class="link-row__top">
-                    <div class="mono"><strong>{{ l.name }}</strong> · {{ l.code }}</div>
-                    <span class="status-pill {% if l.is_active %}on{% else %}off{% endif %}">
-                      {% if l.is_active %}Активна{% else %}Выключена{% endif %}
-                    </span>
-                  </div>
+          <details class="service-details">
+            <summary class="service-details__summary">Ссылки аккаунта</summary>
+            <div class="service-details__body">
+              {% if links|length > 0 %}
+                <div class="links-list">
+                  {% for l in links %}
+                    <div class="link-row">
+                      <div class="link-row__top">
+                        <div class="mono"><strong>{{ l.name }}</strong> · {{ l.code }}</div>
+                        <span class="status-pill {% if l.is_active %}on{% else %}off{% endif %}">
+                          {% if l.is_active %}Активна{% else %}Выключена{% endif %}
+                        </span>
+                      </div>
 
-                  <div class="link-meta">
-                    <span class="hint mono">Ссылка: {{ l.bot_url }}</span>
-                    <span class="hint">Обновлено: {{ l.updated_at|dt }}</span>
-                  </div>
+                      <div class="link-meta">
+                        <span class="hint mono">Ссылка: {{ l.bot_url }}</span>
+                        <span class="hint">Обновлено: {{ l.updated_at|dt }}</span>
+                      </div>
 
-                  <div class="link-stats">
-                    <span class="pill">Переходов: {{ l.starts_unique }}</span>
-                    <span class="pill">Старты: {{ l.starts_total }}</span>
-                    <span class="pill">Первый контакт: {{ l.first_touch_users }}</span>
-                  </div>
+                      <div class="link-stats">
+                        <span class="pill">Переходов: {{ l.starts_unique }}</span>
+                        <span class="pill">Старты: {{ l.starts_total }}</span>
+                        <span class="pill">Первый контакт: {{ l.first_touch_users }}</span>
+                      </div>
 
-                  <div class="link-actions">
-                    <button class="btn action copy" type="button" onclick='copyToClipboard({{ l.bot_url|tojson }})'>
-                      <span>Копировать ссылку</span>
-                    </button>
+                      <div class="link-actions">
+                        <button class="btn action copy" type="button" onclick='copyToClipboard({{ l.bot_url|tojson }})'>
+                          <span>Копировать ссылку</span>
+                        </button>
 
-                    <form method="post" action="{{ urlp('/worker/accounts/links') }}/{{ l.code }}/toggle" class="inline-form">
-                      <input type="hidden" name="next_url" value="{{ detail_self_url }}">
-                      <input type="hidden" name="active" value="{% if l.is_active %}0{% else %}1{% endif %}">
-                      <button class="btn action" type="submit">
-                        <span>{% if l.is_active %}Выключить{% else %}Включить{% endif %}</span>
-                      </button>
-                    </form>
+                        <form method="post" action="{{ urlp('/worker/accounts/links') }}/{{ l.code }}/toggle" class="inline-form">
+                          <input type="hidden" name="next_url" value="{{ detail_self_url }}">
+                          <input type="hidden" name="active" value="{% if l.is_active %}0{% else %}1{% endif %}">
+                          <button class="btn action" type="submit">
+                            <span>{% if l.is_active %}Выключить{% else %}Включить{% endif %}</span>
+                          </button>
+                        </form>
 
-                    <form method="post" action="{{ urlp('/worker/accounts/links') }}/{{ l.code }}/delete" class="inline-form">
-                      <input type="hidden" name="next_url" value="{{ detail_self_url }}">
-                      <button class="btn action delete" type="submit">
-                        <span>Удалить</span>
-                      </button>
-                    </form>
-                  </div>
+                        <form method="post" action="{{ urlp('/worker/accounts/links') }}/{{ l.code }}/delete" class="inline-form">
+                          <input type="hidden" name="next_url" value="{{ detail_self_url }}">
+                          <button class="btn action delete" type="submit">
+                            <span>Удалить</span>
+                          </button>
+                        </form>
+                      </div>
+                    </div>
+                  {% endfor %}
                 </div>
-              {% endfor %}
+              {% else %}
+                <form method="post" action="{{ urlp('/worker/accounts') }}/{{ account.id }}/links">
+                  <input type="hidden" name="next_url" value="{{ detail_self_url }}">
+                  <input type="hidden" name="return_to" value="{{ return_to }}">
+                  <input type="hidden" name="name" value="Основная ссылка">
+                  <button class="btn primary sm" type="submit">Создать системную ссылку</button>
+                </form>
+              {% endif %}
             </div>
-          {% else %}
-            <div class="hint">Ссылки пока нет.</div>
-            <form method="post" action="{{ urlp('/worker/accounts') }}/{{ account.id }}/links" class="mt-sm">
-              <input type="hidden" name="next_url" value="{{ detail_self_url }}">
-              <input type="hidden" name="return_to" value="{{ return_to }}">
-              <input type="hidden" name="name" value="Основная ссылка">
-              <button class="btn primary sm" type="submit">Создать системную ссылку</button>
-            </form>
-          {% endif %}
+          </details>
         </div>
       </section>
     {% endif %}

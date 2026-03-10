@@ -3,16 +3,18 @@
 {% block content %}
   <div class="grid">
     <section class="card">
-      <header class="card__header">
-        <h2 class="card__title">Сводка</h2>
-      </header>
       <div class="card__body">
-        <div class="grid cols-4">
-          {% set kpi_label = 'Всего аккаунтов' %}{% set kpi_value = overview.total %}{% include "_kpi.html" %}
-          {% set kpi_label = 'YouTube' %}{% set kpi_value = overview.youtube %}{% include "_kpi.html" %}
-          {% set kpi_label = 'TikTok' %}{% set kpi_value = overview.tiktok %}{% include "_kpi.html" %}
-          {% set kpi_label = 'Instagram' %}{% set kpi_value = overview.instagram %}{% include "_kpi.html" %}
-        </div>
+        <details class="service-details">
+          <summary class="service-details__summary">Сводка</summary>
+          <div class="service-details__body">
+            <div class="grid cols-4">
+              {% set kpi_label = 'Всего аккаунтов' %}{% set kpi_value = overview.total %}{% include "_kpi.html" %}
+              {% set kpi_label = 'YouTube' %}{% set kpi_value = overview.youtube %}{% include "_kpi.html" %}
+              {% set kpi_label = 'TikTok' %}{% set kpi_value = overview.tiktok %}{% include "_kpi.html" %}
+              {% set kpi_label = 'Instagram' %}{% set kpi_value = overview.instagram %}{% include "_kpi.html" %}
+            </div>
+          </div>
+        </details>
       </div>
     </section>
 
@@ -115,99 +117,94 @@
     </section>
 
     <section class="card">
-      <header class="card__header">
-        <h2 class="card__title">Импорт аккаунтов</h2>
-      </header>
       <div class="card__body">
-        <form method="post" action="{{ urlp('/accounts/import') }}" class="grid accounts-grid" enctype="multipart/form-data">
-          <input type="hidden" name="q" value="{{ q or '' }}">
-          <input type="hidden" name="filter_type" value="{{ type or '' }}">
-          <input type="hidden" name="filter_worker" value="{{ worker or '' }}">
-          <input type="hidden" name="filter_rotation_state" value="{{ rotation_state or '' }}">
-          <input type="hidden" name="filter_views_state" value="{{ views_state or '' }}">
+        <details class="service-details">
+          <summary class="service-details__summary">Импорт аккаунтов</summary>
+          <div class="service-details__body">
+            <form method="post" action="{{ urlp('/accounts/import') }}" class="grid accounts-grid" enctype="multipart/form-data">
+              <input type="hidden" name="q" value="{{ q or '' }}">
+              <input type="hidden" name="filter_type" value="{{ type or '' }}">
+              <input type="hidden" name="filter_worker" value="{{ worker or '' }}">
+              <input type="hidden" name="filter_rotation_state" value="{{ rotation_state or '' }}">
+              <input type="hidden" name="filter_views_state" value="{{ views_state or '' }}">
 
-          <div class="field">
-            <label class="label">Тип для всех строк</label>
-            <select class="input" name="import_type" required>
-              {% for t in type_options %}
-                <option value="{{ t.key }}">{{ t.label }}</option>
-              {% endfor %}
-            </select>
-          </div>
-
-          <div class="field">
-            <label class="label">Работник-владелец</label>
-            <select class="input" name="import_owner_worker_id">
-              <option value="">Без работника</option>
-              {% for w in workers %}
-                <option value="{{ w.id }}">{{ w.name }} (@{{ w.username }})</option>
-              {% endfor %}
-            </select>
-          </div>
-
-          <div class="field accounts-grid-wide">
-            <label class="label">Файл `csv` или `txt`</label>
-            <input class="input" type="file" name="import_file" accept=".csv,.txt,text/plain,text/csv" required>
-          </div>
-
-          <div class="field accounts-grid-wide">
-            <details class="service-details">
-              <summary class="service-details__summary">Требования к файлу</summary>
-              <div class="service-details__body hint">
-                Формат строки: <span class="mono">login;password;email;email_password;2fa</span>.<br>
-                Обязательные поля: <span class="mono">login</span>, <span class="mono">password</span>, <span class="mono">email</span>, <span class="mono">email_password</span>.<br>
-                Поддерживаются разделители: <span class="mono">;</span>, <span class="mono">,</span>, <span class="mono">tab</span>, <span class="mono">|</span>, <span class="mono">:</span>.<br>
-                Для импортированных аккаунтов <span class="mono">username</span> временно берётся из логина.
+              <div class="field">
+                <label class="label">Тип для всех строк</label>
+                <select class="input" name="import_type" required>
+                  {% for t in type_options %}
+                    <option value="{{ t.key }}">{{ t.label }}</option>
+                  {% endfor %}
+                </select>
               </div>
-            </details>
-          </div>
 
-          <div class="accounts-grid-wide row">
-            <button class="btn primary" type="submit">Импортировать файл</button>
-          </div>
-        </form>
-
-        {% if import_summary %}
-          <div class="mt-sm">
-            <div class="detail-stats">
-              <span class="pill">Файл: {{ import_summary.filename or '—' }}</span>
-              <span class="pill">Импортировано: {{ import_summary.imported }}</span>
-              <span class="pill">Ошибок: {{ import_summary.failed }}</span>
-            </div>
-            <div class="hint mt-sm">{{ import_summary.username_rule }}</div>
-          </div>
-        {% endif %}
-
-        {% if import_errors and import_errors|length > 0 %}
-          <div class="list mt-sm">
-            {% for item in import_errors[:20] %}
-              <div class="listitem">
-                <div class="hint">{{ item }}</div>
+              <div class="field">
+                <label class="label">Работник-владелец</label>
+                <select class="input" name="import_owner_worker_id">
+                  <option value="">Без работника</option>
+                  {% for w in workers %}
+                    <option value="{{ w.id }}">{{ w.name }} (@{{ w.username }})</option>
+                  {% endfor %}
+                </select>
               </div>
-            {% endfor %}
+
+              <div class="field accounts-grid-wide">
+                <label class="label">Файл `csv` или `txt`</label>
+                <input class="input" type="file" name="import_file" accept=".csv,.txt,text/plain,text/csv" required>
+              </div>
+
+              <div class="field accounts-grid-wide">
+                <details class="service-details">
+                  <summary class="service-details__summary">Требования к файлу</summary>
+                  <div class="service-details__body hint">
+                    Формат строки: <span class="mono">login;password;email;email_password;2fa</span>.<br>
+                    Обязательные поля: <span class="mono">login</span>, <span class="mono">password</span>, <span class="mono">email</span>, <span class="mono">email_password</span>.<br>
+                    Поддерживаются разделители: <span class="mono">;</span>, <span class="mono">,</span>, <span class="mono">tab</span>, <span class="mono">|</span>, <span class="mono">:</span>.<br>
+                    Для импортированных аккаунтов <span class="mono">username</span> временно берётся из логина.
+                  </div>
+                </details>
+              </div>
+
+              <div class="accounts-grid-wide row">
+                <button class="btn primary" type="submit">Импортировать файл</button>
+              </div>
+            </form>
+
+            {% if import_summary %}
+              <div class="mt-sm">
+                <div class="detail-stats">
+                  <span class="pill">Файл: {{ import_summary.filename or '—' }}</span>
+                  <span class="pill">Импортировано: {{ import_summary.imported }}</span>
+                  <span class="pill">Ошибок: {{ import_summary.failed }}</span>
+                </div>
+                <div class="hint mt-sm">{{ import_summary.username_rule }}</div>
+              </div>
+            {% endif %}
+
+            {% if import_errors and import_errors|length > 0 %}
+              <div class="list mt-sm">
+                {% for item in import_errors[:20] %}
+                  <div class="listitem">
+                    <div class="hint">{{ item }}</div>
+                  </div>
+                {% endfor %}
+              </div>
+              {% if import_errors|length > 20 %}
+                <div class="hint mt-sm">Показаны первые 20 ошибок из {{ import_errors|length }}.</div>
+              {% endif %}
+            {% endif %}
           </div>
-          {% if import_errors|length > 20 %}
-            <div class="hint mt-sm">Показаны первые 20 ошибок из {{ import_errors|length }}.</div>
-          {% endif %}
-        {% endif %}
+        </details>
       </div>
     </section>
 
     <section class="card">
       <header class="card__header">
         <h2 class="card__title">Список аккаунтов</h2>
-        <form method="post" action="{{ urlp('/accounts/instagram/audits') }}" class="inline-form">
-          <input type="hidden" name="q" value="{{ q or '' }}">
-          <input type="hidden" name="filter_type" value="instagram">
-          <input type="hidden" name="filter_worker" value="{{ worker or '' }}">
-          <input type="hidden" name="filter_rotation_state" value="{{ rotation_state or '' }}">
-          <input type="hidden" name="filter_views_state" value="{{ views_state or '' }}">
-          <button class="btn primary sm" type="submit">Проверить входы Instagram</button>
-        </form>
       </header>
       <div class="card__body">
-        <div class="section-note mb-sm">Проверка входов запускается отдельной задачей и проходит по текущей выборке Instagram-аккаунтов.</div>
         <form method="get" action="{{ urlp('/accounts') }}" class="row filters-row">
+          <input type="hidden" name="worker" value="{{ worker or '' }}">
+          <input type="hidden" name="views_state" value="{{ views_state or '' }}">
           <input class="input input-sm" name="q" value="{{ q or '' }}" placeholder="Поиск по логину / username / почте / proxy">
           <select class="input input-sm" name="type">
             <option value="">Все типы</option>
@@ -215,24 +212,10 @@
               <option value="{{ t.key }}" {% if type == t.key %}selected{% endif %}>{{ t.label }}</option>
             {% endfor %}
           </select>
-          <select class="input input-sm" name="worker">
-            <option value="" {% if (worker or '') == '' %}selected{% endif %}>Все работники</option>
-            <option value="none" {% if (worker or '') == 'none' %}selected{% endif %}>Без работника</option>
-            {% for w in workers %}
-              <option value="{{ w.id }}" {% if (worker|string) == (w.id|string) %}selected{% endif %}>{{ w.name }} (@{{ w.username }})</option>
-            {% endfor %}
-          </select>
           <select class="input input-sm" name="rotation_state">
-            <option value="">Все статусы аккаунта</option>
-            {% for item in rotation_state_options %}
-              <option value="{{ item.key }}" {% if rotation_state == item.key %}selected{% endif %}>{{ item.label }}</option>
-            {% endfor %}
-          </select>
-          <select class="input input-sm" name="views_state">
-            <option value="">Все статусы просмотров</option>
-            {% for item in views_state_options %}
-              <option value="{{ item.key }}" {% if views_state == item.key %}selected{% endif %}>{{ item.label }}</option>
-            {% endfor %}
+            <option value="">Все статусы</option>
+            <option value="working" {% if rotation_state == 'working' %}selected{% endif %}>Рабочий</option>
+            <option value="not_working" {% if rotation_state == 'not_working' %}selected{% endif %}>Нерабочий</option>
           </select>
           <button class="btn primary sm" type="submit">Применить</button>
           {% if q or type or worker or rotation_state or views_state %}
@@ -240,42 +223,92 @@
           {% endif %}
         </form>
 
+        <details class="service-details mt-sm">
+          <summary class="service-details__summary">Дополнительно</summary>
+          <div class="service-details__body">
+            <form method="get" action="{{ urlp('/accounts') }}" class="row filters-row">
+              <input type="hidden" name="q" value="{{ q or '' }}">
+              <input type="hidden" name="type" value="{{ type or '' }}">
+              <input type="hidden" name="rotation_state" value="{{ rotation_state or '' }}">
+              <select class="input input-sm" name="worker">
+                <option value="" {% if (worker or '') == '' %}selected{% endif %}>Все работники</option>
+                <option value="none" {% if (worker or '') == 'none' %}selected{% endif %}>Без работника</option>
+                {% for w in workers %}
+                  <option value="{{ w.id }}" {% if (worker|string) == (w.id|string) %}selected{% endif %}>{{ w.name }} (@{{ w.username }})</option>
+                {% endfor %}
+              </select>
+              <select class="input input-sm" name="views_state">
+                <option value="">Все статусы просмотров</option>
+                {% for item in views_state_options %}
+                  <option value="{{ item.key }}" {% if views_state == item.key %}selected{% endif %}>{{ item.label }}</option>
+                {% endfor %}
+              </select>
+              <button class="btn primary sm" type="submit">Применить</button>
+            </form>
+
+            <form method="post" action="{{ urlp('/accounts/instagram/audits') }}" class="inline-form mt-sm">
+              <input type="hidden" name="q" value="{{ q or '' }}">
+              <input type="hidden" name="filter_type" value="instagram">
+              <input type="hidden" name="filter_worker" value="{{ worker or '' }}">
+              <input type="hidden" name="filter_rotation_state" value="{{ rotation_state or '' }}">
+              <input type="hidden" name="filter_views_state" value="{{ views_state or '' }}">
+              <button class="btn primary sm" type="submit">Проверить входы Instagram</button>
+            </form>
+          </div>
+        </details>
+
         <div class="accounts-cards mt-sm">
           {% for a in accounts %}
             <article class="account-card">
               <div class="account-card__head">
-                <div class="listitem__title">Аккаунт {{ a.type_label }} · @{{ a.username }}</div>
+                <div>
+                  <div class="listitem__title">Аккаунт {{ a.type_label }}</div>
+                  <div class="hint mono">@{{ a.username }}</div>
+                </div>
                 <div class="row">
                   <a class="btn primary sm" href="{{ urlp('/accounts') }}/{{ a.id }}">Открыть</a>
-                  {% if a.has_profile_url %}
-                    <a class="btn action" href="{{ a.profile_url }}" target="_blank" rel="noopener noreferrer">
-                      <span>Открыть профиль</span>
-                    </a>
-                  {% endif %}
                 </div>
               </div>
 
               <div class="account-card__meta">
-                {% if a.audit_joke_label %}
-                  <span class="status-pill {{ a.audit_joke_class }}">Аккаунт: {{ a.audit_joke_label }}</span>
-                {% endif %}
-                {% if a.views_short_label %}
-                  <span class="status-pill {{ a.views_state_class }}">Просмотры: {{ a.views_short_label }}</span>
-                {% endif %}
-                <span class="brand__tag">{{ a.owner_label }}</span>
-                <span class="hint">Обновлено: {{ a.updated_at|dt }}</span>
+                <span class="pill">Переходов: {{ a.starts_unique_total }}</span>
+                <span class="status-pill {% if a.rotation_state == 'working' %}working{% else %}not_working{% endif %}">
+                  {% if a.rotation_state == 'working' %}Рабочий{% else %}Нерабочий{% endif %}
+                </span>
               </div>
 
-              {% if a.primary_bot_url %}
-                <div class="account-card__actions">
-                  <span class="hint mono">{{ a.primary_bot_url }}</span>
-                  <button class="btn action copy" type="button" onclick='copyToClipboard({{ a.primary_bot_url|tojson }})'>
-                    <span>Копировать ссылку</span>
-                  </button>
+              <details class="service-details mt-sm">
+                <summary class="service-details__summary">Детали</summary>
+                <div class="service-details__body">
+                  <div class="detail-stats">
+                    <span class="pill">{{ a.owner_label }}</span>
+                    <span class="hint">Обновлено: {{ a.updated_at|dt }}</span>
+                    {% if a.views_short_label %}
+                      <span class="status-pill {{ a.views_state_class }}">Просмотры: {{ a.views_short_label }}</span>
+                    {% endif %}
+                    {% if a.audit_joke_label %}
+                      <span class="status-pill {{ a.audit_joke_class }}">Аккаунт: {{ a.audit_joke_label }}</span>
+                    {% endif %}
+                  </div>
+
+                  {% if a.has_profile_url %}
+                    <div class="row mt-sm">
+                      <a class="btn action" href="{{ a.profile_url }}" target="_blank" rel="noopener noreferrer">
+                        <span>Открыть профиль</span>
+                      </a>
+                    </div>
+                  {% endif %}
+
+                  {% if a.primary_bot_url %}
+                    <div class="account-card__actions mt-sm">
+                      <span class="hint mono">{{ a.primary_bot_url }}</span>
+                      <button class="btn action copy" type="button" onclick='copyToClipboard({{ a.primary_bot_url|tojson }})'>
+                        <span>Копировать ссылку</span>
+                      </button>
+                    </div>
+                  {% endif %}
                 </div>
-              {% else %}
-                <div class="hint">Ссылка пока не создана.</div>
-              {% endif %}
+              </details>
             </article>
           {% endfor %}
         </div>
@@ -287,40 +320,42 @@
     </section>
 
     <section class="card">
-      <header class="card__header">
-        <h2 class="card__title">Заявки на передачу аккаунтов</h2>
-      </header>
       <div class="card__body">
-        {% if claim_requests and claim_requests|length > 0 %}
-          <div class="list">
-            {% for item in claim_requests %}
-              <div class="listitem">
-                <div class="row row-between row-start">
-                  <div>
-                    <div class="listitem__title">{{ item.type_label }} · {{ item.account_login }}</div>
-                    <div class="listitem__meta">
-                      <span class="brand__tag">Текущий владелец: <strong>{{ item.owner_label }}</strong></span>
-                      <span class="brand__tag">Запросил: <strong>{{ item.requested_label }}</strong></span>
-                      <span class="hint">Создано: {{ item.created_at|dt }}</span>
+        <details class="service-details">
+          <summary class="service-details__summary">Заявки на передачу аккаунтов</summary>
+          <div class="service-details__body">
+            {% if claim_requests and claim_requests|length > 0 %}
+              <div class="list">
+                {% for item in claim_requests %}
+                  <div class="listitem">
+                    <div class="row row-between row-start">
+                      <div>
+                        <div class="listitem__title">{{ item.type_label }} · {{ item.account_login }}</div>
+                        <div class="listitem__meta">
+                          <span class="brand__tag">Текущий владелец: <strong>{{ item.owner_label }}</strong></span>
+                          <span class="brand__tag">Запросил: <strong>{{ item.requested_label }}</strong></span>
+                          <span class="hint">Создано: {{ item.created_at|dt }}</span>
+                        </div>
+                      </div>
+                      <div class="listitem__actions actions no-margin-top">
+                        <form method="post" action="{{ urlp('/accounts/claim-requests') }}/{{ item.id }}/approve" class="inline-form">
+                          <input type="hidden" name="next_url" value="{{ accounts_list_url|default(urlp('/accounts')) }}">
+                          <button class="btn primary sm" type="submit">Передать аккаунт</button>
+                        </form>
+                        <form method="post" action="{{ urlp('/accounts/claim-requests') }}/{{ item.id }}/reject" class="inline-form">
+                          <input type="hidden" name="next_url" value="{{ accounts_list_url|default(urlp('/accounts')) }}">
+                          <button class="btn action delete" type="submit">Отклонить</button>
+                        </form>
+                      </div>
                     </div>
                   </div>
-                  <div class="listitem__actions actions no-margin-top">
-                    <form method="post" action="{{ urlp('/accounts/claim-requests') }}/{{ item.id }}/approve" class="inline-form">
-                      <input type="hidden" name="next_url" value="{{ accounts_list_url|default(urlp('/accounts')) }}">
-                      <button class="btn primary sm" type="submit">Передать аккаунт</button>
-                    </form>
-                    <form method="post" action="{{ urlp('/accounts/claim-requests') }}/{{ item.id }}/reject" class="inline-form">
-                      <input type="hidden" name="next_url" value="{{ accounts_list_url|default(urlp('/accounts')) }}">
-                      <button class="btn action delete" type="submit">Отклонить</button>
-                    </form>
-                  </div>
-                </div>
+                {% endfor %}
               </div>
-            {% endfor %}
+            {% else %}
+              <div class="hint">Заявок пока нет.</div>
+            {% endif %}
           </div>
-        {% else %}
-          <div class="hint">Заявок пока нет.</div>
-        {% endif %}
+        </details>
       </div>
     </section>
   </div>

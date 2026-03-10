@@ -100,21 +100,34 @@
           {% for a in accounts %}
             <article class="account-card" id="{{ a.card_id }}">
               <div class="account-card__head">
-                <div class="listitem__title">{{ a.type_label }} · @{{ a.username }}</div>
-                <a class="btn primary sm" href="{{ urlp(a.detail_url) }}">Открыть</a>
+                <div>
+                  <div class="listitem__title">Аккаунт {{ a.type_label }}</div>
+                  <div class="hint mono">@{{ a.username }}</div>
+                </div>
+                <div class="row">
+                  <a class="btn primary sm" href="{{ urlp(a.detail_url) }}">Открыть</a>
+                </div>
               </div>
               <div class="account-card__meta">
-                <span class="pill">Перешло: {{ a.starts_unique_total }}</span>
-                <span class="hint">Обновлено: {{ a.updated_at|dt }}</span>
+                <span class="pill">Переходов: {{ a.starts_unique_total }}</span>
+                <span class="status-pill {% if a.rotation_state == 'working' %}working{% else %}not_working{% endif %}">
+                  {% if a.rotation_state == 'working' %}Рабочий{% else %}Нерабочий{% endif %}
+                </span>
               </div>
-              {% if a.primary_bot_url %}
-                <div class="account-card__actions">
-                  <span class="hint mono">{{ a.primary_bot_url }}</span>
-                  <button class="btn action copy" type="button" onclick='copyToClipboard({{ a.primary_bot_url|tojson }})'>Копировать ссылку</button>
+              <details class="service-details mt-sm">
+                <summary class="service-details__summary">Детали</summary>
+                <div class="service-details__body">
+                  <div class="detail-stats">
+                    <span class="hint">Обновлено: {{ a.updated_at|dt }}</span>
+                  </div>
+                  {% if a.primary_bot_url %}
+                    <div class="account-card__actions mt-sm">
+                      <span class="hint mono">{{ a.primary_bot_url }}</span>
+                      <button class="btn action copy" type="button" onclick='copyToClipboard({{ a.primary_bot_url|tojson }})'>Копировать ссылку</button>
+                    </div>
+                  {% endif %}
                 </div>
-              {% else %}
-                <div class="hint">Ссылка пока не создана.</div>
-              {% endif %}
+              </details>
             </article>
           {% endfor %}
         </div>
