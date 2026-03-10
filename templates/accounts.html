@@ -21,12 +21,7 @@
         <h2 class="card__title">Добавить аккаунт</h2>
       </header>
       <div class="card__body">
-        {% if error %}
-          <div class="error mb-sm">{{ error }}</div>
-        {% endif %}
-        {% if success %}
-          <div class="hint mb-sm">{{ success }}</div>
-        {% endif %}
+        {% with extra_class='mb-sm' %}{% include "_flash.html" %}{% endwith %}
 
         <form method="post" action="{{ urlp('/accounts') }}" class="grid accounts-grid">
           <input type="hidden" name="q" value="{{ q or '' }}">
@@ -55,7 +50,7 @@
           </div>
 
           <div class="field">
-            <label class="label">Username</label>
+            <label class="label">Имя профиля</label>
             <input class="input" name="username" required>
           </div>
 
@@ -75,7 +70,7 @@
           </div>
 
           <div class="field accounts-grid-wide">
-            <label class="label">Instagram emulator serial</label>
+            <label class="label">Серийный номер эмулятора Instagram</label>
             <input class="input mono" name="instagram_emulator_serial" placeholder="например: emulator-5554">
           </div>
 
@@ -156,12 +151,15 @@
           </div>
 
           <div class="field accounts-grid-wide">
-            <div class="hint">
-              Формат строки: <span class="mono">login;password;email;email_password;2fa</span><br>
-              Обязательные поля: <span class="mono">login</span>, <span class="mono">password</span>, <span class="mono">email</span>, <span class="mono">email_password</span>. Поле <span class="mono">2fa</span> можно не указывать.<br>
-              Поддерживаются разделители: <span class="mono">;</span>, <span class="mono">,</span>, <span class="mono">tab</span>, <span class="mono">|</span>, <span class="mono">:</span>.<br>
-              Для импортированных аккаунтов <span class="mono">username</span> временно берётся из логина.
-            </div>
+            <details class="service-details">
+              <summary class="service-details__summary">Требования к файлу</summary>
+              <div class="service-details__body hint">
+                Формат строки: <span class="mono">login;password;email;email_password;2fa</span>.<br>
+                Обязательные поля: <span class="mono">login</span>, <span class="mono">password</span>, <span class="mono">email</span>, <span class="mono">email_password</span>.<br>
+                Поддерживаются разделители: <span class="mono">;</span>, <span class="mono">,</span>, <span class="mono">tab</span>, <span class="mono">|</span>, <span class="mono">:</span>.<br>
+                Для импортированных аккаунтов <span class="mono">username</span> временно берётся из логина.
+              </div>
+            </details>
           </div>
 
           <div class="accounts-grid-wide row">
@@ -198,8 +196,17 @@
     <section class="card">
       <header class="card__header">
         <h2 class="card__title">Список аккаунтов</h2>
+        <form method="post" action="{{ urlp('/accounts/instagram/audits') }}" class="inline-form">
+          <input type="hidden" name="q" value="{{ q or '' }}">
+          <input type="hidden" name="filter_type" value="instagram">
+          <input type="hidden" name="filter_worker" value="{{ worker or '' }}">
+          <input type="hidden" name="filter_rotation_state" value="{{ rotation_state or '' }}">
+          <input type="hidden" name="filter_views_state" value="{{ views_state or '' }}">
+          <button class="btn primary sm" type="submit">Проверить входы Instagram</button>
+        </form>
       </header>
       <div class="card__body">
+        <div class="section-note mb-sm">Проверка входов запускается отдельной задачей и проходит по текущей выборке Instagram-аккаунтов.</div>
         <form method="get" action="{{ urlp('/accounts') }}" class="row filters-row">
           <input class="input input-sm" name="q" value="{{ q or '' }}" placeholder="Поиск по логину / username / почте / proxy">
           <select class="input input-sm" name="type">
@@ -249,33 +256,15 @@
               </div>
 
               <div class="account-card__meta">
-                <span class="pill">Перешло: {{ a.starts_unique_total }}</span>
-                <span class="pill">Ссылок: {{ a.links_total }}</span>
-                <span class="pill">ID: {{ a.id }}</span>
-                <span class="pill">Handle: @{{ a.identity_handle }}</span>
-                {% if a.instagram_emulator_serial %}
-                  <span class="pill mono">Emulator: {{ a.instagram_emulator_serial }}</span>
+                {% if a.audit_joke_label %}
+                  <span class="status-pill {{ a.audit_joke_class }}">Аккаунт: {{ a.audit_joke_label }}</span>
                 {% endif %}
-                <span class="status-pill {{ a.rotation_state_class }}">{{ a.rotation_state_label }}</span>
-                <span class="status-pill {{ a.views_state_class }}">{{ a.views_state_label }}</span>
-                <span class="status-pill {{ a.mail_status_class }}">{{ a.mail_status_label }}</span>
-                <span class="status-pill {{ a.instagram_launch_status_class }}">{{ a.instagram_launch_status_label }}</span>
-                <span class="status-pill {{ a.instagram_publish_status_class }}">{{ a.instagram_publish_status_label }}</span>
+                {% if a.views_short_label %}
+                  <span class="status-pill {{ a.views_state_class }}">Просмотры: {{ a.views_short_label }}</span>
+                {% endif %}
                 <span class="brand__tag">{{ a.owner_label }}</span>
-                {% if a.mail_last_checked_at %}
-                  <span class="hint">Почта: {{ a.mail_last_checked_at|dt }}</span>
-                {% endif %}
-                {% if a.instagram_launch_updated_at %}
-                  <span class="hint">Instagram helper: {{ a.instagram_launch_updated_at|dt }}</span>
-                {% endif %}
                 <span class="hint">Обновлено: {{ a.updated_at|dt }}</span>
               </div>
-              {% if a.instagram_launch_detail %}
-                <div class="hint">{{ a.instagram_launch_detail }}</div>
-              {% endif %}
-              {% if a.instagram_publish_detail %}
-                <div class="hint mt-sm">{{ a.instagram_publish_detail }}</div>
-              {% endif %}
 
               {% if a.primary_bot_url %}
                 <div class="account-card__actions">

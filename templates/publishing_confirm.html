@@ -1,0 +1,84 @@
+{% extends "base.html" %}
+{% block title %}Подтверждение пакета{% endblock %}
+{% block content %}
+  <div class="grid cols-2">
+    <section class="card">
+      <header class="card__header">
+        <h2 class="card__title">2. Подтверди запуск</h2>
+      </header>
+      <div class="card__body">
+        {% with extra_class='mb-sm' %}{% include "_flash.html" %}{% endwith %}
+
+        <div class="detail-stats mb-sm">
+          <span class="pill">Аккаунтов: {{ accounts_total }}</span>
+        </div>
+        <div class="section-note mb-sm">
+          После подтверждения пакет будет создан, видео начнут генерироваться автоматически, а публикация запустится по мере готовности файлов.
+        </div>
+        <details class="service-details mb-md">
+          <summary class="service-details__summary">Служебные детали</summary>
+          <div class="service-details__body">
+            <div class="detail-stats">
+              <span class="pill">Сценарий: {{ publish_workflow_key }}</span>
+              <span class="pill mono">Папка staging: {{ staging_root }}</span>
+            </div>
+          </div>
+        </details>
+
+        <div class="list mb-md">
+          {% for account in accounts %}
+            <div class="listitem">
+              <div class="row row-between row-start">
+                <div>
+                  <div class="listitem__title">@{{ account.username }}</div>
+                  <div class="listitem__meta">
+                    <span class="pill">ID: {{ account.id }}</span>
+                    <span class="pill mono">{{ account.account_login }}</span>
+                    <span class="pill mono">{{ account.instagram_emulator_serial }}</span>
+                    <span class="brand__tag">{{ account.owner_label }}</span>
+                    <span class="status-pill {% if account.twofa_ready %}on{% else %}review{% endif %}">
+                      {% if account.twofa_ready %}2FA готов{% else %}Нет 2FA{% endif %}
+                    </span>
+                  </div>
+                  {% if account.publish_warnings %}
+                    <div class="hint mt-sm">{{ account.publish_warnings|join(' ') }}</div>
+                  {% endif %}
+                </div>
+              </div>
+            </div>
+          {% endfor %}
+        </div>
+
+        <form method="post" action="{{ urlp('/publishing/batches') }}" class="row row-between">
+          {% for account_id in account_ids %}
+            <input type="hidden" name="account_ids" value="{{ account_id }}">
+          {% endfor %}
+          <a class="btn ghost" href="{{ urlp('/publishing/start') }}">Назад</a>
+          <button class="btn primary" type="submit">Запустить публикацию</button>
+        </form>
+      </div>
+    </section>
+
+    <section class="card">
+      <header class="card__header">
+        <h2 class="card__title">Что произойдёт дальше</h2>
+      </header>
+        <div class="card__body">
+          <div class="list">
+            <div class="listitem">
+              <div class="listitem__title">1. Генерация видео</div>
+              <div class="hint mt-sm">Для каждого выбранного аккаунта создаётся отдельный файл.</div>
+            </div>
+            <div class="listitem">
+              <div class="listitem__title">2. Публикация</div>
+              <div class="hint mt-sm">Как только файл готов, он сразу уходит в публикацию для конкретного аккаунта.</div>
+            </div>
+            <div class="listitem">
+              <div class="listitem__title">3. Завершение</div>
+              <div class="hint mt-sm">После завершения будет виден итог по каждому аккаунту.</div>
+            </div>
+          </div>
+        </div>
+    </section>
+  </div>
+{% endblock %}

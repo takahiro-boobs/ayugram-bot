@@ -1,65 +1,77 @@
 {% extends "base.html" %}
-{% block title %}Batch публикации{% endblock %}
+{% block title %}Пакет публикации{% endblock %}
 {% block content %}
-  <div class="grid">
+  <div class="grid publish-dashboard">
     <section class="card">
       <header class="card__header">
-        <h2 class="card__title">Batch</h2>
+        <h2 class="card__title">Пакет</h2>
       </header>
       <div class="card__body">
-        <div class="row">
-          <a class="btn ghost sm" href="{{ urlp('/publishing') }}">Назад к batch-ам</a>
+        <div class="row row-between row-start">
+          <a class="btn ghost sm" href="{{ urlp('/publishing') }}">Назад к пакетам</a>
+          {% if batch %}
+            <a class="btn ghost sm" href="{{ urlp('/publishing') }}/start">Новая публикация</a>
+          {% endif %}
         </div>
-        {% if error %}
-          <div class="error mt-sm">{{ error }}</div>
-        {% endif %}
-        {% if success %}
-          <div class="hint mt-sm">{{ success }}</div>
-        {% endif %}
+        {% with extra_class='mt-sm' %}{% include "_flash.html" %}{% endwith %}
       </div>
     </section>
 
-    {% if not batch %}
+    {% if not batch or not dashboard_snapshot %}
       <section class="card">
         <div class="card__body">
-          <div class="hint">Batch не найден.</div>
+          <div class="hint">Пакет публикации не найден.</div>
         </div>
       </section>
     {% else %}
-      <section class="card">
-        <header class="card__header">
-          <h2 class="card__title">Batch #{{ batch.id }}</h2>
-        </header>
+      <section class="card publish-hero-card">
         <div class="card__body">
-          <div class="detail-stats">
-            <span class="status-pill {{ batch.state_class }}">{{ batch.state_label }}</span>
-            <span class="pill">Аккаунтов: {{ batch.accounts_total }}</span>
-            <span class="pill">Видео: {{ batch.artifacts_total }}</span>
-            <span class="pill">Jobs: {{ batch.jobs_total }}</span>
-            <span class="pill">Queued: {{ batch.queued_jobs }}</span>
-            <span class="pill">Running: {{ batch.leased_jobs + batch.running_jobs }}</span>
-            <span class="pill">OK: {{ batch.published_jobs }}</span>
-            <span class="pill">Fail: {{ batch.failed_jobs + batch.canceled_jobs }}</span>
-          </div>
-          <div class="list mt-sm">
-            <div class="listitem">
-              <div class="listitem__title">Сводка</div>
-              <div class="listitem__meta">
-                <span class="pill">Workflow: {{ batch.workflow_key }}</span>
-                <span class="pill">Создан: {{ batch.created_at|dt }}</span>
-                <span class="pill">Обновлён: {{ batch.updated_at|dt }}</span>
-                <span class="pill mono">Staging: {{ batch_stage_dir }}</span>
-              </div>
-              {% if batch.generation_started_at or batch.generation_completed_at or batch.completed_at %}
-                <div class="hint mt-sm">
-                  {% if batch.generation_started_at %}n8n start: {{ batch.generation_started_at|dt }}.{% endif %}
-                  {% if batch.generation_completed_at %} n8n done: {{ batch.generation_completed_at|dt }}.{% endif %}
-                  {% if batch.completed_at %} Final: {{ batch.completed_at|dt }}.{% endif %}
+          <div class="publish-hero">
+            <div class="publish-hero__main">
+              <div class="publish-hero__eyebrow">Статус пакета</div>
+              <div class="publish-hero__title-row">
+                <h2 class="publish-hero__title">Пакет #<span id="dashboard-batch-id">{{ batch.id }}</span></h2>
+                <div class="publish-hero__status-row">
+                  <span id="dashboard-live-badge" class="publish-live-badge{% if dashboard_snapshot.batch.is_terminal %} publish-live-badge--terminal{% endif %}">
+                    <span class="publish-live-badge__dot"></span>
+                    <span id="dashboard-live-label">{% if dashboard_snapshot.batch.is_terminal %}Завершён{% else %}Обновляется{% endif %}</span>
+                  </span>
+                  <span id="dashboard-state-pill" class="status-pill {{ batch.state_class }}">{{ batch.state_label }}</span>
                 </div>
-              {% endif %}
-              {% if batch.detail %}
-                <div class="hint mt-sm">{{ batch.detail }}</div>
-              {% endif %}
+              </div>
+              <div class="publish-hero__phase">
+                <div class="publish-stage-chip-row">
+                  <span id="dashboard-stage-chip" class="publish-stage-chip{% if not dashboard_snapshot.batch.is_terminal %} publish-stage-chip--active{% endif %}">
+                    {{ dashboard_snapshot.batch.phase_label }}
+                  </span>
+                </div>
+                <div class="publish-hero__phase-label" id="dashboard-phase-label">{{ dashboard_snapshot.batch.phase_label }}</div>
+                <div class="publish-hero__phase-subtitle hint" id="dashboard-phase-subtitle">{{ dashboard_snapshot.batch.phase_subtitle }}</div>
+              </div>
+              <div class="publish-progress">
+                <div class="publish-progress__meta">
+                  <span>Общий прогресс</span>
+                  <strong id="dashboard-progress-text">{{ dashboard_snapshot.batch.progress_pct }}%</strong>
+                </div>
+                <div class="publish-progress__track" aria-hidden="true">
+                  <div class="publish-progress__fill" id="dashboard-progress-fill" style="width: {{ dashboard_snapshot.batch.progress_pct }}%;"></div>
+                </div>
+              </div>
+            </div>
+            <div class="publish-hero__stats" id="dashboard-counts">
+              <span class="pill">Выбрано: {{ dashboard_snapshot.batch.counts.selected }}</span>
+              <span class="pill">Генерация: {{ dashboard_snapshot.batch.counts.generating }}</span>
+              <span class="pill">Видео готово: {{ dashboard_snapshot.batch.counts.ready }}</span>
+              <span class="pill">Публикация: {{ dashboard_snapshot.batch.counts.publishing }}</span>
+              <span class="pill">Готово: {{ dashboard_snapshot.batch.counts.published }}</span>
+              <span class="pill">Ошибки: {{ dashboard_snapshot.batch.counts.failed }}</span>
+            </div>
+            <div class="publish-hero__meta hint" id="dashboard-meta">
+              Сценарий: {{ dashboard_snapshot.batch.workflow_key }}.
+              Создан: {{ dashboard_snapshot.batch.created_at_label }}.
+              Обновлён: {{ dashboard_snapshot.batch.updated_at_label }}.
+              Папка staging: {{ dashboard_snapshot.batch.stage_dir }}.
+              {% if dashboard_snapshot.batch.stage_dir_exists %}Папка активна.{% else %}Папка очищена.{% endif %}
             </div>
           </div>
         </div>
@@ -67,132 +79,370 @@
 
       <section class="card">
         <header class="card__header">
+          <h2 class="card__title">Этапы</h2>
+        </header>
+        <div class="card__body">
+          <ol class="publish-step-line" id="dashboard-steps">
+            {% for step in dashboard_snapshot.batch.steps %}
+              <li class="publish-step publish-step--{{ step.status }}">
+                <span class="publish-step__dot"></span>
+                <span class="publish-step__label">{{ step.label }}</span>
+              </li>
+            {% endfor %}
+          </ol>
+          <div class="hint mt-sm">Страница обновляет статус сама, без перезагрузки.</div>
+        </div>
+      </section>
+
+      <section class="card">
+        <header class="card__header">
           <h2 class="card__title">Аккаунты</h2>
+          <span class="hint">Сначала активные, затем ожидающие, затем завершённые.</span>
         </header>
         <div class="card__body">
-          <div class="list">
-            {% for account in accounts %}
-              <div class="listitem">
-                <div class="row row-between row-start">
-                  <div>
-                    <div class="listitem__title">@{{ account.username }}</div>
-                    <div class="listitem__meta">
-                      <span class="pill">ID: {{ account.id }}</span>
-                      <span class="pill mono">{{ account.instagram_emulator_serial }}</span>
-                      <span class="brand__tag">{{ account.owner_label }}</span>
-                      <span class="status-pill {{ account.instagram_publish_status_class }}">{{ account.instagram_publish_status_label }}</span>
-                    </div>
-                  </div>
-                  <a class="btn action sm" href="{{ urlp('/accounts') }}/{{ account.id }}">Открыть</a>
-                </div>
-              </div>
-            {% endfor %}
-          </div>
+          <div id="dashboard-accounts" class="publish-accounts-grid"></div>
         </div>
       </section>
 
       <section class="card">
         <header class="card__header">
-          <h2 class="card__title">Видео batch-а</h2>
+          <h2 class="card__title">Последние события</h2>
+          <span class="hint">Последние события пакета</span>
         </header>
         <div class="card__body">
-          <div class="list">
-            {% for artifact in artifacts %}
-              <div class="listitem">
-                <div class="listitem__title">{{ artifact.filename }}</div>
-                <div class="listitem__meta">
-                  <span class="pill">ID: {{ artifact.id }}</span>
-                  <span class="pill">{{ artifact.size_label }}</span>
-                  <span class="pill">{{ artifact.duration_label }}</span>
-                  <span class="hint">{{ artifact.created_at|dt }}</span>
-                </div>
-                <div class="hint mt-sm mono">{{ artifact.path }}</div>
-              </div>
-            {% endfor %}
-          </div>
-          {% if artifacts|length == 0 %}
-            <div class="hint">n8n пока не прислал ни одного видео.</div>
-          {% endif %}
+          <div id="dashboard-recent-activity" class="publish-activity-list"></div>
         </div>
       </section>
 
-      <section class="card">
-        <header class="card__header">
-          <h2 class="card__title">Jobs</h2>
-        </header>
-        <div class="card__body">
-          <div class="list">
-            {% for job in jobs %}
-              <div class="listitem">
-                <div class="row row-between row-start">
-                  <div>
-                    <div class="listitem__title">Job #{{ job.id }} · @{{ job.identity_handle }} · {{ job.source_name }}</div>
-                    <div class="listitem__meta">
-                      <span class="status-pill {{ job.state_class }}">{{ job.state_label }}</span>
-                      <span class="pill mono">{{ job.emulator_serial }}</span>
-                      <span class="pill">Создан: {{ job.created_at|dt }}</span>
-                      {% if job.started_at %}<span class="pill">Старт: {{ job.started_at|dt }}</span>{% endif %}
-                      {% if job.completed_at %}<span class="pill">Финиш: {{ job.completed_at|dt }}</span>{% endif %}
-                    </div>
-                    {% if job.detail %}
-                      <div class="hint mt-sm">{{ job.detail }}</div>
-                    {% endif %}
-                    <div class="hint mt-sm mono">{{ job.source_path }}</div>
-                  </div>
-                </div>
-              </div>
-            {% endfor %}
+      <div class="grid cols-2">
+        <section class="card">
+          <header class="card__header">
+            <h2 class="card__title">Видео пакета</h2>
+          </header>
+          <div class="card__body">
+            <div id="dashboard-artifacts" class="list"></div>
           </div>
-          {% if jobs|length == 0 %}
-            <div class="hint">Jobs пока не созданы.</div>
-          {% endif %}
-        </div>
-      </section>
+        </section>
+
+        <section class="card">
+          <header class="card__header">
+            <h2 class="card__title">Задачи публикации</h2>
+          </header>
+          <div class="card__body">
+            <div id="dashboard-jobs" class="list"></div>
+          </div>
+        </section>
+      </div>
 
       <section class="card">
         <header class="card__header">
-          <h2 class="card__title">Event log</h2>
+          <h2 class="card__title">Диагностика</h2>
+          <span class="hint">Служебные события пакета</span>
         </header>
         <div class="card__body">
-          <div class="list">
-            {% for event in events %}
-              <div class="listitem">
-                <div class="row row-between row-start">
-                  <div>
-                    <div class="listitem__title">{{ event.state }}</div>
-                    <div class="listitem__meta">
-                      <span class="hint">{{ event.created_at|dt }}</span>
-                      {% if event.account_username %}
-                        <span class="brand__tag">@{{ event.account_username }}</span>
-                      {% endif %}
-                      {% if event.source_name %}
-                        <span class="pill">{{ event.source_name }}</span>
-                      {% endif %}
-                    </div>
-                    {% if event.detail %}
-                      <div class="hint mt-sm">{{ event.detail }}</div>
-                    {% endif %}
-                    {% if event.payload_preview %}
-                      <div class="hint mt-sm mono">{{ event.payload_preview }}</div>
-                    {% endif %}
-                  </div>
-                </div>
-              </div>
-            {% endfor %}
-          </div>
-          {% if events|length == 0 %}
-            <div class="hint">Лог ещё пустой.</div>
-          {% endif %}
+          <details class="publish-log-details" id="dashboard-raw-log-details">
+            <summary class="publish-log-details__summary">Показать журнал событий</summary>
+            <div id="dashboard-raw-events" class="list mt-sm"></div>
+          </details>
         </div>
       </section>
+
+      <script id="publish-dashboard-seed" type="application/json">{{ dashboard_snapshot | tojson }}</script>
+      <script>
+        (function () {
+          const seedEl = document.getElementById('publish-dashboard-seed');
+          if (!seedEl) return;
+
+          let snapshot = {};
+          try {
+            snapshot = JSON.parse(seedEl.textContent || '{}');
+          } catch (error) {
+            snapshot = {};
+          }
+
+          const escapeHtml = function (value) {
+            return String(value || '')
+              .replace(/&/g, '&amp;')
+              .replace(/</g, '&lt;')
+              .replace(/>/g, '&gt;')
+              .replace(/"/g, '&quot;')
+              .replace(/'/g, '&#39;');
+          };
+
+          const pill = function (text) {
+            return '<span class="pill">' + escapeHtml(text) + '</span>';
+          };
+
+          const statusPill = function (label, cls) {
+            return '<span class="status-pill ' + escapeHtml(cls || 'unknown') + '">' + escapeHtml(label || '—') + '</span>';
+          };
+
+          const renderCounts = function (counts) {
+            const safe = counts || {};
+            return [
+              pill('Выбрано: ' + Number(safe.selected || 0)),
+              pill('Генерация: ' + Number(safe.generating || 0)),
+              pill('Видео готово: ' + Number(safe.ready || 0)),
+              pill('Публикация: ' + Number(safe.publishing || 0)),
+              pill('Готово: ' + Number(safe.published || 0)),
+              pill('Ошибки: ' + Number(safe.failed || 0))
+            ].join('');
+          };
+
+          const renderSteps = function (steps) {
+            if (!Array.isArray(steps) || !steps.length) {
+              return '<li class="publish-step publish-step--pending"><span class="publish-step__dot"></span><span class="publish-step__label">Ожидание</span></li>';
+            }
+            return steps.map(function (step) {
+              return [
+                '<li class="publish-step publish-step--', escapeHtml(step.status || 'pending'), '">',
+                '<span class="publish-step__dot"></span>',
+                '<span class="publish-step__label">', escapeHtml(step.label || step.key || 'Шаг'), '</span>',
+                '</li>'
+              ].join('');
+            }).join('');
+          };
+
+          const renderAccounts = function (accounts) {
+            if (!Array.isArray(accounts) || !accounts.length) {
+              return '<div class="hint">Аккаунты пакета пока не найдены.</div>';
+            }
+            return accounts.map(function (account) {
+              const meta = [
+                pill('ID: ' + Number(account.id || 0)),
+                account.instagram_emulator_serial ? '<span class="pill mono">' + escapeHtml(account.instagram_emulator_serial) + '</span>' : '',
+                account.owner_label ? '<span class="brand__tag">' + escapeHtml(account.owner_label) + '</span>' : '',
+                statusPill(account.batch_state_label || '—', account.batch_state_class || 'unknown'),
+                account.job_state_label ? statusPill(account.job_state_label, account.job_state_class || 'unknown') : '',
+                statusPill(account.instagram_publish_status_label || '—', account.instagram_publish_status_class || 'unknown'),
+                '<span class="status-pill ' + (account.twofa_ready ? 'on' : 'review') + '">' + (account.twofa_ready ? '2FA готов' : 'Нет 2FA') + '</span>'
+              ].filter(Boolean).join('');
+
+              const details = [
+                account.phase_detail ? '<div class="hint mt-sm">' + escapeHtml(account.phase_detail) + '</div>' : '',
+                account.artifact_filename ? '<div class="hint mt-sm">Видео: ' + escapeHtml(account.artifact_filename) + '</div>' : '',
+                account.is_failed && account.instagram_publish_detail ? '<div class="hint mt-sm">' + escapeHtml(account.instagram_publish_detail) + '</div>' : ''
+              ].join('');
+
+              const actions = [
+                account.artifact_download_url ? '<a class="btn ghost sm" href="' + escapeHtml(account.artifact_download_url) + '">Скачать видео</a>' : '',
+                '<a class="btn action sm" href="' + escapeHtml(account.open_url || '#') + '">Открыть</a>'
+              ].filter(Boolean).join('');
+
+              return [
+                '<article class="publish-account-card ',
+                account.is_failed ? 'publish-account-card--failed ' : '',
+                account.is_active ? 'publish-account-card--active' : '',
+                '">',
+                '<div class="publish-account-card__head">',
+                '<div>',
+                '<div class="listitem__title">@', escapeHtml(account.username || account.account_login || ('аккаунт-' + Number(account.id || 0))), '</div>',
+                '<div class="listitem__meta">', meta, '</div>',
+                '</div>',
+                '<div class="publish-account-card__actions">', actions, '</div>',
+                '</div>',
+                '<div class="publish-account-card__phase">',
+                account.is_active ? '<div class="publish-account-card__live">В работе</div>' : '',
+                '<div class="publish-account-card__phase-title">', escapeHtml(account.phase_label || 'Ожидание'), '</div>',
+                '<div class="publish-account-card__progress-meta"><span>', escapeHtml(account.updated_at_label || '—'), '</span><strong>', Number(account.progress_pct || 0), '%</strong></div>',
+                '<div class="publish-progress publish-progress--mini"><div class="publish-progress__track" aria-hidden="true"><div class="publish-progress__fill" style="width: ', Number(account.progress_pct || 0), '%;"></div></div></div>',
+                details,
+                '</div>',
+                '</article>'
+              ].join('');
+            }).join('');
+          };
+
+          const renderActivity = function (events) {
+            if (!Array.isArray(events) || !events.length) {
+              return '<div class="hint">Событий пока нет.</div>';
+            }
+            return events.map(function (event) {
+              return [
+                '<div class="publish-activity-item">',
+                '<div class="publish-activity-item__head">',
+                statusPill(event.title || 'Событие', event.tone_class || 'unknown'),
+                '<span class="hint">', escapeHtml(event.created_at_label || '—'), '</span>',
+                '</div>',
+                '<div class="publish-activity-item__meta">',
+                event.account_username ? '<span class="brand__tag">@' + escapeHtml(event.account_username) + '</span>' : '',
+                event.source_name ? pill(event.source_name) : '',
+                '</div>',
+                event.detail ? '<div class="hint mt-sm">' + escapeHtml(event.detail) + '</div>' : '',
+                '</div>'
+              ].join('');
+            }).join('');
+          };
+
+          const renderArtifacts = function (artifacts) {
+            if (!Array.isArray(artifacts) || !artifacts.length) {
+              return '<div class="hint">Видео пока не пришли.</div>';
+            }
+            return artifacts.map(function (artifact) {
+              return [
+                '<div class="listitem">',
+                '<div class="row row-between row-start">',
+                '<div>',
+                '<div class="listitem__title">', escapeHtml(artifact.filename || 'файл'), '</div>',
+                '<div class="listitem__meta">',
+                pill('ID: ' + Number(artifact.id || 0)),
+                pill(artifact.size_label || '—'),
+                pill(artifact.duration_label || '—'),
+                '<span class="hint">', escapeHtml(artifact.created_at_label || '—'), '</span>',
+                '</div>',
+                '<div class="hint mt-sm mono">', escapeHtml(artifact.path || ''), '</div>',
+                '</div>',
+                '<a class="btn ghost sm" href="', escapeHtml(artifact.download_url || '#'), '">Скачать</a>',
+                '</div>',
+                '</div>'
+              ].join('');
+            }).join('');
+          };
+
+          const renderJobs = function (jobs) {
+            if (!Array.isArray(jobs) || !jobs.length) {
+              return '<div class="hint">Задачи пока не созданы.</div>';
+            }
+            return jobs.map(function (job) {
+              return [
+                '<div class="listitem">',
+                '<div class="row row-between row-start">',
+                '<div>',
+                '<div class="listitem__title">Задача #', Number(job.id || 0), ' · @', escapeHtml(job.identity_handle || 'аккаунт'), ' · ', escapeHtml(job.source_name || 'видео'), '</div>',
+                '<div class="listitem__meta">',
+                statusPill(job.state_label || '—', job.state_class || 'unknown'),
+                '<span class="pill mono">', escapeHtml(job.emulator_serial || ''), '</span>',
+                pill('Создан: ' + (job.created_at_label || '—')),
+                job.started_at ? pill('Старт: ' + (job.started_at_label || '—')) : '',
+                job.completed_at ? pill('Финиш: ' + (job.completed_at_label || '—')) : '',
+                '</div>',
+                job.detail ? '<div class="hint mt-sm">' + escapeHtml(job.detail) + '</div>' : '',
+                '<div class="hint mt-sm mono">' + escapeHtml(job.source_path || '') + '</div>',
+                '</div>',
+                '<a class="btn ghost sm" href="', escapeHtml(job.download_url || '#'), '">Скачать</a>',
+                '</div>',
+                '</div>'
+              ].join('');
+            }).join('');
+          };
+
+          const renderRawEvents = function (events) {
+            if (!Array.isArray(events) || !events.length) {
+              return '<div class="hint">Лог ещё пустой.</div>';
+            }
+            return events.map(function (event) {
+              return [
+                '<div class="listitem">',
+                '<div class="row row-between row-start">',
+                '<div>',
+                '<div class="listitem__title">', escapeHtml(event.state || event.title || 'event'), '</div>',
+                '<div class="listitem__meta">',
+                '<span class="hint">', escapeHtml(event.created_at_label || '—'), '</span>',
+                event.account_username ? '<span class="brand__tag">@' + escapeHtml(event.account_username) + '</span>' : '',
+                event.source_name ? pill(event.source_name) : '',
+                '</div>',
+                event.detail ? '<div class="hint mt-sm">' + escapeHtml(event.detail) + '</div>' : '',
+                event.payload_preview ? '<div class="hint mt-sm mono">' + escapeHtml(event.payload_preview) + '</div>' : '',
+                '</div>',
+                '</div>',
+                '</div>'
+              ].join('');
+            }).join('');
+          };
+
+          const renderSnapshot = function (data) {
+            snapshot = data || {};
+            const batch = snapshot.batch || {};
+            const progressPct = Number(batch.progress_pct || 0);
+            const progressFill = document.getElementById('dashboard-progress-fill');
+            const progressText = document.getElementById('dashboard-progress-text');
+            const batchIdEl = document.getElementById('dashboard-batch-id');
+            const statePillEl = document.getElementById('dashboard-state-pill');
+            const liveBadgeEl = document.getElementById('dashboard-live-badge');
+            const liveLabelEl = document.getElementById('dashboard-live-label');
+            const stageChipEl = document.getElementById('dashboard-stage-chip');
+            const phaseLabelEl = document.getElementById('dashboard-phase-label');
+            const phaseSubtitleEl = document.getElementById('dashboard-phase-subtitle');
+            const countsEl = document.getElementById('dashboard-counts');
+            const metaEl = document.getElementById('dashboard-meta');
+            const stepsEl = document.getElementById('dashboard-steps');
+            const accountsEl = document.getElementById('dashboard-accounts');
+            const recentEl = document.getElementById('dashboard-recent-activity');
+            const artifactsEl = document.getElementById('dashboard-artifacts');
+            const jobsEl = document.getElementById('dashboard-jobs');
+            const rawEventsEl = document.getElementById('dashboard-raw-events');
+
+            if (batchIdEl) batchIdEl.textContent = String(batch.id || '');
+            if (statePillEl) {
+              statePillEl.className = 'status-pill ' + String(batch.state_class || 'unknown');
+              statePillEl.textContent = String(batch.state_label || '—');
+            }
+            if (liveBadgeEl) {
+              liveBadgeEl.className = 'publish-live-badge' + (batch.is_terminal ? ' publish-live-badge--terminal' : '');
+            }
+            if (liveLabelEl) {
+              liveLabelEl.textContent = batch.is_terminal ? 'Завершён' : 'Обновляется';
+            }
+            if (stageChipEl) {
+              stageChipEl.className = 'publish-stage-chip' + (batch.is_terminal ? '' : ' publish-stage-chip--active');
+              stageChipEl.textContent = String(batch.phase_label || '—');
+            }
+            if (phaseLabelEl) phaseLabelEl.textContent = String(batch.phase_label || '—');
+            if (phaseSubtitleEl) phaseSubtitleEl.textContent = String(batch.phase_subtitle || '');
+            if (progressText) progressText.textContent = progressPct + '%';
+            if (progressFill) {
+              progressFill.style.width = progressPct + '%';
+              progressFill.setAttribute('aria-valuenow', String(progressPct));
+            }
+            if (countsEl) countsEl.innerHTML = renderCounts(batch.counts || {});
+            if (metaEl) {
+              metaEl.textContent = [
+                'Сценарий: ' + String(batch.workflow_key || 'default') + '.',
+                'Создан: ' + String(batch.created_at_label || '—') + '.',
+                'Обновлён: ' + String(batch.updated_at_label || '—') + '.',
+                'Папка staging: ' + String(batch.stage_dir || '—') + '.',
+                batch.stage_dir_exists ? 'Папка активна.' : 'Папка очищена.'
+              ].join(' ');
+            }
+            if (stepsEl) stepsEl.innerHTML = renderSteps(batch.steps || []);
+            if (accountsEl) accountsEl.innerHTML = renderAccounts(snapshot.accounts || []);
+            if (recentEl) recentEl.innerHTML = renderActivity(snapshot.recent_activity || []);
+            if (artifactsEl) artifactsEl.innerHTML = renderArtifacts(snapshot.artifacts || []);
+            if (jobsEl) jobsEl.innerHTML = renderJobs(snapshot.jobs || []);
+            if (rawEventsEl) rawEventsEl.innerHTML = renderRawEvents(snapshot.events || []);
+          };
+
+          const pollOnce = async function () {
+            const url = snapshot.progress_url;
+            if (!url || !snapshot.batch || snapshot.batch.is_terminal) {
+              return;
+            }
+            try {
+              const response = await fetch(url, {
+                headers: { 'Accept': 'application/json' },
+                credentials: 'same-origin',
+                cache: 'no-store'
+              });
+              const contentType = response.headers.get('content-type') || '';
+              if (!response.ok || contentType.indexOf('application/json') === -1) {
+                throw new Error('progress polling failed');
+              }
+              const data = await response.json();
+              renderSnapshot(data);
+              if (data.batch && !data.batch.is_terminal) {
+                window.setTimeout(pollOnce, Number(data.poll_interval_seconds || 3) * 1000);
+              }
+            } catch (error) {
+              window.setTimeout(pollOnce, Number((snapshot && snapshot.poll_interval_seconds) || 3) * 1000);
+            }
+          };
+
+          renderSnapshot(snapshot);
+          if (snapshot.batch && !snapshot.batch.is_terminal) {
+            window.setTimeout(pollOnce, Number(snapshot.poll_interval_seconds || 3) * 1000);
+          }
+        })();
+      </script>
     {% endif %}
   </div>
-
-  {% if poll_interval_seconds and poll_interval_seconds > 0 %}
-    <script>
-      window.setTimeout(function () {
-        window.location.reload();
-      }, {{ poll_interval_seconds * 1000 }});
-    </script>
-  {% endif %}
 {% endblock %}

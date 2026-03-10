@@ -29,12 +29,7 @@
         <h2 class="card__title">Добавить работника</h2>
       </header>
       <div class="card__body">
-        {% if error %}
-          <div class="error mb-sm">{{ error }}</div>
-        {% endif %}
-        {% if success %}
-          <div class="hint mb-sm">{{ success }}</div>
-        {% endif %}
+        {% with extra_class='mb-sm' %}{% include "_flash.html" %}{% endwith %}
         <form method="post" action="{{ urlp('/workers') }}" class="grid accounts-grid">
           <input type="hidden" name="q" value="{{ q or '' }}">
           <div class="field">
@@ -78,17 +73,22 @@
               </div>
               <div class="worker-meta">
                 <span class="pill">Аккаунтов: {{ w.accounts_total }}</span>
-                <span class="pill">Перешло: {{ w.starts_unique_total }}</span>
+                <span class="pill">Переходов: {{ w.starts_unique_total }}</span>
                 <span class="hint">Обновлено: {{ w.updated_at|dt }}</span>
               </div>
-              <div class="row">
-                <span class="hint mono">Логин: {{ w.username }}</span>
-                <button class="btn action copy" type="button" onclick='copyToClipboard({{ w.username|tojson }})'>Копировать логин</button>
-              </div>
-              <div class="row">
-                <span class="hint mono">Пароль: {{ w.plain_password }}</span>
-                <button class="btn action copy" type="button" onclick='copyToClipboard({{ w.plain_password|tojson }})'>Копировать пароль</button>
-              </div>
+              <details class="service-details">
+                <summary class="service-details__summary">Доступ</summary>
+                <div class="service-details__body">
+                  <div class="secret-row">
+                    <span class="secret-row__value mono">Логин: {{ w.username }}</span>
+                    <button class="btn action copy" type="button" onclick='copyToClipboard({{ w.username|tojson }})'>Копировать логин</button>
+                  </div>
+                  <div class="secret-row mt-sm">
+                    <span class="secret-row__value mono">Пароль: {{ w.plain_password }}</span>
+                    <button class="btn action copy" type="button" onclick='copyToClipboard({{ w.plain_password|tojson }})'>Копировать пароль</button>
+                  </div>
+                </div>
+              </details>
             </article>
           {% endfor %}
         </div>

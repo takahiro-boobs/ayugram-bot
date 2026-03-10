@@ -1,0 +1,6 @@
+{% if error %}
+  <div class="notice notice--error{% if extra_class %} {{ extra_class }}{% endif %}">{{ error }}</div>
+{% endif %}
+{% if success %}
+  <div class="notice notice--success{% if extra_class %} {{ extra_class }}{% endif %}">{{ success }}</div>
+{% endif %}

@@ -2,7 +2,7 @@
 <html lang="ru">
   <head>
     <meta charset="utf-8">
-    <title>Вход · СЛЕЖКА Admin</title>
+    <title>Вход · СЛЕЖКА</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
     <link rel="stylesheet" href="{{ urlp('/static/ios26.css') }}">
   </head>
@@ -14,9 +14,7 @@
           <span class="brand__tag">СЛЕЖКА</span>
         </header>
         <div class="card__body">
-          {% if error %}
-            <div class="error">{{ error }}</div>
-          {% endif %}
+          {% include "_flash.html" %}
           <form method="post" action="{{ urlp('/login') }}" class="grid form-gap-md mt-sm">
             <div class="field">
               <label class="label">Логин</label>
@@ -27,7 +25,7 @@
               <input class="input" type="password" name="password" autocomplete="current-password" required>
             </div>
             <button class="btn primary" type="submit">Войти</button>
-            <div class="hint">Сессия сохраняется — повторный вход не нужен после каждого действия.</div>
+            <div class="hint">Сессия сохраняется. Повторный вход не нужен после каждого действия.</div>
           </form>
         </div>
       </section>

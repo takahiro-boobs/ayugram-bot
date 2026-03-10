@@ -1,0 +1,196 @@
+{% extends "base.html" %}
+{% block title %}Новая публикация{% endblock %}
+{% block content %}
+  <div class="grid cols-2">
+    <section class="card">
+      <header class="card__header">
+        <h2 class="card__title">1. Выбери аккаунты</h2>
+      </header>
+      <div class="card__body">
+        {% with extra_class='mb-sm' %}{% include "_flash.html" %}{% endwith %}
+
+        <div class="detail-stats mb-sm">
+          <span class="pill">Готово к запуску: {{ ready_accounts_count }}</span>
+          <span class="pill">Выбрано: <span id="selected-count">{{ selected_accounts_count }}</span></span>
+          <span class="pill">Неполные: {{ blocked_accounts_count }}</span>
+          <span class="status-pill {% if n8n_webhook_configured %}on{% else %}off{% endif %}">
+            {% if n8n_webhook_configured %}Автозапуск готов{% else %}Автозапуск не настроен{% endif %}
+          </span>
+        </div>
+        <div class="section-note mb-sm">Оставь в выборе только те аккаунты, которые нужно запустить сейчас.</div>
+        <details class="service-details mb-sm">
+          <summary class="service-details__summary">Служебные детали</summary>
+          <div class="service-details__body">
+            <div class="detail-stats">
+              <span class="pill">Сценарий: {{ publish_workflow_key }}</span>
+              <span class="pill mono">Папка staging: {{ staging_root }}</span>
+            </div>
+            <div class="hint mt-sm">Для запуска нужны логин, пароль, серийный номер эмулятора и 2FA.</div>
+          </div>
+        </details>
+
+        <form method="post" action="{{ urlp('/publishing/batches') }}" class="grid form-gap-md" id="publish-select-form">
+          <div class="publish-select-toolbar">
+            <div class="publish-select-summary">
+              Автозапуск: {% if n8n_webhook_configured %}готов{% else %}недоступен{% endif %}
+            </div>
+            <div class="publish-select-actions">
+              <button class="btn ghost sm" type="button" id="select-all-accounts">Выбрать все</button>
+              <button class="btn ghost sm" type="button" id="clear-all-accounts">Снять все</button>
+            </div>
+          </div>
+
+          <div class="publish-select-list">
+            {% for account in accounts %}
+              <div class="listitem publish-select-card{% if account.selected %} is-selected{% endif %}" data-account-card>
+                <input
+                  class="publish-select-check"
+                  type="checkbox"
+                  id="publish-account-{{ account.id }}"
+                  name="account_ids"
+                  value="{{ account.id }}"
+                  {% if account.selected %}checked{% endif %}
+                >
+                <div class="publish-select-main">
+                  <label class="listitem__title" for="publish-account-{{ account.id }}" style="cursor:pointer;">
+                    @{{ account.username }}
+                  </label>
+                  <div class="listitem__meta">
+                    <span class="pill">ID: {{ account.id }}</span>
+                    <span class="pill mono">{{ account.account_login }}</span>
+                    <span class="pill mono">{{ account.instagram_emulator_serial }}</span>
+                    <span class="brand__tag">{{ account.owner_label }}</span>
+                    <span class="status-pill {{ account.instagram_publish_status_class }}">{{ account.instagram_publish_status_label }}</span>
+                    <span class="status-pill {% if account.twofa_ready %}on{% else %}review{% endif %}">
+                      {% if account.twofa_ready %}2FA готов{% else %}Нет 2FA{% endif %}
+                    </span>
+                  </div>
+                  {% if account.publish_warnings %}
+                    <div class="hint mt-sm">{{ account.publish_warnings|join(' ') }}</div>
+                  {% endif %}
+                  {% if account.instagram_publish_detail %}
+                    <div class="hint mt-sm">{{ account.instagram_publish_detail }}</div>
+                  {% endif %}
+                </div>
+                <a class="btn action sm" href="{{ urlp('/accounts') }}/{{ account.id }}">Открыть</a>
+              </div>
+            {% endfor %}
+          </div>
+
+          {% if accounts|length == 0 %}
+            <div class="hint">Нет готовых аккаунтов с логином, паролем, серийным номером эмулятора и 2FA.</div>
+          {% endif %}
+          <div class="row row-between">
+            <a class="btn ghost" href="{{ urlp('/publishing') }}">Назад</a>
+            <button
+              class="btn primary"
+              type="submit"
+              id="publish-start-btn"
+              data-webhook-ready="{% if n8n_webhook_configured %}1{% else %}0{% endif %}"
+              data-ready-count="{{ ready_accounts_count }}"
+              {% if (not n8n_webhook_configured) or ready_accounts_count == 0 or selected_accounts_count == 0 %}disabled{% endif %}
+              title="{% if not n8n_webhook_configured %}Нужен настроенный webhook n8n{% elif ready_accounts_count == 0 %}Нет готовых аккаунтов{% elif selected_accounts_count == 0 %}Выбери хотя бы один аккаунт{% endif %}"
+            >Запустить</button>
+          </div>
+        </form>
+      </div>
+    </section>
+
+    <section class="card">
+      <header class="card__header">
+        <h2 class="card__title">Неполные аккаунты</h2>
+      </header>
+      <div class="card__body">
+        <div class="list">
+          {% for account in blocked_accounts %}
+            <div class="listitem">
+              <div class="row row-between row-start">
+                <div>
+                  <div class="listitem__title">@{{ account.username }}</div>
+                  <div class="listitem__meta">
+                    <span class="pill">ID: {{ account.id }}</span>
+                    {% if account.account_login %}
+                      <span class="pill mono">{{ account.account_login }}</span>
+                    {% endif %}
+                    {% if account.instagram_emulator_serial %}
+                      <span class="pill mono">{{ account.instagram_emulator_serial }}</span>
+                    {% endif %}
+                    <span class="brand__tag">{{ account.owner_label }}</span>
+                    <span class="status-pill off">Не готов</span>
+                  </div>
+                  <div class="hint mt-sm">{{ account.publish_blockers|join(' ') }}</div>
+                </div>
+                <a class="btn action sm" href="{{ urlp('/accounts') }}/{{ account.id }}">Открыть</a>
+              </div>
+            </div>
+          {% endfor %}
+        </div>
+        {% if blocked_accounts|length == 0 %}
+          <div class="hint">Все аккаунты с обязательными полями уже доступны для запуска.</div>
+        {% endif %}
+      </div>
+    </section>
+  </div>
+  <script>
+    (function () {
+      const form = document.getElementById('publish-select-form');
+      if (!form) return;
+
+      const checkboxes = Array.from(form.querySelectorAll('input[name="account_ids"]'));
+      const countEl = document.getElementById('selected-count');
+      const selectAllBtn = document.getElementById('select-all-accounts');
+      const clearAllBtn = document.getElementById('clear-all-accounts');
+      const submitBtn = document.getElementById('publish-start-btn');
+      const webhookReady = submitBtn ? submitBtn.dataset.webhookReady === '1' : false;
+      const readyCount = submitBtn ? Number(submitBtn.dataset.readyCount || '0') : 0;
+
+      function syncSelectionState() {
+        let selected = 0;
+        checkboxes.forEach((checkbox) => {
+          const card = checkbox.closest('[data-account-card]');
+          if (checkbox.checked) selected += 1;
+          if (card) {
+            card.classList.toggle('is-selected', checkbox.checked);
+          }
+        });
+        if (countEl) countEl.textContent = String(selected);
+        if (submitBtn) {
+          submitBtn.disabled = !webhookReady || readyCount === 0 || selected === 0;
+          if (!webhookReady) {
+            submitBtn.title = 'Нужен настроенный webhook n8n';
+          } else if (readyCount === 0) {
+            submitBtn.title = 'Нет готовых аккаунтов';
+          } else if (selected === 0) {
+            submitBtn.title = 'Выбери хотя бы один аккаунт';
+          } else {
+            submitBtn.title = '';
+          }
+        }
+      }
+
+      if (selectAllBtn) {
+        selectAllBtn.addEventListener('click', function () {
+          checkboxes.forEach((checkbox) => {
+            checkbox.checked = true;
+          });
+          syncSelectionState();
+        });
+      }
+
+      if (clearAllBtn) {
+        clearAllBtn.addEventListener('click', function () {
+          checkboxes.forEach((checkbox) => {
+            checkbox.checked = false;
+          });
+          syncSelectionState();
+        });
+      }
+
+      checkboxes.forEach((checkbox) => {
+        checkbox.addEventListener('change', syncSelectionState);
+      });
+
+      syncSelectionState();
+    })();
+  </script>
+{% endblock %}

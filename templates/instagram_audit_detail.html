@@ -1,0 +1,346 @@
+{% extends "base.html" %}
+{% block title %}Проверка входов Instagram{% endblock %}
+{% block content %}
+  <div class="grid publish-dashboard">
+    <section class="card">
+      <header class="card__header">
+        <h2 class="card__title">Проверка входов Instagram</h2>
+      </header>
+      <div class="card__body">
+        <div class="row row-between row-start">
+          <a class="btn ghost sm" href="{{ urlp('/accounts') }}">Назад к аккаунтам</a>
+          <form method="post" action="{{ urlp('/accounts/instagram/audits') }}" class="inline-form">
+            <input type="hidden" name="filter_type" value="instagram">
+            <button class="btn primary sm" type="submit">Новая проверка</button>
+          </form>
+        </div>
+        {% with extra_class='mt-sm' %}{% include "_flash.html" %}{% endwith %}
+      </div>
+    </section>
+
+    {% if not batch or not dashboard_snapshot %}
+      <section class="card">
+        <div class="card__body">
+          <div class="hint">Проверка не найдена.</div>
+        </div>
+      </section>
+    {% else %}
+      <section class="card publish-hero-card">
+        <div class="card__body">
+          <div class="publish-hero">
+            <div class="publish-hero__main">
+              <div class="publish-hero__eyebrow">Статус проверки</div>
+              <div class="publish-hero__title-row">
+                <h2 class="publish-hero__title">Проверка #<span id="audit-batch-id">{{ batch.id }}</span></h2>
+                <div class="publish-hero__status-row">
+                  <span id="audit-live-badge" class="publish-live-badge{% if dashboard_snapshot.batch.is_terminal %} publish-live-badge--terminal{% endif %}">
+                    <span class="publish-live-badge__dot"></span>
+                    <span id="audit-live-label">{% if dashboard_snapshot.batch.is_terminal %}Завершена{% else %}Обновляется{% endif %}</span>
+                  </span>
+                  <span id="audit-state-pill" class="status-pill {{ batch.state_class }}">{{ batch.state_label }}</span>
+                </div>
+              </div>
+              <div class="publish-hero__phase">
+                <div class="publish-stage-chip-row">
+                  <span id="audit-stage-chip" class="publish-stage-chip{% if not dashboard_snapshot.batch.is_terminal %} publish-stage-chip--active{% endif %}">
+                    {{ dashboard_snapshot.batch.phase_label }}
+                  </span>
+                </div>
+                <div class="publish-hero__phase-label" id="audit-phase-label">{{ dashboard_snapshot.batch.phase_label }}</div>
+                <div class="publish-hero__phase-subtitle hint" id="audit-phase-subtitle">{{ dashboard_snapshot.batch.phase_subtitle }}</div>
+              </div>
+              <div class="publish-progress">
+                <div class="publish-progress__meta">
+                  <span>Общий прогресс</span>
+                  <strong id="audit-progress-text">{{ dashboard_snapshot.batch.progress_pct }}%</strong>
+                </div>
+                <div class="publish-progress__track" aria-hidden="true">
+                  <div class="publish-progress__fill" id="audit-progress-fill" style="width: {{ dashboard_snapshot.batch.progress_pct }}%;"></div>
+                </div>
+              </div>
+            </div>
+            <div class="publish-hero__stats" id="audit-counts">
+              <span class="pill">Выбрано: {{ dashboard_snapshot.batch.counts.selected }}</span>
+              <span class="pill">Проверено: {{ dashboard_snapshot.batch.counts.done }}</span>
+              <span class="pill">Успешно: {{ dashboard_snapshot.batch.counts.success }}</span>
+              <span class="pill">Проблемы: {{ dashboard_snapshot.batch.counts.issues }}</span>
+              <span class="pill">2FA: {{ dashboard_snapshot.batch.counts.manual_2fa_required }}</span>
+              <span class="pill">Код почты: {{ dashboard_snapshot.batch.counts.email_code_required }}</span>
+            </div>
+            <div class="publish-hero__meta hint" id="audit-meta">
+              Создан: {{ dashboard_snapshot.batch.created_at_label }}.
+              Обновлён: {{ dashboard_snapshot.batch.updated_at_label }}.
+              {{ dashboard_snapshot.batch.detail }}
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="card">
+        <header class="card__header">
+          <h2 class="card__title">Этапы</h2>
+        </header>
+        <div class="card__body">
+          <ol class="publish-step-line" id="audit-steps">
+            {% for step in dashboard_snapshot.batch.steps %}
+              <li class="publish-step publish-step--{{ step.status }}">
+                <span class="publish-step__dot"></span>
+                <span class="publish-step__label">{{ step.label }}</span>
+              </li>
+            {% endfor %}
+          </ol>
+        </div>
+      </section>
+
+      <section class="card">
+        <header class="card__header">
+          <h2 class="card__title">Аккаунты</h2>
+          <span class="hint">Сначала активные, затем аккаунты с ручными шагами.</span>
+        </header>
+        <div class="card__body">
+          <div id="audit-items" class="publish-accounts-grid"></div>
+        </div>
+      </section>
+
+      <section class="card">
+        <header class="card__header">
+          <h2 class="card__title">Последние события</h2>
+        </header>
+        <div class="card__body">
+          <div id="audit-recent-activity" class="publish-activity-list"></div>
+        </div>
+      </section>
+
+      <section class="card">
+        <header class="card__header">
+          <h2 class="card__title">Диагностика</h2>
+          <span class="hint">Сырой лог для диагностики</span>
+        </header>
+        <div class="card__body">
+          <details class="publish-log-details">
+            <summary class="publish-log-details__summary">Показать журнал событий</summary>
+            <div id="audit-raw-events" class="list mt-sm"></div>
+          </details>
+        </div>
+      </section>
+
+      <script id="instagram-audit-seed" type="application/json">{{ dashboard_snapshot | tojson }}</script>
+      <script>
+        (function () {
+          const seedEl = document.getElementById('instagram-audit-seed');
+          if (!seedEl) return;
+
+          let snapshot = {};
+          try {
+            snapshot = JSON.parse(seedEl.textContent || '{}');
+          } catch (error) {
+            snapshot = {};
+          }
+
+          const escapeHtml = function (value) {
+            return String(value || '')
+              .replace(/&/g, '&amp;')
+              .replace(/</g, '&lt;')
+              .replace(/>/g, '&gt;')
+              .replace(/"/g, '&quot;')
+              .replace(/'/g, '&#39;');
+          };
+
+          const pill = function (text) {
+            return '<span class="pill">' + escapeHtml(text) + '</span>';
+          };
+
+          const statusPill = function (label, cls) {
+            return '<span class="status-pill ' + escapeHtml(cls || 'unknown') + '">' + escapeHtml(label || '—') + '</span>';
+          };
+
+          const renderCounts = function (counts) {
+            const safe = counts || {};
+            return [
+              pill('Выбрано: ' + Number(safe.selected || 0)),
+              pill('Проверено: ' + Number(safe.done || 0)),
+              pill('Успешно: ' + Number(safe.success || 0)),
+              pill('Проблемы: ' + Number(safe.issues || 0)),
+              pill('2FA: ' + Number(safe.manual_2fa_required || 0)),
+              pill('Код почты: ' + Number(safe.email_code_required || 0)),
+              pill('Челлендж: ' + Number(safe.challenge_required || 0)),
+              pill('Неверный пароль: ' + Number(safe.invalid_password || 0))
+            ].join('');
+          };
+
+          const renderSteps = function (steps) {
+            if (!Array.isArray(steps) || !steps.length) {
+              return '<li class="publish-step publish-step--pending"><span class="publish-step__dot"></span><span class="publish-step__label">Ожидание</span></li>';
+            }
+            return steps.map(function (step) {
+              return '<li class="publish-step publish-step--' + escapeHtml(step.status || 'pending') + '"><span class="publish-step__dot"></span><span class="publish-step__label">' + escapeHtml(step.label || 'Шаг') + '</span></li>';
+            }).join('');
+          };
+
+          const renderItems = function (items) {
+            if (!Array.isArray(items) || !items.length) {
+              return '<div class="hint">В этой проверке пока нет аккаунтов.</div>';
+            }
+            return items.map(function (item) {
+              const meta = [
+                pill('ID: ' + Number(item.account_id || 0)),
+                item.assigned_serial ? '<span class="pill mono">' + escapeHtml(item.assigned_serial) + '</span>' : '',
+                item.owner_label ? '<span class="brand__tag">' + escapeHtml(item.owner_label) + '</span>' : '',
+                statusPill(item.item_state_label, item.item_state_class),
+                statusPill(item.login_state_label, item.login_state_class),
+                statusPill(item.mail_probe_state_label, item.mail_probe_state_class),
+                statusPill(item.resolution_label, item.resolution_class)
+              ].filter(Boolean).join('');
+
+              const details = [
+                item.detail ? '<div class="hint mt-sm">' + escapeHtml(item.detail) + '</div>' : '',
+                item.diagnostic_path ? '<div class="hint mt-sm mono">Диагностика: ' + escapeHtml(item.diagnostic_path) + '</div>' : ''
+              ].join('');
+
+              return [
+                '<article class="publish-account-card ',
+                item.is_active ? 'publish-account-card--active' : '',
+                '">',
+                '<div class="publish-account-card__head">',
+                '<div>',
+                '<div class="listitem__title">@', escapeHtml(item.username || item.account_login || ('аккаунт-' + Number(item.account_id || 0))), '</div>',
+                '<div class="listitem__meta">', meta, '</div>',
+                '</div>',
+                '<div class="publish-account-card__actions"><a class="btn action sm" href="', escapeHtml(item.open_url || '#'), '">Открыть</a></div>',
+                '</div>',
+                '<div class="publish-account-card__phase">',
+                '<div class="publish-account-card__phase-title">', escapeHtml(item.resolution_label || item.item_state_label || 'Ожидание'), '</div>',
+                '<div class="publish-account-card__progress-meta"><span>', escapeHtml(item.updated_at_label || '—'), '</span><strong>', Number(item.progress_pct || 0), '%</strong></div>',
+                '<div class="publish-progress publish-progress--mini"><div class="publish-progress__track" aria-hidden="true"><div class="publish-progress__fill" style="width: ', Number(item.progress_pct || 0), '%;"></div></div></div>',
+                details,
+                '</div>',
+                '</article>'
+              ].join('');
+            }).join('');
+          };
+
+          const renderActivity = function (events) {
+            if (!Array.isArray(events) || !events.length) {
+              return '<div class="hint">Событий пока нет.</div>';
+            }
+            return events.map(function (event) {
+              return [
+                '<div class="publish-activity-item">',
+                '<div class="publish-activity-item__head">',
+                statusPill(event.title || 'Событие', event.tone_class || 'unknown'),
+                '<span class="hint">', escapeHtml(event.created_at_label || '—'), '</span>',
+                '</div>',
+                '<div class="publish-activity-item__meta">',
+                event.account_username ? '<span class="brand__tag">@' + escapeHtml(event.account_username) + '</span>' : '',
+                '</div>',
+                event.detail ? '<div class="hint mt-sm">' + escapeHtml(event.detail) + '</div>' : '',
+                '</div>'
+              ].join('');
+            }).join('');
+          };
+
+          const renderRawEvents = function (events) {
+            if (!Array.isArray(events) || !events.length) {
+              return '<div class="hint">Лог ещё пустой.</div>';
+            }
+            return events.map(function (event) {
+              return [
+                '<div class="listitem">',
+                '<div class="listitem__title">', escapeHtml(event.state || 'event'), '</div>',
+                '<div class="listitem__meta">',
+                '<span class="hint">', escapeHtml(event.created_at_label || '—'), '</span>',
+                event.account_username ? '<span class="brand__tag">@' + escapeHtml(event.account_username) + '</span>' : '',
+                '</div>',
+                event.detail ? '<div class="hint mt-sm">' + escapeHtml(event.detail) + '</div>' : '',
+                event.payload_preview ? '<div class="hint mt-sm mono">' + escapeHtml(event.payload_preview) + '</div>' : '',
+                '</div>'
+              ].join('');
+            }).join('');
+          };
+
+          const renderSnapshot = function (data) {
+            snapshot = data || {};
+            const batch = snapshot.batch || {};
+            const progressPct = Number(batch.progress_pct || 0);
+
+            const statePillEl = document.getElementById('audit-state-pill');
+            const liveBadgeEl = document.getElementById('audit-live-badge');
+            const liveLabelEl = document.getElementById('audit-live-label');
+            const stageChipEl = document.getElementById('audit-stage-chip');
+            const phaseLabelEl = document.getElementById('audit-phase-label');
+            const phaseSubtitleEl = document.getElementById('audit-phase-subtitle');
+            const progressText = document.getElementById('audit-progress-text');
+            const progressFill = document.getElementById('audit-progress-fill');
+            const countsEl = document.getElementById('audit-counts');
+            const metaEl = document.getElementById('audit-meta');
+            const stepsEl = document.getElementById('audit-steps');
+            const itemsEl = document.getElementById('audit-items');
+            const activityEl = document.getElementById('audit-recent-activity');
+            const rawEl = document.getElementById('audit-raw-events');
+
+            if (statePillEl) {
+              statePillEl.className = 'status-pill ' + String(batch.state_class || 'unknown');
+              statePillEl.textContent = String(batch.state_label || '—');
+            }
+            if (liveBadgeEl) {
+              liveBadgeEl.className = 'publish-live-badge' + (batch.is_terminal ? ' publish-live-badge--terminal' : '');
+            }
+            if (liveLabelEl) {
+              liveLabelEl.textContent = batch.is_terminal ? 'Завершена' : 'Обновляется';
+            }
+            if (stageChipEl) {
+              stageChipEl.className = 'publish-stage-chip' + (batch.is_terminal ? '' : ' publish-stage-chip--active');
+              stageChipEl.textContent = String(batch.phase_label || '—');
+            }
+            if (phaseLabelEl) phaseLabelEl.textContent = String(batch.phase_label || '—');
+            if (phaseSubtitleEl) phaseSubtitleEl.textContent = String(batch.phase_subtitle || '');
+            if (progressText) progressText.textContent = progressPct + '%';
+            if (progressFill) progressFill.style.width = progressPct + '%';
+            if (countsEl) countsEl.innerHTML = renderCounts(batch.counts || {});
+            if (metaEl) {
+              metaEl.textContent = [
+                'Создан: ' + String(batch.created_at_label || '—') + '.',
+                'Обновлён: ' + String(batch.updated_at_label || '—') + '.',
+                String(batch.detail || '')
+              ].join(' ');
+            }
+            if (stepsEl) stepsEl.innerHTML = renderSteps(batch.steps || []);
+            if (itemsEl) itemsEl.innerHTML = renderItems(snapshot.items || []);
+            if (activityEl) activityEl.innerHTML = renderActivity(snapshot.recent_activity || []);
+            if (rawEl) rawEl.innerHTML = renderRawEvents(snapshot.events || []);
+          };
+
+          const pollOnce = async function () {
+            const url = snapshot.progress_url;
+            if (!url || !snapshot.batch || snapshot.batch.is_terminal) {
+              return;
+            }
+            try {
+              const response = await fetch(url, {
+                headers: { 'Accept': 'application/json' },
+                credentials: 'same-origin',
+                cache: 'no-store'
+              });
+              const contentType = response.headers.get('content-type') || '';
+              if (!response.ok || contentType.indexOf('application/json') === -1) {
+                throw new Error('audit polling failed');
+              }
+              const data = await response.json();
+              renderSnapshot(data);
+              if (data.batch && !data.batch.is_terminal) {
+                window.setTimeout(pollOnce, Number(data.poll_interval_seconds || 3) * 1000);
+              }
+            } catch (error) {
+              window.setTimeout(pollOnce, Number((snapshot && snapshot.poll_interval_seconds) || 3) * 1000);
+            }
+          };
+
+          renderSnapshot(snapshot);
+          if (snapshot.batch && !snapshot.batch.is_terminal) {
+            window.setTimeout(pollOnce, Number(snapshot.poll_interval_seconds || 3) * 1000);
+          }
+        })();
+      </script>
+    {% endif %}
+  </div>
+{% endblock %}

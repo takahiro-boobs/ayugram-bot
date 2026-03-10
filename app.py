@@ -1,28 +1,34 @@
 import csv
+from contextlib import asynccontextmanager
 import hashlib
 import hmac
 import json
+import logging
 import os
 import secrets
+import shutil
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional
-from urllib.parse import quote, quote_plus
+from typing import Any, Callable, Optional
+from urllib.parse import quote, quote_plus, urlparse
 
-import requests
 from dotenv import load_dotenv
 from fastapi import Body, Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 from starlette.status import HTTP_303_SEE_OTHER
 
 import db
+import http_utils
 import mail_service
 
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 ADMIN_USER = os.getenv("ADMIN_USER", "admin")
 ADMIN_PASS = os.getenv("ADMIN_PASS", "admin")
@@ -58,9 +64,34 @@ PUBLISH_SHARED_SECRET = (
     or SESSION_SECRET
 ).strip()
 PUBLISH_WEBHOOK_MAX_AGE_SECONDS = int(os.getenv("PUBLISH_WEBHOOK_MAX_AGE_SECONDS", "300"))
+PUBLISH_FACTORY_TIMEOUT_SECONDS = int(os.getenv("PUBLISH_FACTORY_TIMEOUT_SECONDS", "900"))
 PUBLISH_RUNNER_API_KEY = (os.getenv("PUBLISH_RUNNER_API_KEY", HELPER_API_KEY) or HELPER_API_KEY).strip()
 PUBLISH_RUNNER_LEASE_SECONDS = int(os.getenv("PUBLISH_RUNNER_LEASE_SECONDS", "900"))
 PUBLISH_DEFAULT_WORKFLOW = (os.getenv("PUBLISH_DEFAULT_WORKFLOW", "default") or "default").strip()
+STRICT_CONFIG = (os.getenv("STRICT_CONFIG", "0") or "0").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _config_warnings() -> list[str]:
+    warnings: list[str] = []
+    if not SESSION_SECRET or SESSION_SECRET == "change-me":
+        warnings.append("SESSION_SECRET is default or empty")
+    if not ADMIN_PASS or ADMIN_PASS == "admin":
+        warnings.append("ADMIN_PASS is default or empty")
+    if not PUBLISH_SHARED_SECRET:
+        warnings.append("PUBLISH_SHARED_SECRET is empty")
+    if not PUBLISH_RUNNER_API_KEY:
+        warnings.append("PUBLISH_RUNNER_API_KEY is empty (publish runner disabled)")
+    if not HELPER_API_KEY:
+        warnings.append("HELPER_API_KEY is empty (helper callbacks disabled)")
+    return warnings
+
+
+def _validate_runtime_config() -> None:
+    warnings = _config_warnings()
+    for item in warnings:
+        logger.warning("config_warning: %s", item)
+    if STRICT_CONFIG and warnings:
+        raise RuntimeError(f"Config validation failed: {', '.join(warnings)}")
 
 
 def _normalize_base_path(raw: str) -> str:
@@ -113,6 +144,9 @@ ACCOUNT_INSTAGRAM_PUBLISH_STATUS_LABELS = {
     "idle": "Не запускался",
     "preparing": "Подготовка",
     "login_required": "Нужен вход",
+    "manual_2fa_required": "Нужен 2FA",
+    "challenge_required": "Нужен challenge",
+    "invalid_password": "Неверный пароль",
     "importing_media": "Импорт медиа",
     "opening_reel_flow": "Открываю Reel",
     "selecting_media": "Выбираю видео",
@@ -121,7 +155,53 @@ ACCOUNT_INSTAGRAM_PUBLISH_STATUS_LABELS = {
     "no_source_video": "Нет видео",
     "publish_error": "Ошибка публикации",
 }
+RUNTIME_TASK_STATE_LABELS = {
+    "queued": "В очереди",
+    "running": "Выполняется",
+    "retrying": "Повтор",
+    "completed": "Завершена",
+    "failed": "Ошибка",
+    "canceled": "Отменена",
+}
+INSTAGRAM_AUDIT_BATCH_STATE_LABELS = {
+    "queued": "В очереди",
+    "running": "Выполняется",
+    "completed": "Завершён",
+    "completed_with_errors": "Завершён с проблемами",
+    "failed": "Ошибка",
+    "canceled": "Отменён",
+}
+INSTAGRAM_AUDIT_ITEM_STATE_LABELS = {
+    "queued": "В очереди",
+    "launching": "Запускаю helper",
+    "login_check": "Проверяю вход",
+    "mail_check_if_needed": "Проверяю почту",
+    "done": "Готово",
+}
+INSTAGRAM_AUDIT_RESOLUTION_LABELS = {
+    "login_ok": "Вход OK",
+    "manual_2fa_required": "Нужен 2FA",
+    "email_code_required": "Нужен код с почты",
+    "challenge_required": "Нужен challenge",
+    "invalid_password": "Неверный пароль",
+    "helper_error": "Ошибка helper",
+    "missing_credentials": "Нет данных входа",
+    "missing_device": "Нет устройства",
+}
+INSTAGRAM_AUDIT_MAIL_PROBE_LABELS = {
+    "pending": "Не проверялась",
+    "not_required": "Не требуется",
+    "checking": "Проверяю почту",
+    "ok": "Почта OK",
+    "empty": "Писем нет",
+    "auth_error": "Ошибка входа",
+    "connect_error": "Ошибка подключения",
+    "unsupported": "Неподдерживаемая почта",
+    "not_configured": "Почта не настроена",
+}
 PUBLISH_BATCH_STATE_LABELS = {
+    "queued_to_worker": "Ждёт запуск",
+    "worker_started": "Запускается",
     "generating": "Генерация",
     "publishing": "Публикация",
     "completed": "Завершён",
@@ -131,7 +211,7 @@ PUBLISH_BATCH_STATE_LABELS = {
 }
 PUBLISH_JOB_STATE_LABELS = {
     "queued": "В очереди",
-    "leased": "Runner взял job",
+    "leased": "Взята в работу",
     "preparing": "Подготовка",
     "importing_media": "Импорт медиа",
     "opening_reel_flow": "Открываю Reel",
@@ -141,10 +221,103 @@ PUBLISH_JOB_STATE_LABELS = {
     "failed": "Ошибка",
     "canceled": "Отменено",
 }
+PUBLISH_BATCH_ACCOUNT_STATE_LABELS = {
+    "queued_for_generation": "Ждёт генерацию",
+    "generating": "Генерируется видео",
+    "generation_failed": "Генерация не удалась",
+    "queued_for_publish": "Ждёт публикацию",
+    "leased": "Взята в работу",
+    "preparing": "Подготовка",
+    "importing_media": "Импорт медиа",
+    "opening_reel_flow": "Открываю Reel",
+    "selecting_media": "Выбор видео",
+    "publishing": "Публикация",
+    "published": "Опубликовано",
+    "failed": "Ошибка публикации",
+    "canceled": "Отменено",
+}
+PUBLISH_GENERATION_STAGE_LABELS = {
+    "workflow_started": "Запуск workflow",
+    "script_generation": "Генерация сценария",
+    "image_generation": "Генерация изображений",
+    "video_render": "Рендер видео",
+    "artifact_packaging": "Подготовка файла",
+}
+PUBLISH_PROGRESS_STEPS = [
+    {"key": "workflow_started", "label": "Запуск"},
+    {"key": "video_production", "label": "Генерация видео"},
+    {"key": "publish_queue", "label": "Очередь публикации"},
+    {"key": "instagram_publish", "label": "Публикация в Instagram"},
+    {"key": "done", "label": "Готово"},
+]
 ACCOUNTS_IMPORT_MAX_BYTES = int(os.getenv("ACCOUNTS_IMPORT_MAX_BYTES", str(2 * 1024 * 1024)))
+INSTAGRAM_AUDIT_POLL_INTERVAL_SECONDS = max(2, int(os.getenv("INSTAGRAM_AUDIT_POLL_INTERVAL_SECONDS", "3")))
+INSTAGRAM_AUDIT_HELPER_POLL_SECONDS = max(2, int(os.getenv("INSTAGRAM_AUDIT_HELPER_POLL_SECONDS", "4")))
+INSTAGRAM_AUDIT_HELPER_IDLE_TIMEOUT_SECONDS = max(30, int(os.getenv("INSTAGRAM_AUDIT_HELPER_IDLE_TIMEOUT_SECONDS", "180")))
+INSTAGRAM_AUDIT_LOGIN_TIMEOUT_SECONDS = max(30, int(os.getenv("INSTAGRAM_AUDIT_LOGIN_TIMEOUT_SECONDS", "240")))
+INSTAGRAM_AUDIT_MAIL_FRESHNESS_SECONDS = max(300, int(os.getenv("INSTAGRAM_AUDIT_MAIL_FRESHNESS_SECONDS", str(30 * 60))))
+INSTAGRAM_AUDIT_ITEM_RETRY_ATTEMPTS = max(1, int(os.getenv("INSTAGRAM_AUDIT_ITEM_RETRY_ATTEMPTS", "3")))
+INSTAGRAM_AUDIT_FORCE_CLEAN_LOGIN = (os.getenv("INSTAGRAM_AUDIT_FORCE_CLEAN_LOGIN", "0") or "0").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+RUNTIME_TASK_LEASE_SECONDS = max(60, int(os.getenv("RUNTIME_TASK_LEASE_SECONDS", "300")))
+RUNTIME_WORKER_HEARTBEAT_SECONDS = max(5, int(os.getenv("RUNTIME_WORKER_HEARTBEAT_SECONDS", "15")))
+RUNTIME_TASK_RETRY_DELAY_SECONDS = max(10, int(os.getenv("RUNTIME_TASK_RETRY_DELAY_SECONDS", "30")))
+RUNTIME_RECONCILE_INTERVAL_SECONDS = max(30, int(os.getenv("RUNTIME_RECONCILE_INTERVAL_SECONDS", "60")))
+RUNTIME_WORKER_LIVE_TIMEOUT_SECONDS = max(RUNTIME_WORKER_HEARTBEAT_SECONDS * 2, int(os.getenv("RUNTIME_WORKER_LIVE_TIMEOUT_SECONDS", "45")))
+RUNTIME_WORKER_NAME = (os.getenv("RUNTIME_WORKER_NAME", "runtime-local-worker") or "runtime-local-worker").strip()
+RUNTIME_WORKER_IDLE_POLL_SECONDS = max(0.1, float(os.getenv("RUNTIME_WORKER_IDLE_POLL_SECONDS", "0.5")))
 
-app = FastAPI()
-templates = Jinja2Templates(directory="templates")
+RUNTIME_WORKER_LOCK = threading.RLock()
+RUNTIME_WORKER_STOP = threading.Event()
+RUNTIME_WORKER_WAKEUP = threading.Event()
+RUNTIME_WORKER_THREAD: Optional[threading.Thread] = None
+RuntimeHeartbeat = Callable[[], None]
+
+
+class RuntimeTaskError(RuntimeError):
+    def __init__(self, message: str, *, retryable: bool = True) -> None:
+        super().__init__(message)
+        self.retryable = bool(retryable)
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    _validate_runtime_config()
+    db.init_db()
+    Path(PUBLISH_STAGING_DIR).expanduser().mkdir(parents=True, exist_ok=True)
+    RUNTIME_WORKER_STOP.clear()
+    RUNTIME_WORKER_WAKEUP.clear()
+    _ensure_runtime_worker_thread()
+    try:
+        yield
+    finally:
+        _stop_runtime_worker_thread()
+
+
+app = FastAPI(lifespan=lifespan)
+
+
+class CompatJinja2Templates(Jinja2Templates):
+    def TemplateResponse(self, *args: Any, **kwargs: Any) -> HTMLResponse:
+        if args and isinstance(args[0], str):
+            context = args[1] if len(args) > 1 else kwargs.get("context")
+            if isinstance(context, dict) and "request" in context:
+                request = context["request"]
+                return super().TemplateResponse(request, args[0], context, *args[2:], **kwargs)
+        if "name" in kwargs and "context" in kwargs and isinstance(kwargs["context"], dict) and "request" in kwargs["context"]:
+            return super().TemplateResponse(
+                kwargs["context"]["request"],
+                kwargs["name"],
+                kwargs["context"],
+                **{key: value for key, value in kwargs.items() if key not in {"name", "context"}},
+            )
+        return super().TemplateResponse(*args, **kwargs)
+
+
+templates = CompatJinja2Templates(directory="templates")
 templates.env.filters["dt"] = lambda ts: datetime.fromtimestamp(int(ts)).strftime("%Y-%m-%d %H:%M") if ts else "-"
 
 
@@ -255,12 +428,6 @@ def require_publish_runner_api_key(
         raise HTTPException(status_code=401, detail="Invalid publish runner API key")
 
 
-@app.on_event("startup")
-def _startup() -> None:
-    db.init_db()
-    Path(PUBLISH_STAGING_DIR).expanduser().mkdir(parents=True, exist_ok=True)
-
-
 @app.get("/r/{code}")
 def redirect_link(code: str, request: Request):
     code_clean = (code or "").strip()
@@ -318,6 +485,15 @@ def _account_views_state_meta(state: Optional[str]) -> tuple[str, str]:
     return ACCOUNT_VIEWS_STATE_LABELS.get(value, "Не задано"), value
 
 
+def _account_views_short_label(state: Optional[str]) -> str:
+    value = (state or "").strip().lower()
+    if value == "good":
+        return "много"
+    if value == "low":
+        return "мало"
+    return ""
+
+
 def _account_mail_status_meta(state: Optional[str]) -> tuple[str, str]:
     value = (state or "").strip().lower() or "never_checked"
     label = ACCOUNT_MAIL_STATUS_LABELS.get(value, "Не проверялась")
@@ -353,6 +529,9 @@ def _account_instagram_publish_status_meta(state: Optional[str]) -> tuple[str, s
         "idle": "unknown",
         "preparing": "wait",
         "login_required": "review",
+        "manual_2fa_required": "review",
+        "challenge_required": "off",
+        "invalid_password": "low",
         "importing_media": "wait",
         "opening_reel_flow": "wait",
         "selecting_media": "wait",
@@ -364,10 +543,102 @@ def _account_instagram_publish_status_meta(state: Optional[str]) -> tuple[str, s
     return label, status_class
 
 
+def _runtime_task_state_meta(state: Optional[str]) -> tuple[str, str]:
+    value = (state or "").strip().lower() or "queued"
+    label = RUNTIME_TASK_STATE_LABELS.get(value, "Неизвестно")
+    status_class = {
+        "queued": "unknown",
+        "running": "wait",
+        "retrying": "review",
+        "completed": "on",
+        "failed": "off",
+        "canceled": "off",
+    }.get(value, "unknown")
+    return label, status_class
+
+
+def _instagram_audit_batch_state_meta(state: Optional[str]) -> tuple[str, str]:
+    value = (state or "").strip().lower() or "queued"
+    label = INSTAGRAM_AUDIT_BATCH_STATE_LABELS.get(value, "Неизвестно")
+    status_class = {
+        "queued": "unknown",
+        "running": "wait",
+        "completed": "on",
+        "completed_with_errors": "review",
+        "failed": "off",
+        "canceled": "off",
+    }.get(value, "unknown")
+    return label, status_class
+
+
+def _instagram_audit_item_state_meta(state: Optional[str]) -> tuple[str, str]:
+    value = (state or "").strip().lower() or "queued"
+    label = INSTAGRAM_AUDIT_ITEM_STATE_LABELS.get(value, "Неизвестно")
+    status_class = {
+        "queued": "unknown",
+        "launching": "wait",
+        "login_check": "wait",
+        "mail_check_if_needed": "wait",
+        "done": "on",
+    }.get(value, "unknown")
+    return label, status_class
+
+
+def _instagram_audit_resolution_meta(state: Optional[str]) -> tuple[str, str]:
+    value = (state or "").strip().lower()
+    label = INSTAGRAM_AUDIT_RESOLUTION_LABELS.get(value, "Ожидание") if value else "Ожидание"
+    status_class = {
+        "login_ok": "on",
+        "manual_2fa_required": "review",
+        "email_code_required": "review",
+        "challenge_required": "review",
+        "invalid_password": "low",
+        "helper_error": "off",
+        "missing_credentials": "off",
+        "missing_device": "off",
+    }.get(value, "unknown")
+    return label, status_class
+
+
+def _instagram_audit_joke(state: Optional[str]) -> tuple[str, str]:
+    value = (state or "").strip().lower()
+    if value == "login_ok":
+        label = "рабочий"
+    elif value == "manual_2fa_required":
+        label = "просит 2FA"
+    elif value == "email_code_required":
+        label = "просит код с почты"
+    elif value:
+        label = "ручная проверка"
+    else:
+        label = "нет проверки"
+    _, status_class = _instagram_audit_resolution_meta(value)
+    return label, status_class
+
+
+def _instagram_audit_mail_probe_meta(state: Optional[str]) -> tuple[str, str]:
+    value = (state or "").strip().lower() or "pending"
+    label = INSTAGRAM_AUDIT_MAIL_PROBE_LABELS.get(value, "Не проверялась")
+    status_class = {
+        "pending": "unknown",
+        "not_required": "unknown",
+        "checking": "wait",
+        "ok": "on",
+        "empty": "review",
+        "auth_error": "low",
+        "connect_error": "off",
+        "unsupported": "off",
+        "not_configured": "review",
+    }.get(value, "unknown")
+    return label, status_class
+
+
 def _publish_batch_state_meta(state: Optional[str]) -> tuple[str, str]:
-    value = (state or "").strip().lower() or "generating"
+    value = (state or "").strip().lower() or "queued_to_worker"
     label = PUBLISH_BATCH_STATE_LABELS.get(value, "Неизвестно")
     status_class = {
+        "queued_to_worker": "unknown",
+        "worker_started": "wait",
         "generating": "wait",
         "publishing": "wait",
         "completed": "on",
@@ -383,6 +654,27 @@ def _publish_job_state_meta(state: Optional[str]) -> tuple[str, str]:
     label = PUBLISH_JOB_STATE_LABELS.get(value, "Неизвестно")
     status_class = {
         "queued": "unknown",
+        "leased": "wait",
+        "preparing": "wait",
+        "importing_media": "wait",
+        "opening_reel_flow": "wait",
+        "selecting_media": "wait",
+        "publishing": "wait",
+        "published": "on",
+        "failed": "off",
+        "canceled": "review",
+    }.get(value, "unknown")
+    return label, status_class
+
+
+def _publish_batch_account_state_meta(state: Optional[str]) -> tuple[str, str]:
+    value = (state or "").strip().lower() or "queued_for_generation"
+    label = PUBLISH_BATCH_ACCOUNT_STATE_LABELS.get(value, "Неизвестно")
+    status_class = {
+        "queued_for_generation": "unknown",
+        "generating": "wait",
+        "generation_failed": "off",
+        "queued_for_publish": "unknown",
         "leased": "wait",
         "preparing": "wait",
         "importing_media": "wait",
@@ -515,11 +807,707 @@ def _build_instagram_helper_local_url(path: str) -> str:
     return f"{base}{suffix}"
 
 
+def _instagram_audit_batch_is_terminal(state: Optional[str]) -> bool:
+    value = (state or "").strip().lower()
+    return value in {"completed", "completed_with_errors", "failed", "canceled"}
+
+
+def _helper_request_headers() -> dict[str, str]:
+    if not HELPER_API_KEY:
+        raise RuntimeError("HELPER_API_KEY не настроен.")
+    return {"X-Helper-Api-Key": HELPER_API_KEY, "Accept": "application/json"}
+
+
+def _fetch_helper_emulator_inventory() -> dict[str, Any]:
+    url = _build_instagram_helper_local_url("/api/helper/emulators")
+    response = http_utils.request_with_retry(
+        "GET",
+        url,
+        headers=_helper_request_headers(),
+        timeout=20,
+        allow_retry=True,
+        log_context="instagram_audit_helper_inventory",
+    )
+    if response.status_code != 200:
+        raise RuntimeError(f"Helper inventory returned {response.status_code}")
+    payload = response.json()
+    if not isinstance(payload, dict) or not payload.get("ok"):
+        raise RuntimeError(str(payload.get("detail") or "Helper inventory is unavailable"))
+    return payload
+
+
+def _helper_is_busy(payload: dict[str, Any]) -> bool:
+    state = payload.get("state") if isinstance(payload, dict) else {}
+    if isinstance(state, dict) and state.get("flow_running"):
+        return True
+    return False
+
+
+def _wait_for_helper_idle(
+    timeout_seconds: int = INSTAGRAM_AUDIT_HELPER_IDLE_TIMEOUT_SECONDS,
+    *,
+    heartbeat: Optional[RuntimeHeartbeat] = None,
+) -> dict[str, Any]:
+    deadline = time.time() + max(5, int(timeout_seconds))
+    last_payload: dict[str, Any] = {}
+    while time.time() < deadline:
+        if heartbeat is not None:
+            heartbeat()
+        last_payload = _fetch_helper_emulator_inventory()
+        if not _helper_is_busy(last_payload):
+            return last_payload
+        time.sleep(INSTAGRAM_AUDIT_HELPER_POLL_SECONDS)
+    raise RuntimeError("Helper занят слишком долго. Дождись завершения текущего flow и повтори аудит.")
+
+
+def _launch_instagram_helper_ticket(ticket: str) -> dict[str, Any]:
+    url = _build_instagram_helper_local_url("/api/helper/launch-ticket")
+    response = http_utils.request_with_retry(
+        "POST",
+        url,
+        headers={**_helper_request_headers(), "Content-Type": "application/json"},
+        json={"ticket": str(ticket or "").strip()},
+        timeout=30,
+        allow_retry=False,
+        log_context="instagram_audit_helper_launch",
+    )
+    if response.status_code != 200:
+        try:
+            payload = response.json()
+        except Exception:
+            payload = {}
+        raise RuntimeError(str(payload.get("detail") or f"Helper launch returned {response.status_code}"))
+    payload = response.json()
+    if not isinstance(payload, dict) or not payload.get("ok"):
+        raise RuntimeError(str(payload.get("detail") or "Helper did not accept audit ticket"))
+    return payload
+
+
+def _account_has_instagram_login(account: dict[str, Any]) -> bool:
+    return bool(str(account.get("account_login") or "").strip() and str(account.get("account_password") or "").strip())
+
+
+def _account_has_mail_credentials(account: dict[str, Any]) -> bool:
+    return bool(str(account.get("email") or "").strip() and str(account.get("email_password") or "").strip())
+
+
+def _helper_inventory_available_serials(payload: dict[str, Any]) -> list[str]:
+    candidates = []
+    for key in ("available_serials", "running_serials", "configured_serials"):
+        raw = payload.get(key) if isinstance(payload, dict) else []
+        if isinstance(raw, list):
+            candidates.extend(str(item or "").strip() for item in raw)
+    cleaned = sorted({item for item in candidates if item})
+    return cleaned
+
+
+def _pick_instagram_audit_serial(usage: dict[str, int]) -> str:
+    if not usage:
+        return ""
+    return min(usage.keys(), key=lambda item: (int(usage.get(item, 0)), item))
+
+
+def _prepare_instagram_audit_items(
+    accounts: list[dict[str, Any]],
+    *,
+    available_serials: list[str],
+) -> list[dict[str, Any]]:
+    usage = db.count_instagram_emulator_serial_usage(available_serials)
+    prepared: list[dict[str, Any]] = []
+    timestamp = int(time.time())
+    available_set = set(available_serials)
+    for index, account in enumerate(accounts):
+        account_id = int(account["id"])
+        assigned_serial = str(account.get("instagram_emulator_serial") or "").strip()
+        resolution_state = ""
+        resolution_detail = ""
+        item_state = "queued"
+        mail_probe_state = "pending"
+        if not _account_has_instagram_login(account):
+            resolution_state = "missing_credentials"
+            resolution_detail = "Не заполнены логин или пароль Instagram."
+            item_state = "done"
+            mail_probe_state = "not_required"
+        else:
+            if assigned_serial:
+                if assigned_serial not in available_set:
+                    resolution_state = "missing_device"
+                    resolution_detail = f"Назначенный serial {assigned_serial} сейчас недоступен в helper."
+                    item_state = "done"
+                    mail_probe_state = "not_required"
+            else:
+                chosen_serial = _pick_instagram_audit_serial(usage)
+                if not chosen_serial:
+                    resolution_state = "missing_device"
+                    resolution_detail = "Helper не отдал ни одного доступного emulator serial."
+                    item_state = "done"
+                    mail_probe_state = "not_required"
+                else:
+                    assigned_serial = chosen_serial
+                    usage[chosen_serial] = int(usage.get(chosen_serial, 0)) + 1
+                    db.update_account_instagram_emulator_serial(account_id, chosen_serial)
+        prepared.append(
+            {
+                "account_id": account_id,
+                "queue_position": index,
+                "assigned_serial": assigned_serial,
+                "item_state": item_state,
+                "login_state": "",
+                "login_detail": "",
+                "mail_probe_state": mail_probe_state,
+                "mail_probe_detail": "",
+                "resolution_state": resolution_state,
+                "resolution_detail": resolution_detail,
+                "started_at": timestamp if item_state == "done" else None,
+                "completed_at": timestamp if item_state == "done" else None,
+            }
+        )
+    return prepared
+
+
+def _instagram_message_match(messages: list[dict[str, Any]]) -> dict[str, Any]:
+    now = int(time.time())
+    freshness_cutoff = now - INSTAGRAM_AUDIT_MAIL_FRESHNESS_SECONDS
+    sender_markers = ("instagram", "meta")
+    subject_markers = (
+        "security code",
+        "confirmation code",
+        "login code",
+        "confirm your account",
+        "confirm this login",
+        "подтверд",
+        "код",
+        "вход",
+        "безопас",
+    )
+    for item in messages:
+        received_at = int(item.get("received_at") or 0)
+        if received_at and received_at < freshness_cutoff:
+            continue
+        sender = str(item.get("from_text") or "").strip().lower()
+        subject = str(item.get("subject") or "").strip().lower()
+        snippet = str(item.get("snippet") or "").strip().lower()
+        merged = " ".join(part for part in (sender, subject, snippet) if part)
+        if not any(marker in merged for marker in sender_markers):
+            continue
+        if any(marker in merged for marker in subject_markers):
+            return {
+                "matched": True,
+                "subject": str(item.get("subject") or "").strip(),
+                "received_at": received_at,
+                "detail": f"Найдено свежее письмо Instagram/Meta: {str(item.get('subject') or '(без темы)').strip()}",
+            }
+    return {"matched": False, "detail": "Свежих писем Instagram/Meta с кодом или подтверждением входа не найдено."}
+
+
+def _run_instagram_mail_probe(
+    account: dict[str, Any],
+    *,
+    heartbeat: Optional[RuntimeHeartbeat] = None,
+) -> dict[str, Any]:
+    account_id = int(account["id"])
+    if not _account_has_mail_credentials(account):
+        return {
+            "mail_probe_state": "not_configured",
+            "mail_probe_detail": "У аккаунта не заполнены почта или пароль почты.",
+            "matched_email_code": False,
+        }
+    if heartbeat is not None:
+        heartbeat()
+    result = mail_service.fetch_recent_messages(
+        email_address=str(account.get("email") or "").strip(),
+        email_password=str(account.get("email_password") or "").strip(),
+        provider=str(account.get("mail_provider") or "auto"),
+        limit=mail_service.MAIL_FETCH_LIMIT,
+    )
+    if heartbeat is not None:
+        heartbeat()
+    mail_status = str(result.get("status") or "connect_error")
+    db.update_account_mail_state(
+        account_id,
+        mail_provider=str(result.get("provider") or account.get("mail_provider") or "auto"),
+        mail_status=mail_status,
+        mail_last_error=str(result.get("error") or ""),
+    )
+    messages = list(result.get("messages") or [])
+    if mail_status in {"ok", "empty"}:
+        db.replace_account_mail_messages(account_id, messages)
+    if mail_status == "ok":
+        match = _instagram_message_match(messages)
+        return {
+            "mail_probe_state": "ok",
+            "mail_probe_detail": str(match["detail"]),
+            "matched_email_code": bool(match["matched"]),
+            "matched_subject": str(match.get("subject") or "").strip(),
+        }
+    if mail_status == "empty":
+        return {
+            "mail_probe_state": "empty",
+            "mail_probe_detail": "Во входящих письма не найдены.",
+            "matched_email_code": False,
+        }
+    if mail_status == "auth_error":
+        return {
+            "mail_probe_state": "auth_error",
+            "mail_probe_detail": str(result.get("error") or "Не удалось войти в почту."),
+            "matched_email_code": False,
+        }
+    if mail_status == "unsupported":
+        return {
+            "mail_probe_state": "unsupported",
+            "mail_probe_detail": str(result.get("error") or "Почтовый провайдер не поддерживается."),
+            "matched_email_code": False,
+        }
+    return {
+        "mail_probe_state": "connect_error",
+        "mail_probe_detail": str(result.get("error") or "Не удалось проверить почту."),
+        "matched_email_code": False,
+    }
+
+
+def _extract_diagnostic_path(detail: str) -> str:
+    marker = "Диагностика:"
+    text = str(detail or "").strip()
+    if marker not in text:
+        return ""
+    after = text.split(marker, 1)[1].strip()
+    return after.split()[0].strip() if after else ""
+
+
+def _wait_for_instagram_login_result(
+    account_id: int,
+    *,
+    since_ts: int,
+    timeout_seconds: int,
+    heartbeat: Optional[RuntimeHeartbeat] = None,
+) -> dict[str, Any]:
+    deadline = time.time() + max(10, int(timeout_seconds))
+    terminal_states = {"login_submitted", "manual_2fa_required", "challenge_required", "invalid_password", "helper_error"}
+    while time.time() < deadline:
+        if heartbeat is not None:
+            heartbeat()
+        row = db.get_account(int(account_id))
+        if row:
+            account = dict(row)
+            updated_at = int(account.get("instagram_launch_updated_at") or 0)
+            state = str(account.get("instagram_launch_status") or "idle").strip().lower()
+            if updated_at >= int(since_ts) and state in terminal_states:
+                return {
+                    "login_state": state,
+                    "login_detail": str(account.get("instagram_launch_detail") or "").strip(),
+                    "updated_at": updated_at,
+                }
+        time.sleep(INSTAGRAM_AUDIT_HELPER_POLL_SECONDS)
+    raise TimeoutError("Helper не прислал итоговый статус входа за отведённое время.")
+
+
+def _instagram_audit_resolution_from_login(login_state: str) -> str:
+    mapping = {
+        "login_submitted": "login_ok",
+        "manual_2fa_required": "manual_2fa_required",
+        "challenge_required": "challenge_required",
+        "invalid_password": "invalid_password",
+        "helper_error": "helper_error",
+    }
+    return mapping.get((login_state or "").strip().lower(), "helper_error")
+
+
+def _instagram_audit_progress_pct(item_state: str) -> int:
+    return {
+        "queued": 0,
+        "launching": 15,
+        "login_check": 45,
+        "mail_check_if_needed": 72,
+        "done": 100,
+    }.get((item_state or "").strip().lower(), 0)
+
+
+def _run_instagram_audit_batch(batch_id: int, *, heartbeat: Optional[RuntimeHeartbeat] = None) -> None:
+    batch = db.get_instagram_audit_batch(batch_id)
+    if batch is None or _instagram_audit_batch_is_terminal(batch["state"]):
+        return
+    if heartbeat is not None:
+        heartbeat()
+    db.reset_instagram_audit_inflight_items(batch_id)
+    db.update_instagram_audit_batch_state(batch_id, "running", detail="Массовая проверка входов запущена.", started_at=int(time.time()))
+    items = [dict(row) for row in db.list_instagram_audit_items(batch_id)]
+    for item in items:
+        if str(item.get("item_state") or "") == "done":
+            continue
+        if heartbeat is not None:
+            heartbeat()
+        _run_instagram_audit_item(batch_id, item, heartbeat=heartbeat)
+    summary = db.refresh_instagram_audit_batch_state(batch_id)
+    final_state = str(summary.get("state") or "")
+    if final_state == "completed":
+        db.update_instagram_audit_batch_state(batch_id, final_state, detail="Проверка входов завершена. Проблем не найдено.")
+    elif final_state == "completed_with_errors":
+        db.update_instagram_audit_batch_state(batch_id, final_state, detail="Проверка входов завершена. Есть аккаунты, требующие ручных шагов.")
+
+
+def _run_instagram_audit_item(
+    batch_id: int,
+    item: dict[str, Any],
+    *,
+    heartbeat: Optional[RuntimeHeartbeat] = None,
+) -> None:
+    account_id = int(item["account_id"])
+    item_id = int(item["id"])
+    account_row = db.get_account(account_id)
+    if account_row is None:
+        db.update_instagram_audit_item(
+            item_id,
+            item_state="done",
+            resolution_state="helper_error",
+            resolution_detail="Аккаунт не найден.",
+            mail_probe_state="not_required",
+            completed_at=int(time.time()),
+        )
+        db.append_instagram_audit_event(batch_id, audit_item_id=item_id, account_id=account_id, state="done", detail="Аккаунт не найден.", payload={})
+        db.refresh_instagram_audit_batch_state(batch_id)
+        return
+    account = dict(account_row)
+    if not _account_has_instagram_login(account):
+        detail = "Не заполнены логин или пароль Instagram."
+        db.update_instagram_audit_item(
+            item_id,
+            item_state="done",
+            resolution_state="missing_credentials",
+            resolution_detail=detail,
+            mail_probe_state="not_required",
+            completed_at=int(time.time()),
+        )
+        db.append_instagram_audit_event(batch_id, audit_item_id=item_id, account_id=account_id, state="done", detail=detail, payload={"resolution_state": "missing_credentials"})
+        db.refresh_instagram_audit_batch_state(batch_id, detail=detail)
+        return
+    assigned_serial = str(item.get("assigned_serial") or account.get("instagram_emulator_serial") or "").strip()
+    if not assigned_serial:
+        detail = "Для аккаунта не удалось назначить emulator serial."
+        db.update_instagram_audit_item(
+            item_id,
+            item_state="done",
+            resolution_state="missing_device",
+            resolution_detail=detail,
+            mail_probe_state="not_required",
+            completed_at=int(time.time()),
+        )
+        db.append_instagram_audit_event(batch_id, audit_item_id=item_id, account_id=account_id, state="done", detail=detail, payload={"resolution_state": "missing_device"})
+        db.refresh_instagram_audit_batch_state(batch_id, detail=detail)
+        return
+
+    start_ts = int(time.time())
+    detail = f"Запускаю helper для @{_account_identity_handle(account)} на {assigned_serial}."
+    db.update_instagram_audit_item(
+        item_id,
+        item_state="launching",
+        assigned_serial=assigned_serial,
+        started_at=start_ts,
+        resolution_state="",
+        resolution_detail="",
+    )
+    db.append_instagram_audit_event(batch_id, audit_item_id=item_id, account_id=account_id, state="launching", detail=detail, payload={"assigned_serial": assigned_serial})
+    db.refresh_instagram_audit_batch_state(batch_id, detail=detail)
+    db.update_account_instagram_launch_state(account_id, "idle", "Instagram audit запущен. Ожидаю ответ helper.")
+
+    try:
+        _wait_for_helper_idle(heartbeat=heartbeat)
+        created = db.create_helper_launch_ticket(
+            account_id=account_id,
+            target="instagram_audit_login",
+            created_by_admin=ADMIN_USER,
+            ttl_seconds=HELPER_TICKET_TTL_SECONDS,
+        )
+        db.update_instagram_audit_item(item_id, item_state="login_check", assigned_serial=assigned_serial)
+        db.append_instagram_audit_event(
+            batch_id,
+            audit_item_id=item_id,
+            account_id=account_id,
+            state="login_check",
+            detail="Helper принял задачу. Жду итоговый login status.",
+            payload={"ticket": str(created["ticket"]), "assigned_serial": assigned_serial},
+        )
+        db.refresh_instagram_audit_batch_state(batch_id, detail="Helper проверяет вход Instagram.")
+        _launch_instagram_helper_ticket(str(created["ticket"]))
+        login_result = _wait_for_instagram_login_result(
+            account_id,
+            since_ts=start_ts,
+            timeout_seconds=INSTAGRAM_AUDIT_LOGIN_TIMEOUT_SECONDS,
+            heartbeat=heartbeat,
+        )
+    except Exception as exc:
+        detail = str(exc)
+        db.update_instagram_audit_item(
+            item_id,
+            item_state="done",
+            assigned_serial=assigned_serial,
+            login_state="helper_error",
+            login_detail=detail,
+            mail_probe_state="not_required",
+            resolution_state="helper_error",
+            resolution_detail=detail,
+            completed_at=int(time.time()),
+        )
+        db.append_instagram_audit_event(batch_id, audit_item_id=item_id, account_id=account_id, state="done", detail=detail, payload={"resolution_state": "helper_error"})
+        db.refresh_instagram_audit_batch_state(batch_id, detail=detail)
+        return
+
+    login_state = str(login_result["login_state"] or "").strip().lower()
+    login_detail = str(login_result.get("login_detail") or "").strip()
+    diagnostic_path = _extract_diagnostic_path(login_detail)
+    resolution_state = _instagram_audit_resolution_from_login(login_state)
+    resolution_detail = login_detail
+    mail_probe_state = "not_required"
+    mail_probe_detail = "Проверка почты не нужна."
+
+    if login_state == "challenge_required":
+        db.update_instagram_audit_item(
+            item_id,
+            item_state="mail_check_if_needed",
+            assigned_serial=assigned_serial,
+            login_state=login_state,
+            login_detail=login_detail,
+            diagnostic_path=diagnostic_path,
+            mail_probe_state="checking",
+            mail_probe_detail="Challenge обнаружен. Проверяю почту аккаунта.",
+        )
+        db.append_instagram_audit_event(
+            batch_id,
+            audit_item_id=item_id,
+            account_id=account_id,
+            state="mail_check_if_needed",
+            detail="Instagram запросил challenge. Запускаю mail probe.",
+            payload={"login_state": login_state},
+        )
+        db.refresh_instagram_audit_batch_state(batch_id, detail="Для challenge-аккаунта проверяю почту.")
+        mail_probe = _run_instagram_mail_probe(account, heartbeat=heartbeat)
+        mail_probe_state = str(mail_probe["mail_probe_state"])
+        mail_probe_detail = str(mail_probe["mail_probe_detail"])
+        if mail_probe.get("matched_email_code"):
+            resolution_state = "email_code_required"
+            resolution_detail = f"{login_detail} {mail_probe_detail}".strip()
+        else:
+            resolution_state = "challenge_required"
+            resolution_detail = f"{login_detail} {mail_probe_detail}".strip()
+
+    completed_at = int(time.time())
+    db.update_instagram_audit_item(
+        item_id,
+        item_state="done",
+        assigned_serial=assigned_serial,
+        login_state=login_state,
+        login_detail=login_detail,
+        mail_probe_state=mail_probe_state,
+        mail_probe_detail=mail_probe_detail,
+        resolution_state=resolution_state,
+        resolution_detail=resolution_detail,
+        diagnostic_path=diagnostic_path,
+        completed_at=completed_at,
+    )
+    db.append_instagram_audit_event(
+        batch_id,
+        audit_item_id=item_id,
+        account_id=account_id,
+        state="done",
+        detail=resolution_detail,
+        payload={
+            "resolution_state": resolution_state,
+            "login_state": login_state,
+            "mail_probe_state": mail_probe_state,
+            "assigned_serial": assigned_serial,
+        },
+    )
+    db.refresh_instagram_audit_batch_state(batch_id, detail=resolution_detail)
+
+
+def _runtime_task_is_retryable(task_type: str, exc: Exception) -> bool:
+    if isinstance(exc, RuntimeTaskError):
+        return bool(exc.retryable)
+    if isinstance(exc, ValueError):
+        return False
+    return task_type in {"publish_batch_start", "instagram_audit_batch_run", "publish_reconcile", "instagram_audit_reconcile"}
+
+
+def _runtime_task_heartbeat(worker_name: str, task_id: int) -> None:
+    db.upsert_runtime_worker_heartbeat(worker_name, current_task_id=int(task_id))
+    if not db.heartbeat_runtime_task(int(task_id), worker_name=worker_name, lease_seconds=RUNTIME_TASK_LEASE_SECONDS):
+        raise RuntimeTaskError("Runtime task lease lost.", retryable=True)
+
+
+def _finalize_failed_runtime_task(task: dict[str, Any], error_text: str) -> None:
+    task_type = str(task.get("task_type") or "").strip().lower()
+    entity_id = int(task.get("entity_id") or 0)
+    if entity_id <= 0:
+        return
+    if task_type == "publish_batch_start":
+        try:
+            db.mark_publish_generation_failed(entity_id, f"Runtime worker failed to start n8n workflow: {error_text}")
+        except Exception as exc:
+            logger.warning("runtime_publish_batch_finalize_failed: batch_id=%s error=%s", entity_id, exc)
+    elif task_type == "instagram_audit_batch_run":
+        try:
+            db.update_instagram_audit_batch_state(entity_id, "failed", detail=error_text, completed_at=int(time.time()))
+            db.append_instagram_audit_event(
+                entity_id,
+                audit_item_id=None,
+                account_id=None,
+                state="failed",
+                detail=error_text,
+                payload={},
+            )
+        except Exception as exc:
+            logger.warning("runtime_audit_batch_finalize_failed: batch_id=%s error=%s", entity_id, exc)
+
+
+def _process_runtime_task(
+    task: dict[str, Any],
+    *,
+    worker_name: str,
+    heartbeat: RuntimeHeartbeat,
+) -> None:
+    task_type = str(task.get("task_type") or "").strip().lower()
+    entity_id = int(task.get("entity_id") or 0)
+    if entity_id <= 0 and task_type not in {"publish_reconcile", "instagram_audit_reconcile"}:
+        raise RuntimeTaskError("Runtime task entity_id is invalid.", retryable=False)
+
+    if task_type == "publish_batch_start":
+        heartbeat()
+        db.mark_publish_batch_worker_started(entity_id, f"Runtime worker {worker_name} запускает n8n workflow.")
+        _trigger_publish_generation_runtime(entity_id)
+        return
+    if task_type == "instagram_audit_batch_run":
+        _run_instagram_audit_batch(entity_id, heartbeat=heartbeat)
+        return
+    if task_type == "publish_reconcile":
+        heartbeat()
+        _run_publish_generation_watchdog()
+        return
+    if task_type == "instagram_audit_reconcile":
+        heartbeat()
+        for batch_id in db.list_pending_instagram_audit_batch_ids(limit=20):
+            heartbeat()
+            _enqueue_instagram_audit_batch(int(batch_id))
+        return
+    raise RuntimeTaskError(f"Unsupported runtime task type: {task_type or 'unknown'}", retryable=False)
+
+
+def _run_runtime_task_once(*, worker_name: str = RUNTIME_WORKER_NAME) -> bool:
+    db.upsert_runtime_worker_heartbeat(worker_name, current_task_id=None)
+    task = db.lease_next_runtime_task(worker_name=worker_name, lease_seconds=RUNTIME_TASK_LEASE_SECONDS)
+    if task is None:
+        return False
+
+    task_id = int(task["id"])
+    last_error = ""
+
+    def heartbeat() -> None:
+        _runtime_task_heartbeat(worker_name, task_id)
+
+    try:
+        heartbeat()
+        _process_runtime_task(task, worker_name=worker_name, heartbeat=heartbeat)
+        if not db.complete_runtime_task(task_id, worker_name=worker_name):
+            raise RuntimeTaskError("Runtime task completion lost its lease.", retryable=True)
+    except Exception as exc:
+        last_error = str(exc)
+        retryable = _runtime_task_is_retryable(str(task.get("task_type") or ""), exc)
+        try:
+            updated = db.fail_runtime_task(
+                task_id,
+                worker_name=worker_name,
+                error=last_error,
+                retryable=retryable,
+                retry_delay_seconds=RUNTIME_TASK_RETRY_DELAY_SECONDS,
+            )
+        except ValueError as state_exc:
+            logger.warning("runtime_task_fail_transition_skipped: task_id=%s error=%s", task_id, state_exc)
+        else:
+            if str(updated.get("state") or "") == "failed":
+                _finalize_failed_runtime_task(task, last_error)
+        logger.exception("runtime_task_failed: task_id=%s type=%s error=%s", task_id, task.get("task_type"), exc)
+    finally:
+        db.upsert_runtime_worker_heartbeat(worker_name, current_task_id=None, last_error=last_error)
+    return True
+
+
+def _runtime_worker_main() -> None:
+    while not RUNTIME_WORKER_STOP.is_set():
+        try:
+            did_work = _run_runtime_task_once(worker_name=RUNTIME_WORKER_NAME)
+        except Exception as exc:
+            error_text = str(exc).lower()
+            if RUNTIME_WORKER_STOP.is_set() or "unable to open database file" in error_text or "no such table: runtime_" in error_text:
+                break
+            logger.exception("runtime_worker_cycle_failed: worker=%s error=%s", RUNTIME_WORKER_NAME, exc)
+            try:
+                db.upsert_runtime_worker_heartbeat(RUNTIME_WORKER_NAME, current_task_id=None, last_error=str(exc))
+            except Exception:
+                break
+            did_work = False
+        if did_work:
+            continue
+        RUNTIME_WORKER_WAKEUP.wait(RUNTIME_WORKER_IDLE_POLL_SECONDS)
+        RUNTIME_WORKER_WAKEUP.clear()
+
+
+def _ensure_runtime_worker_thread() -> None:
+    global RUNTIME_WORKER_THREAD
+    with RUNTIME_WORKER_LOCK:
+        if RUNTIME_WORKER_THREAD is not None and RUNTIME_WORKER_THREAD.is_alive():
+            return
+        RUNTIME_WORKER_THREAD = threading.Thread(
+            target=_runtime_worker_main,
+            daemon=True,
+            name=RUNTIME_WORKER_NAME,
+        )
+        RUNTIME_WORKER_THREAD.start()
+
+
+def _stop_runtime_worker_thread() -> None:
+    global RUNTIME_WORKER_THREAD
+    RUNTIME_WORKER_STOP.set()
+    RUNTIME_WORKER_WAKEUP.set()
+    with RUNTIME_WORKER_LOCK:
+        thread = RUNTIME_WORKER_THREAD
+        RUNTIME_WORKER_THREAD = None
+    if thread is not None and thread.is_alive():
+        thread.join(timeout=1.0)
+
+
+def _enqueue_publish_batch_start(batch_id: int) -> None:
+    db.create_or_reactivate_runtime_task(
+        task_type="publish_batch_start",
+        entity_type="publish_batch",
+        entity_id=int(batch_id),
+        payload={"batch_id": int(batch_id)},
+        max_attempts=3,
+    )
+    _ensure_runtime_worker_thread()
+    RUNTIME_WORKER_WAKEUP.set()
+
+
+def _enqueue_instagram_audit_batch(batch_id: int) -> None:
+    db.create_or_reactivate_runtime_task(
+        task_type="instagram_audit_batch_run",
+        entity_type="instagram_audit_batch",
+        entity_id=int(batch_id),
+        payload={"audit_batch_id": int(batch_id)},
+        max_attempts=INSTAGRAM_AUDIT_ITEM_RETRY_ATTEMPTS,
+    )
+    _ensure_runtime_worker_thread()
+    RUNTIME_WORKER_WAKEUP.set()
+
+
 def _admin_public_base_url(request: Request) -> str:
     if PUBLISH_BASE_URL:
         return PUBLISH_BASE_URL
     base = str(request.base_url).rstrip("/")
     return f"{base}{ADMIN_BASE_PATH}" if ADMIN_BASE_PATH else base
+
+
+def _runtime_admin_public_base_url() -> str:
+    if PUBLISH_BASE_URL:
+        return PUBLISH_BASE_URL
+    raise RuntimeError("PUBLISH_BASE_URL не настроен. Runtime worker не может построить callback URL.")
 
 
 def _absolute_admin_url(request: Request, path: str) -> str:
@@ -529,14 +1517,35 @@ def _absolute_admin_url(request: Request, path: str) -> str:
     return _admin_public_base_url(request) + suffix
 
 
+def _absolute_runtime_admin_url(path: str) -> str:
+    suffix = (path or "").strip()
+    if not suffix.startswith("/"):
+        suffix = "/" + suffix
+    return _runtime_admin_public_base_url() + suffix
+
+
+def _publish_internal_callback_url(path: str) -> str:
+    suffix = (path or "").strip()
+    if not suffix.startswith("/"):
+        suffix = "/" + suffix
+    parsed = urlparse(PUBLISH_N8N_WEBHOOK_URL or "")
+    if parsed.hostname in {"127.0.0.1", "localhost"}:
+        return f"http://127.0.0.1:18001{suffix}"
+    return ""
+
+
 def _publish_staging_root() -> Path:
     root = Path(PUBLISH_STAGING_DIR).expanduser()
     root.mkdir(parents=True, exist_ok=True)
     return root
 
 
+def _publish_batch_stage_path(batch_id: int) -> Path:
+    return _publish_staging_root() / str(int(batch_id))
+
+
 def _publish_batch_stage_dir(batch_id: int) -> Path:
-    directory = _publish_staging_root() / str(int(batch_id))
+    directory = _publish_batch_stage_path(int(batch_id))
     directory.mkdir(parents=True, exist_ok=True)
     return directory
 
@@ -546,12 +1555,11 @@ def _normalize_publish_artifact_path(batch_id: int, raw_path: str) -> Path:
     if not value:
         raise ValueError("Artifact path is required")
     batch_dir = _publish_batch_stage_dir(int(batch_id)).resolve()
-    staging_root = _publish_staging_root().resolve()
     candidate = Path(value).expanduser()
     if not candidate.is_absolute():
         candidate = batch_dir / candidate
     resolved = candidate.resolve()
-    if batch_dir not in resolved.parents and resolved != batch_dir and staging_root not in resolved.parents:
+    if resolved != batch_dir and batch_dir not in resolved.parents:
         raise ValueError("Artifact path must stay inside publish staging dir")
     return resolved
 
@@ -567,6 +1575,37 @@ def _file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _cleanup_publish_batch_stage_dir(batch_id: int) -> dict[str, Any]:
+    stage_dir = _publish_batch_stage_path(int(batch_id))
+    payload = {"path": str(stage_dir)}
+    if not stage_dir.exists():
+        return {"removed": False, **payload}
+    shutil.rmtree(stage_dir)
+    db.append_publish_job_event(
+        int(batch_id),
+        state="staging_cleaned",
+        detail=f"Staging папка удалена после завершения batch: {stage_dir}.",
+        payload=payload,
+    )
+    return {"removed": True, **payload}
+
+
+def _maybe_cleanup_publish_batch_stage_dir(batch_id: int, batch_state: Optional[str], *, job_id: Optional[int] = None) -> dict[str, Any] | None:
+    if not _publish_batch_is_terminal(batch_state):
+        return None
+    try:
+        return _cleanup_publish_batch_stage_dir(int(batch_id))
+    except Exception as exc:
+        db.append_publish_job_event(
+            int(batch_id),
+            state="staging_cleanup_failed",
+            detail=f"Не удалось удалить staging папку: {exc}",
+            payload={"batch_id": int(batch_id)},
+            job_id=int(job_id) if job_id is not None else None,
+        )
+        return None
+
+
 def _publish_signature(timestamp: str, body: bytes) -> str:
     secret = (PUBLISH_SHARED_SECRET or "").encode("utf-8")
     signed = timestamp.encode("utf-8") + b"." + body
@@ -580,6 +1619,24 @@ def _signed_publish_headers(body: bytes) -> dict[str, str]:
         "X-Publish-Signature": _publish_signature(timestamp, body),
         "Content-Type": "application/json",
     }
+
+
+def _publish_event_hash(payload: dict[str, Any]) -> str:
+    body = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(body).hexdigest()
+
+
+def _run_publish_generation_watchdog(batch_id: Optional[int] = None) -> int:
+    timeout_seconds = max(30, int(PUBLISH_FACTORY_TIMEOUT_SECONDS or 0))
+    results = db.fail_stale_generation_accounts(batch_id=batch_id, timeout_seconds=timeout_seconds)
+    for item in results:
+        logger.warning(
+            "publish_generation_timeout: batch_id=%s account_id=%s timeout_seconds=%s",
+            item.get("batch_id"),
+            item.get("account_id"),
+            item.get("timeout_seconds"),
+        )
+    return len(results)
 
 
 def _verify_signed_publish_request(body: bytes, timestamp: Optional[str], signature: Optional[str]) -> None:
@@ -848,10 +1905,12 @@ def _accounts_page_response(
         mail_label, mail_class = _account_mail_status_meta(account.get("mail_status"))
         launch_label, launch_class = _account_instagram_launch_status_meta(account.get("instagram_launch_status"))
         publish_label, publish_class = _account_instagram_publish_status_meta(account.get("instagram_publish_status"))
+        views_short = _account_views_short_label(account.get("views_state"))
         account["rotation_state_label"] = rotation_label
         account["rotation_state_class"] = rotation_class
         account["views_state_label"] = views_label
         account["views_state_class"] = views_class
+        account["views_short_label"] = views_short
         account["mail_status_label"] = mail_label
         account["mail_status_class"] = mail_class
         account["instagram_launch_status_label"] = launch_label
@@ -862,6 +1921,25 @@ def _accounts_page_response(
         owner_name = str(account.get("owner_worker_name") or "").strip()
         owner_username = str(account.get("owner_worker_username") or "").strip()
         account["owner_label"] = f"{owner_name} (@{owner_username})" if owner_username else (owner_name or "Без работника")
+        latest_audit = db.get_latest_instagram_audit_for_account(int(account["id"]))
+        if latest_audit:
+            latest_audit_dict = dict(latest_audit)
+            resolution_label, _ = _instagram_audit_resolution_meta(latest_audit_dict.get("resolution_state"))
+            joke_label, joke_class = _instagram_audit_joke(latest_audit_dict.get("resolution_state"))
+            account["latest_audit_url"] = with_base(f"/accounts/instagram/audits/{int(latest_audit_dict['audit_batch_id'])}")
+            account["latest_audit_label"] = resolution_label
+            account["latest_audit_updated_at"] = int(latest_audit_dict.get("updated_at") or 0)
+            account["audit_joke_label"] = joke_label
+            account["audit_joke_class"] = joke_class
+        else:
+            account["latest_audit_url"] = ""
+            account["latest_audit_label"] = ""
+            account["latest_audit_updated_at"] = 0
+            if str(account.get("type") or "").strip().lower() == "instagram":
+                account["audit_joke_label"] = "нет проверки"
+            else:
+                account["audit_joke_label"] = "не требуется"
+            account["audit_joke_class"] = "unknown"
         rows.append(account)
 
     overview = db.accounts_overview()
@@ -951,10 +2029,12 @@ def _account_detail_page_response(
     mail_label, mail_class = _account_mail_status_meta(account.get("mail_status"))
     launch_label, launch_class = _account_instagram_launch_status_meta(account.get("instagram_launch_status"))
     publish_label, publish_class = _account_instagram_publish_status_meta(account.get("instagram_publish_status"))
+    views_short = _account_views_short_label(account.get("views_state"))
     account["rotation_state_label"] = rotation_label
     account["rotation_state_class"] = rotation_class
     account["views_state_label"] = views_label
     account["views_state_class"] = views_class
+    account["views_short_label"] = views_short
     account["mail_status_label"] = mail_label
     account["mail_status_class"] = mail_class
     account["instagram_launch_status_label"] = launch_label
@@ -973,6 +2053,27 @@ def _account_detail_page_response(
     owner_name = str(account.get("owner_worker_name") or "").strip()
     owner_username = str(account.get("owner_worker_username") or "").strip()
     account["owner_label"] = f"{owner_name} (@{owner_username})" if owner_username else (owner_name or "Без работника")
+    latest_audit = db.get_latest_instagram_audit_for_account(int(account["id"]))
+    latest_audit_data = dict(latest_audit) if latest_audit else None
+    if latest_audit_data:
+        resolution_label, resolution_class = _instagram_audit_resolution_meta(latest_audit_data.get("resolution_state"))
+        joke_label, joke_class = _instagram_audit_joke(latest_audit_data.get("resolution_state"))
+        latest_audit_data["resolution_label"] = resolution_label
+        latest_audit_data["resolution_class"] = resolution_class
+        latest_audit_data["joke_label"] = joke_label
+        latest_audit_data["joke_class"] = joke_class
+        latest_audit_data["url"] = with_base(f"/accounts/instagram/audits/{int(latest_audit_data['audit_batch_id'])}")
+        latest_audit_data["updated_at_label"] = _format_timestamp_label(latest_audit_data.get("updated_at"))
+    if str(account.get("type") or "").strip().lower() == "instagram":
+        fallback_label = "нет проверки"
+    else:
+        fallback_label = "не требуется"
+    if latest_audit_data:
+        account["audit_joke_label"] = latest_audit_data["joke_label"]
+        account["audit_joke_class"] = latest_audit_data["joke_class"]
+    else:
+        account["audit_joke_label"] = fallback_label
+        account["audit_joke_class"] = "unknown"
 
     return templates.TemplateResponse(
         "account_detail.html",
@@ -990,8 +2091,231 @@ def _account_detail_page_response(
             "back_url": back_url,
             "detail_self_url": detail_self_url,
             "return_to": return_to_clean,
+            "latest_audit": latest_audit_data,
             "instagram_publish_source_dir": INSTAGRAM_PUBLISH_SOURCE_DIR,
             "instagram_publish_source_info_url": _build_instagram_helper_local_url("/publish-source/latest"),
+            "error": error,
+            "success": success,
+        },
+        status_code=status_code,
+    )
+
+
+def _decorate_instagram_audit_batch(raw: dict[str, Any]) -> dict[str, Any]:
+    batch = dict(raw)
+    label, css = _instagram_audit_batch_state_meta(batch.get("state"))
+    batch["state_label"] = label
+    batch["state_class"] = css
+    batch["is_terminal"] = _instagram_audit_batch_is_terminal(batch.get("state"))
+    return batch
+
+
+def _instagram_audit_event_meta(state: str, payload: dict[str, Any]) -> tuple[str, str]:
+    value = (state or "").strip().lower()
+    if value == "done":
+        resolution = str(payload.get("resolution_state") or "").strip().lower()
+        return _instagram_audit_resolution_meta(resolution)
+    if value == "mail_check_if_needed":
+        return ("Проверяю почту", "wait")
+    if value == "login_check":
+        return ("Проверяю вход", "wait")
+    if value == "launching":
+        return ("Запускаю helper", "wait")
+    return (_instagram_audit_item_state_meta(value)[0], "unknown")
+
+
+def _instagram_audit_sort_key(item: dict[str, Any]) -> tuple[int, int, str]:
+    state = str(item.get("item_state") or "").strip().lower()
+    resolution = str(item.get("resolution_state") or "").strip().lower()
+    if state != "done":
+        return (0, int(item.get("queue_position") or 0), "")
+    priority = {
+        "manual_2fa_required": 0,
+        "email_code_required": 1,
+        "challenge_required": 2,
+        "invalid_password": 3,
+        "helper_error": 4,
+        "missing_credentials": 5,
+        "missing_device": 6,
+        "login_ok": 7,
+    }.get(resolution, 8)
+    return (1, priority, str(item.get("username") or ""))
+
+
+def _build_instagram_audit_snapshot(batch_id: int) -> Optional[dict[str, Any]]:
+    batch_row = db.get_instagram_audit_batch(int(batch_id))
+    if batch_row is None:
+        return None
+    batch = _decorate_instagram_audit_batch(dict(batch_row))
+    item_rows = [dict(row) for row in db.list_instagram_audit_items(int(batch_id))]
+    event_rows = [dict(row) for row in db.list_instagram_audit_events(int(batch_id), limit=100)]
+
+    selected = len(item_rows)
+    done = sum(1 for row in item_rows if str(row.get("item_state") or "") == "done")
+    success = sum(1 for row in item_rows if str(row.get("resolution_state") or "") == "login_ok")
+    issues = sum(1 for row in item_rows if str(row.get("resolution_state") or "") not in {"", "login_ok"})
+    progress_pct = int(round((done / selected) * 100)) if selected else 0
+    active_item = next((row for row in item_rows if str(row.get("item_state") or "") != "done"), None)
+    batch_state = str(batch.get("state") or "").strip().lower()
+    if batch["is_terminal"]:
+        if batch_state == "completed":
+            phase_label = "Готово"
+            phase_subtitle = str(batch.get("detail") or "").strip() or "Аудит завершён."
+        elif batch_state == "completed_with_errors":
+            phase_label = "Готово с ручными шагами"
+            phase_subtitle = str(batch.get("detail") or "").strip() or "Аудит завершён с проблемами."
+        elif batch_state == "failed":
+            phase_label = "Ошибка"
+            phase_subtitle = str(batch.get("detail") or "").strip() or "Проверка завершилась ошибкой."
+        elif batch_state == "canceled":
+            phase_label = "Отменён"
+            phase_subtitle = str(batch.get("detail") or "").strip() or "Проверка была отменена."
+        else:
+            phase_label = "Готово"
+            phase_subtitle = str(batch.get("detail") or "").strip() or "Аудит завершён."
+    elif active_item is not None:
+        phase_label = _instagram_audit_item_state_meta(active_item.get("item_state"))[0]
+        phase_subtitle = str(active_item.get("resolution_detail") or active_item.get("login_detail") or active_item.get("mail_probe_detail") or batch.get("detail") or "").strip()
+    else:
+        phase_label = "В очереди"
+        phase_subtitle = str(batch.get("detail") or "").strip() or "Ожидаю запуск проверки."
+
+    steps = []
+    active_step = str(active_item.get("item_state") if active_item else ("done" if batch["is_terminal"] else "queued") or "queued")
+    step_order = ["queued", "launching", "login_check", "mail_check_if_needed", "done"]
+    current_index = step_order.index(active_step) if active_step in step_order else 0
+    for idx, key in enumerate(step_order):
+        status = "pending"
+        if batch["is_terminal"] and key == "done":
+            status = "done"
+        elif idx < current_index:
+            status = "done"
+        elif idx == current_index:
+            status = "active"
+        steps.append({"key": key, "label": INSTAGRAM_AUDIT_ITEM_STATE_LABELS.get(key, key), "status": status})
+
+    cards: list[dict[str, Any]] = []
+    resolution_counts = {key: 0 for key in INSTAGRAM_AUDIT_RESOLUTION_LABELS}
+    for row in item_rows:
+        resolution = str(row.get("resolution_state") or "").strip().lower()
+        if resolution in resolution_counts:
+            resolution_counts[resolution] += 1
+        item_label, item_class = _instagram_audit_item_state_meta(row.get("item_state"))
+        login_label, login_class = _account_instagram_launch_status_meta(row.get("login_state"))
+        mail_label, mail_class = _instagram_audit_mail_probe_meta(row.get("mail_probe_state"))
+        resolution_label, resolution_class = _instagram_audit_resolution_meta(row.get("resolution_state"))
+        owner_name = str(row.get("owner_worker_name") or "").strip()
+        owner_username = str(row.get("owner_worker_username") or "").strip()
+        owner_label = f"{owner_name} (@{owner_username})" if owner_username else (owner_name or "Без работника")
+        cards.append(
+            {
+                "id": int(row["id"]),
+                "account_id": int(row["account_id"]),
+                "queue_position": int(row.get("queue_position") or 0),
+                "username": str(row.get("username") or "").strip(),
+                "account_login": str(row.get("account_login") or "").strip(),
+                "assigned_serial": str(row.get("assigned_serial") or "").strip(),
+                "item_state": str(row.get("item_state") or ""),
+                "item_state_label": item_label,
+                "item_state_class": item_class,
+                "login_state": str(row.get("login_state") or ""),
+                "login_state_label": login_label,
+                "login_state_class": login_class,
+                "mail_probe_state": str(row.get("mail_probe_state") or ""),
+                "mail_probe_state_label": mail_label,
+                "mail_probe_state_class": mail_class,
+                "resolution_state": str(row.get("resolution_state") or ""),
+                "resolution_label": resolution_label,
+                "resolution_class": resolution_class,
+                "detail": str(row.get("resolution_detail") or row.get("login_detail") or row.get("mail_probe_detail") or "").strip(),
+                "login_detail": str(row.get("login_detail") or "").strip(),
+                "mail_probe_detail": str(row.get("mail_probe_detail") or "").strip(),
+                "diagnostic_path": str(row.get("diagnostic_path") or "").strip(),
+                "updated_at_label": _format_timestamp_label(row.get("updated_at")),
+                "started_at_label": _format_timestamp_label(row.get("started_at")),
+                "completed_at_label": _format_timestamp_label(row.get("completed_at")),
+                "progress_pct": _instagram_audit_progress_pct(str(row.get("item_state") or "")),
+                "open_url": with_base(f"/accounts/{int(row['account_id'])}"),
+                "owner_label": owner_label,
+                "is_active": str(row.get("item_state") or "") != "done",
+            }
+        )
+    cards.sort(key=_instagram_audit_sort_key)
+
+    recent_activity = []
+    for row in event_rows[:10]:
+        payload = _parse_json_object(row.get("payload_json"))
+        title, tone_class = _instagram_audit_event_meta(str(row.get("state") or ""), payload)
+        recent_activity.append(
+            {
+                "id": int(row["id"]),
+                "title": title,
+                "tone_class": tone_class,
+                "detail": str(row.get("detail") or "").strip(),
+                "account_username": str(row.get("account_username") or row.get("account_login") or "").strip(),
+                "created_at_label": _format_timestamp_label(row.get("created_at")),
+            }
+        )
+
+    return {
+        "batch": {
+            **batch,
+            "progress_pct": progress_pct,
+            "phase_label": phase_label,
+            "phase_subtitle": phase_subtitle,
+            "created_at_label": _format_timestamp_label(batch.get("created_at")),
+            "updated_at_label": _format_timestamp_label(batch.get("updated_at")),
+            "started_at_label": _format_timestamp_label(batch.get("started_at")),
+            "completed_at_label": _format_timestamp_label(batch.get("completed_at")),
+            "steps": steps,
+            "counts": {
+                "selected": selected,
+                "done": done,
+                "success": success,
+                "issues": issues,
+                "manual_2fa_required": resolution_counts["manual_2fa_required"],
+                "email_code_required": resolution_counts["email_code_required"],
+                "challenge_required": resolution_counts["challenge_required"],
+                "invalid_password": resolution_counts["invalid_password"],
+                "helper_error": resolution_counts["helper_error"] + resolution_counts["missing_credentials"] + resolution_counts["missing_device"],
+            },
+        },
+        "items": cards,
+        "recent_activity": recent_activity,
+        "events": [
+            {
+                "id": int(row["id"]),
+                "state": str(row.get("state") or ""),
+                "detail": str(row.get("detail") or "").strip(),
+                "payload_preview": json.dumps(_parse_json_object(row.get("payload_json")), ensure_ascii=False),
+                "account_username": str(row.get("account_username") or row.get("account_login") or "").strip(),
+                "created_at_label": _format_timestamp_label(row.get("created_at")),
+            }
+            for row in event_rows
+        ],
+        "progress_url": with_base(f"/api/accounts/instagram/audits/{int(batch_id)}/progress"),
+        "poll_interval_seconds": INSTAGRAM_AUDIT_POLL_INTERVAL_SECONDS,
+    }
+
+
+def _instagram_audit_detail_page_response(
+    request: Request,
+    *,
+    audit_id: int,
+    error: Optional[str] = None,
+    success: Optional[str] = None,
+    status_code: int = 200,
+) -> HTMLResponse:
+    batch_row = db.get_instagram_audit_batch(int(audit_id))
+    snapshot = _build_instagram_audit_snapshot(int(audit_id)) if batch_row else None
+    batch = _decorate_instagram_audit_batch(dict(batch_row)) if batch_row else None
+    return templates.TemplateResponse(
+        "instagram_audit_detail.html",
+        {
+            "request": request,
+            "audit_id": int(audit_id),
+            "batch": batch,
+            "dashboard_snapshot": snapshot,
             "error": error,
             "success": success,
         },
@@ -1005,7 +2329,491 @@ def _decorate_publish_batch(raw: dict) -> dict:
     batch["state_label"] = label
     batch["state_class"] = css
     batch["is_terminal"] = _publish_batch_is_terminal(batch.get("state"))
+    batch["error_accounts"] = int(batch.get("generation_failed_accounts") or 0) + int(batch.get("failed_accounts") or 0) + int(batch.get("canceled_accounts") or 0)
+    batch["active_accounts"] = int(batch.get("generating_accounts") or 0) + int(batch.get("queued_publish_accounts") or 0) + int(batch.get("active_publish_accounts") or 0)
     return batch
+
+
+def _format_timestamp_label(ts: Any) -> str:
+    try:
+        value = int(ts or 0)
+    except Exception:
+        return "—"
+    if value <= 0:
+        return "—"
+    return datetime.fromtimestamp(value).strftime("%Y-%m-%d %H:%M")
+
+
+def _parse_json_object(raw: Any) -> dict[str, Any]:
+    text = str(raw or "").strip()
+    if not text:
+        return {}
+    try:
+        value = json.loads(text)
+    except Exception:
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _publish_generation_progress_percent(progress_pct: Any) -> int:
+    try:
+        progress_value = float(progress_pct)
+    except Exception:
+        progress_value = 0.0
+    progress_value = max(0.0, min(100.0, progress_value))
+    return int(round(5.0 + (progress_value * 0.5)))
+
+
+def _publish_account_progress_for_state(state: str) -> int:
+    value = (state or "").strip().lower()
+    return {
+        "queued_for_generation": 0,
+        "generating": 20,
+        "queued_for_publish": 60,
+        "leased": 70,
+        "preparing": 70,
+        "importing_media": 78,
+        "opening_reel_flow": 84,
+        "selecting_media": 90,
+        "publishing": 96,
+        "published": 100,
+    }.get(value, 0)
+
+
+def _publish_event_progress_for_state(state: str, payload: dict[str, Any]) -> int:
+    value = (state or "").strip().lower()
+    if value == "generation_progress":
+        return _publish_generation_progress_percent(payload.get("progress_pct"))
+    if value in {"generation_started", "batch_created"}:
+        return 20 if value == "generation_started" else 0
+    if value == "artifact_ready":
+        return 60
+    if value in {"leased", "preparing", "importing_media", "opening_reel_flow", "selecting_media", "publishing", "published"}:
+        return _publish_account_progress_for_state(value)
+    return 0
+
+
+def _publish_account_sort_group(state: str) -> int:
+    value = (state or "").strip().lower()
+    if value in {"generating", "queued_for_publish", "leased", "preparing", "importing_media", "opening_reel_flow", "selecting_media", "publishing"}:
+        return 0
+    if value == "queued_for_generation":
+        return 1
+    if value == "published":
+        return 2
+    if value in {"generation_failed", "failed", "canceled"}:
+        return 3
+    return 4
+
+
+def _publish_recent_event_meta(state: str, payload: dict[str, Any]) -> tuple[str, str]:
+    value = (state or "").strip().lower()
+    if value == "generation_progress":
+        stage_label = str(payload.get("stage_label") or "").strip()
+        return stage_label or "Генерация видео", "wait"
+    if value == "generation_started":
+        return "Запуск workflow", "wait"
+    if value == "generation_completed":
+        return "Генерация завершена", "on"
+    if value == "generation_failed":
+        return "Ошибка генерации", "off"
+    if value == "artifact_ready":
+        return "Видео готово", "on"
+    if value == "batch_created":
+        return "Пакет создан", "unknown"
+    if value in PUBLISH_JOB_STATE_LABELS:
+        return PUBLISH_JOB_STATE_LABELS[value], _publish_job_state_meta(value)[1]
+    if value in PUBLISH_BATCH_ACCOUNT_STATE_LABELS:
+        return PUBLISH_BATCH_ACCOUNT_STATE_LABELS[value], _publish_batch_account_state_meta(value)[1]
+    if value in PUBLISH_BATCH_STATE_LABELS:
+        return PUBLISH_BATCH_STATE_LABELS[value], _publish_batch_state_meta(value)[1]
+    return value or "Событие", "unknown"
+
+
+def _build_publish_dashboard_snapshot(batch_id: int) -> Optional[dict[str, Any]]:
+    batch_row = db.get_publish_batch(int(batch_id))
+    if batch_row is None:
+        return None
+
+    batch = _decorate_publish_batch(dict(batch_row))
+    batch_stage_dir = _publish_batch_stage_path(int(batch_id))
+    batch["stage_dir_exists"] = batch_stage_dir.exists()
+    batch["created_at_label"] = _format_timestamp_label(batch.get("created_at"))
+    batch["updated_at_label"] = _format_timestamp_label(batch.get("updated_at"))
+    batch["generation_started_at_label"] = _format_timestamp_label(batch.get("generation_started_at"))
+    batch["generation_completed_at_label"] = _format_timestamp_label(batch.get("generation_completed_at"))
+    batch["completed_at_label"] = _format_timestamp_label(batch.get("completed_at"))
+
+    accounts_raw = [_decorate_publish_account(dict(raw)) for raw in db.list_publish_batch_accounts(int(batch_id))]
+    artifacts_raw: list[dict[str, Any]] = []
+    for raw in db.list_publish_artifacts(int(batch_id)):
+        row = dict(raw)
+        size_bytes = int(row.get("size_bytes") or 0)
+        row["size_label"] = f"{size_bytes / (1024 * 1024):.1f} MB" if size_bytes else "—"
+        duration = row.get("duration_seconds")
+        row["duration_label"] = f"{float(duration):.1f} s" if duration not in (None, "") else "—"
+        row["created_at_label"] = _format_timestamp_label(row.get("created_at"))
+        row["download_url"] = with_base(f"/publishing/batches/{int(batch_id)}/artifacts/{int(row['id'])}/download")
+        artifacts_raw.append(row)
+
+    jobs_raw: list[dict[str, Any]] = []
+    for raw in db.list_publish_jobs(int(batch_id)):
+        row = dict(raw)
+        label, css = _publish_job_state_meta(row.get("state"))
+        row["state_label"] = label
+        row["state_class"] = css
+        row["created_at_label"] = _format_timestamp_label(row.get("created_at"))
+        row["started_at_label"] = _format_timestamp_label(row.get("started_at"))
+        row["completed_at_label"] = _format_timestamp_label(row.get("completed_at"))
+        row["identity_handle"] = _account_identity_handle({"username": row.get("account_username"), "account_login": row.get("account_login")})
+        row["download_url"] = with_base(f"/publishing/batches/{int(batch_id)}/artifacts/{int(row['artifact_id'])}/download")
+        jobs_raw.append(row)
+
+    parsed_events: list[dict[str, Any]] = []
+    latest_generation_progress: dict[int, dict[str, Any]] = {}
+    account_events: dict[int, list[dict[str, Any]]] = {}
+    for raw in db.list_publish_job_events(int(batch_id), limit=500):
+        row = dict(raw)
+        payload = _parse_json_object(row.get("payload_json"))
+        row["payload"] = payload
+        row["created_at_label"] = _format_timestamp_label(row.get("created_at"))
+        row["payload_preview"] = (
+            str(row.get("payload_json") or "")[:220] + ("…" if len(str(row.get("payload_json") or "")) > 220 else "")
+            if str(row.get("payload_json") or "").strip()
+            else ""
+        )
+        title, tone = _publish_recent_event_meta(str(row.get("state") or ""), payload)
+        row["title"] = title
+        row["tone_class"] = tone
+        parsed_events.append(row)
+        try:
+            account_id = int(row.get("account_id") or 0)
+        except Exception:
+            account_id = 0
+        if account_id > 0:
+            account_events.setdefault(account_id, []).append(row)
+            if str(row.get("state") or "").strip().lower() == "generation_progress" and account_id not in latest_generation_progress:
+                latest_generation_progress[account_id] = row
+
+    account_cards: list[dict[str, Any]] = []
+    for account in accounts_raw:
+        account_id = int(account["id"])
+        batch_state = str(account.get("batch_state") or "").strip().lower() or "queued_for_generation"
+        progress_event = latest_generation_progress.get(account_id)
+        history_max = _publish_account_progress_for_state(batch_state) if batch_state not in {"generation_failed", "failed", "canceled"} else 0
+        for event in account_events.get(account_id, []):
+            history_max = max(history_max, _publish_event_progress_for_state(str(event.get("state") or ""), event.get("payload") or {}))
+
+        if batch_state == "generating" and progress_event is not None:
+            progress_pct = _publish_generation_progress_percent((progress_event.get("payload") or {}).get("progress_pct"))
+            phase_label = str((progress_event.get("payload") or {}).get("stage_label") or "").strip() or "Генерация видео"
+            phase_detail = str(progress_event.get("detail") or "").strip() or str(account.get("detail") or "").strip()
+            phase_step_key = "video_production"
+        elif batch_state == "queued_for_generation":
+            progress_pct = 0
+            phase_label = "Запуск workflow" if batch.get("generation_started_at") else "Ожидает запуска"
+            phase_detail = str(account.get("detail") or "").strip() or "Аккаунт ждёт запуска генерации."
+            phase_step_key = "workflow_started" if not batch.get("generation_started_at") else "video_production"
+        elif batch_state == "generating":
+            progress_pct = 20
+            phase_label = "Генерация видео"
+            phase_detail = str(account.get("detail") or "").strip() or "Видео сейчас генерируется."
+            phase_step_key = "video_production"
+        elif batch_state == "queued_for_publish":
+            progress_pct = 60
+            phase_label = "Видео готово"
+            phase_detail = str(account.get("detail") or "").strip() or "Видео поставлено в очередь публикации."
+            phase_step_key = "publish_queue"
+        elif batch_state in {"leased", "preparing"}:
+            progress_pct = 70
+            phase_label = "Подготовка публикации"
+            phase_detail = str(account.get("job_detail") or account.get("detail") or "").strip() or "Runner готовит публикацию."
+            phase_step_key = "instagram_publish"
+        elif batch_state == "importing_media":
+            progress_pct = 78
+            phase_label = "Импорт в эмулятор"
+            phase_detail = str(account.get("job_detail") or account.get("detail") or "").strip() or "Видео импортируется в эмулятор."
+            phase_step_key = "instagram_publish"
+        elif batch_state == "opening_reel_flow":
+            progress_pct = 84
+            phase_label = "Открываю Reel"
+            phase_detail = str(account.get("job_detail") or account.get("detail") or "").strip() or "Открывается поток публикации Reel."
+            phase_step_key = "instagram_publish"
+        elif batch_state == "selecting_media":
+            progress_pct = 90
+            phase_label = "Выбор видео"
+            phase_detail = str(account.get("job_detail") or account.get("detail") or "").strip() or "Видео выбирается внутри Instagram."
+            phase_step_key = "instagram_publish"
+        elif batch_state == "publishing":
+            progress_pct = 96
+            phase_label = "Публикация Reel"
+            phase_detail = str(account.get("job_detail") or account.get("detail") or "").strip() or "Instagram публикует Reel."
+            phase_step_key = "instagram_publish"
+        elif batch_state == "published":
+            progress_pct = 100
+            phase_label = "Готово"
+            phase_detail = str(account.get("job_detail") or account.get("detail") or "").strip() or "Видео опубликовано."
+            phase_step_key = "done"
+        elif batch_state == "generation_failed":
+            progress_pct = max(history_max, 20)
+            phase_label = "Ошибка генерации"
+            phase_detail = str(account.get("detail") or "").strip() or "Видео не удалось сгенерировать."
+            phase_step_key = "video_production"
+        elif batch_state in {"failed", "canceled"}:
+            progress_pct = max(history_max, 70 if account.get("has_job") or account.get("has_artifact") else 20)
+            phase_label = "Ошибка публикации" if batch_state == "failed" else "Отменено"
+            phase_detail = (
+                str(account.get("job_detail") or "").strip()
+                or str(account.get("instagram_publish_detail") or "").strip()
+                or str(account.get("detail") or "").strip()
+                or ("Публикация завершилась ошибкой." if batch_state == "failed" else "Публикация была отменена.")
+            )
+            phase_step_key = "instagram_publish"
+        else:
+            progress_pct = history_max
+            phase_label = account.get("batch_state_label") or "Ожидание"
+            phase_detail = str(account.get("detail") or "").strip()
+            phase_step_key = "workflow_started"
+
+        account["progress_pct"] = int(max(0, min(100, progress_pct)))
+        account["phase_label"] = phase_label
+        account["phase_detail"] = phase_detail
+        account["phase_step_key"] = phase_step_key
+        account["artifact_download_url"] = (
+            with_base(f"/publishing/batches/{int(batch_id)}/artifacts/{int(account['artifact_id'])}/download")
+            if account.get("artifact_id")
+            else ""
+        )
+        account["open_url"] = with_base(f"/accounts/{account_id}")
+        account["updated_at_label"] = _format_timestamp_label(account.get("updated_at"))
+        account["sort_group"] = _publish_account_sort_group(batch_state)
+        account["is_failed"] = batch_state in {"generation_failed", "failed", "canceled"}
+        account["is_active"] = account["sort_group"] == 0
+        account_cards.append(account)
+
+    account_cards.sort(
+        key=lambda item: (
+            int(item.get("sort_group") or 99),
+            -int(item.get("progress_pct") or 0),
+            str(item.get("username") or item.get("account_login") or "").lower(),
+            int(item.get("id") or 0),
+        )
+    )
+
+    if account_cards:
+        overall_progress_pct = int(round(sum(int(item.get("progress_pct") or 0) for item in account_cards) / len(account_cards)))
+    else:
+        overall_progress_pct = 0
+
+    active_publish_account = next((item for item in account_cards if str(item.get("batch_state") or "") in {"leased", "preparing", "importing_media", "opening_reel_flow", "selecting_media", "publishing"}), None)
+    queued_publish_account = next((item for item in account_cards if str(item.get("batch_state") or "") == "queued_for_publish"), None)
+    generating_account = next((item for item in account_cards if str(item.get("batch_state") or "") == "generating"), None)
+    queued_generation_account = next((item for item in account_cards if str(item.get("batch_state") or "") == "queued_for_generation"), None)
+
+    batch_state = str(batch.get("state") or "").strip().lower()
+    if batch_state == "completed":
+        batch_phase_key = "done"
+        batch_phase_label = "Готово"
+        batch_phase_subtitle = "Все выбранные аккаунты уже опубликовали видео."
+    elif batch_state in {"completed_with_errors", "failed_generation"}:
+        batch_phase_key = "done"
+        batch_phase_label = "Готово с ошибками"
+        batch_phase_subtitle = str(batch.get("detail") or "").strip() or "Часть аккаунтов завершилась с ошибками."
+    elif batch_state == "canceled":
+        batch_phase_key = "done"
+        batch_phase_label = "Отменено"
+        batch_phase_subtitle = str(batch.get("detail") or "").strip() or "Пакет публикации был отменён."
+    elif active_publish_account is not None:
+        batch_phase_key = "instagram_publish"
+        batch_phase_label = "Публикация в Instagram"
+        batch_phase_subtitle = str(active_publish_account.get("phase_label") or "").strip()
+        if active_publish_account.get("phase_detail"):
+            batch_phase_subtitle = f"{batch_phase_subtitle} · {active_publish_account['phase_detail']}"
+    elif queued_publish_account is not None:
+        batch_phase_key = "publish_queue"
+        batch_phase_label = "Очередь публикации"
+        batch_phase_subtitle = str(queued_publish_account.get("phase_detail") or "").strip() or "Видео готово и ждёт runner-а."
+    elif generating_account is not None:
+        batch_phase_key = "video_production"
+        batch_phase_label = "Генерация видео"
+        batch_phase_subtitle = str(generating_account.get("phase_label") or "").strip()
+        if generating_account.get("phase_detail"):
+            batch_phase_subtitle = f"{batch_phase_subtitle} · {generating_account['phase_detail']}"
+    elif queued_generation_account is not None:
+        batch_phase_key = "workflow_started"
+        batch_phase_label = "Запуск workflow"
+        batch_phase_subtitle = str(batch.get("detail") or "").strip() or "Ожидается старт генерации."
+    else:
+        batch_phase_key = "workflow_started"
+        batch_phase_label = "Запуск workflow"
+        batch_phase_subtitle = str(batch.get("detail") or "").strip() or "Пакет отправлен в workflow."
+
+    step_index = {item["key"]: idx for idx, item in enumerate(PUBLISH_PROGRESS_STEPS)}
+    active_step_index = step_index.get(batch_phase_key, 0)
+    steps: list[dict[str, Any]] = []
+    for index, item in enumerate(PUBLISH_PROGRESS_STEPS):
+        status = "pending"
+        if batch_state == "completed":
+            status = "completed"
+        elif batch_state in {"completed_with_errors", "failed_generation", "canceled"}:
+            if batch_state == "failed_generation":
+                if item["key"] == "workflow_started":
+                    status = "completed"
+                elif item["key"] in {"video_production", "done"}:
+                    status = "error"
+                else:
+                    status = "pending"
+            elif item["key"] == "done":
+                status = "error"
+            elif batch_state == "completed_with_errors" and item["key"] == "instagram_publish":
+                status = "error"
+            elif index < active_step_index:
+                status = "completed"
+        else:
+            if index < active_step_index:
+                status = "completed"
+            elif index == active_step_index:
+                status = "active"
+        steps.append({**item, "status": status})
+
+    counts = {
+        "selected": int(batch.get("accounts_total") or 0),
+        "generating": int(batch.get("queued_generation_accounts") or 0) + int(batch.get("generating_accounts") or 0),
+        "ready": int(batch.get("queued_publish_accounts") or 0),
+        "publishing": int(batch.get("active_publish_accounts") or 0),
+        "published": int(batch.get("published_accounts") or 0),
+        "failed": int(batch.get("error_accounts") or 0),
+    }
+
+    recent_activity: list[dict[str, Any]] = []
+    for row in parsed_events[:10]:
+        recent_activity.append(
+            {
+                "id": int(row["id"]),
+                "title": row["title"],
+                "detail": str(row.get("detail") or "").strip(),
+                "account_username": str(row.get("account_username") or "").strip(),
+                "source_name": str(row.get("source_name") or "").strip(),
+                "created_at_label": row["created_at_label"],
+                "tone_class": row["tone_class"],
+            }
+        )
+
+    raw_events: list[dict[str, Any]] = []
+    for row in parsed_events[:200]:
+        raw_events.append(
+            {
+                "id": int(row["id"]),
+                "state": str(row.get("state") or "").strip(),
+                "title": row["title"],
+                "detail": str(row.get("detail") or "").strip(),
+                "account_username": str(row.get("account_username") or "").strip(),
+                "source_name": str(row.get("source_name") or "").strip(),
+                "payload_preview": row["payload_preview"],
+                "created_at_label": row["created_at_label"],
+                "tone_class": row["tone_class"],
+            }
+        )
+
+    return {
+        "batch": {
+            "id": int(batch["id"]),
+            "state": batch_state,
+            "state_label": batch["state_label"],
+            "state_class": batch["state_class"],
+            "detail": str(batch.get("detail") or "").strip(),
+            "workflow_key": str(batch.get("workflow_key") or ""),
+            "created_at_label": batch["created_at_label"],
+            "updated_at_label": batch["updated_at_label"],
+            "generation_started_at_label": batch["generation_started_at_label"],
+            "generation_completed_at_label": batch["generation_completed_at_label"],
+            "completed_at_label": batch["completed_at_label"],
+            "is_terminal": bool(batch["is_terminal"]),
+            "progress_pct": overall_progress_pct,
+            "phase_key": batch_phase_key,
+            "phase_label": batch_phase_label,
+            "phase_subtitle": batch_phase_subtitle,
+            "counts": counts,
+            "steps": steps,
+            "stage_dir": str(batch_stage_dir),
+            "stage_dir_exists": bool(batch["stage_dir_exists"]),
+            "artifacts_total": int(batch.get("artifacts_total") or 0),
+            "jobs_total": int(batch.get("jobs_total") or 0),
+        },
+        "accounts": account_cards,
+        "artifacts": artifacts_raw,
+        "jobs": jobs_raw,
+        "recent_activity": recent_activity,
+        "events": raw_events,
+        "poll_interval_seconds": 0 if batch["is_terminal"] else 3,
+        "progress_url": with_base(f"/api/publishing/batches/{int(batch_id)}/progress"),
+    }
+
+
+def _decorate_publish_account(raw: dict[str, Any]) -> dict[str, Any]:
+    row = dict(raw)
+    publish_label, publish_class = _account_instagram_publish_status_meta(row.get("instagram_publish_status"))
+    row["instagram_publish_status_label"] = publish_label
+    row["instagram_publish_status_class"] = publish_class
+    owner_name = str(row.get("owner_worker_name") or "").strip()
+    owner_username = str(row.get("owner_worker_username") or "").strip()
+    row["owner_label"] = f"{owner_name} (@{owner_username})" if owner_username else (owner_name or "Без работника")
+    row["identity_handle"] = _account_identity_handle(row)
+    row["publish_warnings"] = db.publish_account_automation_warnings(row)
+    row["twofa_ready"] = bool(str(row.get("twofa") or "").strip())
+    batch_state = str(row.get("state") or "").strip().lower()
+    if batch_state:
+        batch_label, batch_class = _publish_batch_account_state_meta(batch_state)
+        row["batch_state"] = batch_state
+        row["batch_state_label"] = batch_label
+        row["batch_state_class"] = batch_class
+        row["batch_state_terminal"] = batch_state in {"generation_failed", "published", "failed", "canceled"}
+    else:
+        row["batch_state"] = ""
+        row["batch_state_label"] = ""
+        row["batch_state_class"] = "unknown"
+        row["batch_state_terminal"] = False
+    row["is_published"] = row["batch_state"] == "published" or str(row.get("instagram_publish_status") or "").strip().lower() == "published"
+    row["has_artifact"] = bool(row.get("artifact_id"))
+    row["has_job"] = bool(row.get("job_id"))
+    job_state = str(row.get("job_state") or "").strip().lower()
+    if job_state:
+        job_label, job_class = _publish_job_state_meta(job_state)
+        row["job_state_label"] = job_label
+        row["job_state_class"] = job_class
+    else:
+        row["job_state_label"] = ""
+        row["job_state_class"] = "unknown"
+    return row
+
+
+def _publish_account_selection_context(limit: int = 500) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    accounts = [_decorate_publish_account(dict(raw)) for raw in db.list_publish_ready_accounts(limit=limit)]
+    blocked_accounts = []
+    for raw in db.list_publish_blocked_accounts(limit=limit):
+        row = _decorate_publish_account(dict(raw))
+        row["publish_blockers"] = db.publish_account_readiness_issues(row)
+        blocked_accounts.append(row)
+    return accounts, blocked_accounts
+
+
+def _selected_publish_accounts(account_ids: list[int], *, limit: int = 500) -> tuple[list[dict[str, Any]], list[int]]:
+    accounts, _ = _publish_account_selection_context(limit=limit)
+    by_id = {int(row["id"]): row for row in accounts}
+    selected: list[dict[str, Any]] = []
+    missing: list[int] = []
+    seen: set[int] = set()
+    for raw_id in account_ids:
+        account_id = int(raw_id)
+        if account_id in seen:
+            continue
+        seen.add(account_id)
+        row = by_id.get(account_id)
+        if row is None:
+            missing.append(account_id)
+            continue
+        selected.append(row)
+    return selected, missing
 
 
 def _publishing_page_response(
@@ -1015,25 +2823,82 @@ def _publishing_page_response(
     success: Optional[str] = None,
     status_code: int = 200,
 ) -> HTMLResponse:
-    accounts = []
-    for raw in db.list_publish_ready_accounts(limit=500):
-        row = dict(raw)
-        publish_label, publish_class = _account_instagram_publish_status_meta(row.get("instagram_publish_status"))
-        row["instagram_publish_status_label"] = publish_label
-        row["instagram_publish_status_class"] = publish_class
-        owner_name = str(row.get("owner_worker_name") or "").strip()
-        owner_username = str(row.get("owner_worker_username") or "").strip()
-        row["owner_label"] = f"{owner_name} (@{owner_username})" if owner_username else (owner_name or "Без работника")
-        row["identity_handle"] = _account_identity_handle(row)
-        accounts.append(row)
-
+    accounts, blocked_accounts = _publish_account_selection_context(limit=500)
     batches = [_decorate_publish_batch(dict(raw)) for raw in db.list_publish_batches(limit=20)]
     return templates.TemplateResponse(
         "publishing.html",
         {
             "request": request,
-            "accounts": accounts,
             "batches": batches,
+            "error": error,
+            "success": success,
+            "n8n_webhook_configured": bool(PUBLISH_N8N_WEBHOOK_URL),
+            "staging_root": str(_publish_staging_root()),
+            "publish_workflow_key": PUBLISH_DEFAULT_WORKFLOW,
+            "ready_accounts_count": len(accounts),
+            "warning_accounts_count": sum(1 for account in accounts if account["publish_warnings"]),
+            "blocked_accounts_count": len(blocked_accounts),
+        },
+        status_code=status_code,
+    )
+
+
+def _publishing_start_page_response(
+    request: Request,
+    *,
+    error: Optional[str] = None,
+    success: Optional[str] = None,
+    status_code: int = 200,
+    selected_ids: Optional[set[int]] = None,
+) -> HTMLResponse:
+    accounts, blocked_accounts = _publish_account_selection_context(limit=500)
+    selected = selected_ids or set()
+    for row in accounts:
+        row["selected"] = int(row["id"]) in selected
+    selected_count = sum(1 for row in accounts if row["selected"])
+    return templates.TemplateResponse(
+        "publishing_start.html",
+        {
+            "request": request,
+            "accounts": accounts,
+            "blocked_accounts": blocked_accounts,
+            "error": error,
+            "success": success,
+            "n8n_webhook_configured": bool(PUBLISH_N8N_WEBHOOK_URL),
+            "staging_root": str(_publish_staging_root()),
+            "publish_workflow_key": PUBLISH_DEFAULT_WORKFLOW,
+            "ready_accounts_count": len(accounts),
+            "selected_accounts_count": selected_count,
+            "blocked_accounts_count": len(blocked_accounts),
+        },
+        status_code=status_code,
+    )
+
+
+def _publishing_confirm_page_response(
+    request: Request,
+    *,
+    account_ids: list[int],
+    error: Optional[str] = None,
+    success: Optional[str] = None,
+    status_code: int = 200,
+) -> HTMLResponse:
+    accounts, missing = _selected_publish_accounts(account_ids, limit=500)
+    if missing:
+        return _publishing_start_page_response(
+            request,
+            error=f"Некоторые аккаунты больше недоступны для запуска: {', '.join(str(item) for item in missing)}.",
+            status_code=400,
+            selected_ids=set(account_ids),
+        )
+    return templates.TemplateResponse(
+        "publishing_confirm.html",
+        {
+            "request": request,
+            "accounts": accounts,
+            "account_ids": [int(row["id"]) for row in accounts],
+            "accounts_total": len(accounts),
+            "warning_accounts_count": sum(1 for row in accounts if row["publish_warnings"]),
             "error": error,
             "success": success,
             "n8n_webhook_configured": bool(PUBLISH_N8N_WEBHOOK_URL),
@@ -1052,86 +2917,50 @@ def _publishing_batch_detail_page_response(
     success: Optional[str] = None,
     status_code: int = 200,
 ) -> HTMLResponse:
-    batch_row = db.get_publish_batch(int(batch_id))
-    if batch_row is None:
+    snapshot = _build_publish_dashboard_snapshot(int(batch_id))
+    if snapshot is None:
         return templates.TemplateResponse(
             "publishing_batch_detail.html",
             {
                 "request": request,
                 "batch": None,
-                "accounts": [],
-                "artifacts": [],
-                "jobs": [],
-                "events": [],
-                "error": error or "Batch не найден",
+                "dashboard_snapshot": None,
+                "dashboard_snapshot_json": "{}",
+                "error": error or "Пакет не найден",
                 "success": success,
                 "poll_interval_seconds": 0,
-                "batch_stage_dir": str(_publish_batch_stage_dir(int(batch_id))),
+                "batch_stage_dir": str(_publish_batch_stage_path(int(batch_id))),
             },
             status_code=404,
         )
-
-    batch = _decorate_publish_batch(dict(batch_row))
-    accounts = []
-    for raw in db.list_publish_batch_accounts(int(batch_id)):
-        row = dict(raw)
-        publish_label, publish_class = _account_instagram_publish_status_meta(row.get("instagram_publish_status"))
-        row["instagram_publish_status_label"] = publish_label
-        row["instagram_publish_status_class"] = publish_class
-        owner_name = str(row.get("owner_worker_name") or "").strip()
-        owner_username = str(row.get("owner_worker_username") or "").strip()
-        row["owner_label"] = f"{owner_name} (@{owner_username})" if owner_username else (owner_name or "Без работника")
-        accounts.append(row)
-
-    artifacts = []
-    for raw in db.list_publish_artifacts(int(batch_id)):
-        row = dict(raw)
-        size_bytes = int(row.get("size_bytes") or 0)
-        row["size_label"] = f"{size_bytes / (1024 * 1024):.1f} MB" if size_bytes else "—"
-        duration = row.get("duration_seconds")
-        row["duration_label"] = f"{float(duration):.1f} s" if duration not in (None, "") else "—"
-        artifacts.append(row)
-
-    jobs = []
-    for raw in db.list_publish_jobs(int(batch_id)):
-        row = dict(raw)
-        label, css = _publish_job_state_meta(row.get("state"))
-        row["state_label"] = label
-        row["state_class"] = css
-        row["identity_handle"] = _account_identity_handle({"username": row.get("account_username"), "account_login": row.get("account_login")})
-        jobs.append(row)
-
-    events = []
-    for raw in db.list_publish_job_events(int(batch_id), limit=200):
-        row = dict(raw)
-        payload_json = str(row.get("payload_json") or "").strip()
-        row["payload_preview"] = payload_json[:220] + ("…" if len(payload_json) > 220 else "") if payload_json else ""
-        events.append(row)
 
     return templates.TemplateResponse(
         "publishing_batch_detail.html",
         {
             "request": request,
-            "batch": batch,
-            "accounts": accounts,
-            "artifacts": artifacts,
-            "jobs": jobs,
-            "events": events,
+            "batch": snapshot["batch"],
+            "dashboard_snapshot": snapshot,
+            "dashboard_snapshot_json": json.dumps(snapshot, ensure_ascii=False),
             "error": error,
             "success": success,
-            "poll_interval_seconds": 5 if not batch["is_terminal"] else 0,
-            "batch_stage_dir": str(_publish_batch_stage_dir(int(batch_id))),
+            "poll_interval_seconds": int(snapshot["poll_interval_seconds"]),
+            "batch_stage_dir": str(snapshot["batch"]["stage_dir"]),
         },
         status_code=status_code,
     )
 
 
-def _trigger_publish_generation(request: Request, batch_id: int) -> None:
+def _build_publish_generation_payload(
+    batch_id: int,
+    *,
+    callback_url: str,
+    internal_callback_url: str,
+) -> tuple[dict[str, Any], Path]:
     if not PUBLISH_N8N_WEBHOOK_URL:
         raise RuntimeError("PUBLISH_N8N_WEBHOOK_URL не настроен.")
     batch_row = db.get_publish_batch(int(batch_id))
     if batch_row is None:
-        raise RuntimeError("Batch не найден.")
+        raise RuntimeError("Пакет не найден.")
     accounts = [
         {
             "account_id": int(row["id"]),
@@ -1146,16 +2975,35 @@ def _trigger_publish_generation(request: Request, batch_id: int) -> None:
         "event": "start_generation",
         "batch_id": int(batch_id),
         "workflow_key": str(batch_row["workflow_key"] or PUBLISH_DEFAULT_WORKFLOW),
-        "callback_url": _absolute_admin_url(request, "/api/internal/publishing/n8n"),
+        "callback_url": callback_url,
+        "internal_callback_url": internal_callback_url,
+        "progress_callback_url": internal_callback_url or callback_url,
+        "shared_secret": PUBLISH_SHARED_SECRET,
+        "factory_timeout_seconds": max(30, int(PUBLISH_FACTORY_TIMEOUT_SECONDS or 0)),
         "staging_dir": str(batch_dir),
+        "generator_defaults": {
+            "topic": "отношения",
+            "style": "милый + дерзкий",
+            "messagesCount": 10,
+            "dry_run": False,
+            "simulate_video_fail": False,
+            "async": False,
+        },
         "accounts": accounts,
     }
+    return payload, batch_dir
+
+
+def _post_publish_generation_payload(batch_id: int, payload: dict[str, Any], batch_dir: Path) -> None:
     body = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode("utf-8")
-    response = requests.post(
+    response = http_utils.request_with_retry(
+        "POST",
         PUBLISH_N8N_WEBHOOK_URL,
         data=body,
         headers=_signed_publish_headers(body),
         timeout=25,
+        allow_retry=False,
+        log_context="n8n_publish_start",
     )
     response.raise_for_status()
     response_note = (response.text or "").strip()
@@ -1163,6 +3011,28 @@ def _trigger_publish_generation(request: Request, batch_id: int) -> None:
     if response_note:
         detail = f"{detail} Ответ: {response_note[:140]}"
     db.mark_publish_generation_started(int(batch_id), detail=detail)
+
+
+def _trigger_publish_generation(request: Request, batch_id: int) -> None:
+    callback_url = _absolute_admin_url(request, "/api/internal/publishing/n8n")
+    internal_callback_url = _publish_internal_callback_url("/api/internal/publishing/n8n")
+    payload, batch_dir = _build_publish_generation_payload(
+        int(batch_id),
+        callback_url=callback_url,
+        internal_callback_url=internal_callback_url,
+    )
+    _post_publish_generation_payload(int(batch_id), payload, batch_dir)
+
+
+def _trigger_publish_generation_runtime(batch_id: int) -> None:
+    callback_url = _absolute_runtime_admin_url("/api/internal/publishing/n8n")
+    internal_callback_url = _publish_internal_callback_url("/api/internal/publishing/n8n")
+    payload, batch_dir = _build_publish_generation_payload(
+        int(batch_id),
+        callback_url=callback_url,
+        internal_callback_url=internal_callback_url,
+    )
+    _post_publish_generation_payload(int(batch_id), payload, batch_dir)
 
 
 def _parse_broadcast_filters(
@@ -1246,15 +3116,26 @@ def _send_message(user_id: int, text: str, media: Optional[dict] = None) -> bool
                     media.get("content_type") or "application/octet-stream",
                 )
             }
-            resp = requests.post(url, data=data, files=files, timeout=40)
+            resp = http_utils.request_with_retry(
+                "POST",
+                url,
+                data=data,
+                files=files,
+                timeout=40,
+                allow_retry=False,
+                log_context="telegram_send_media",
+            )
         else:
             if not text_clean:
                 return False
             url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-            resp = requests.post(
+            resp = http_utils.request_with_retry(
+                "POST",
                 url,
                 data={"chat_id": user_id, "text": text_clean, "parse_mode": "HTML"},
                 timeout=10,
+                allow_retry=False,
+                log_context="telegram_send_message",
             )
         return resp.status_code == 200
     except Exception:
@@ -1407,6 +3288,129 @@ def accounts_page(
     )
 
 
+@app.post("/accounts/instagram/audits", response_class=HTMLResponse)
+def instagram_audit_create(
+    request: Request,
+    q: Optional[str] = Form(None),
+    filter_type: Optional[str] = Form(None),
+    filter_worker: Optional[str] = Form(None),
+    filter_rotation_state: Optional[str] = Form(None),
+    filter_views_state: Optional[str] = Form(None),
+    account_ids: Optional[list[str]] = Form(None),
+    _: None = Depends(require_auth),
+):
+    query = (q or "").strip()
+    worker_filter = (filter_worker or "").strip()
+    try:
+        requested_type = _normalize_account_type(filter_type) if filter_type else ""
+        worker_filter_value, worker_filter_id, unassigned_only = _worker_filter_meta(worker_filter)
+        rotation_state_value = _normalize_rotation_state_filter(filter_rotation_state)
+        views_state_value = _normalize_views_state_filter(filter_views_state)
+    except ValueError:
+        return _accounts_page_response(
+            request,
+            q=query,
+            account_type="instagram",
+            worker_filter=worker_filter,
+            error="Неверные фильтры аудита аккаунтов.",
+            status_code=400,
+        )
+    if requested_type and requested_type != "instagram":
+        return _accounts_page_response(
+            request,
+            q=query,
+            account_type=requested_type,
+            worker_filter=worker_filter,
+            rotation_state=rotation_state_value,
+            views_state=views_state_value,
+            error="Массовый аудит доступен только для Instagram-аккаунтов.",
+            status_code=400,
+        )
+    try:
+        inventory = _fetch_helper_emulator_inventory()
+    except Exception as exc:
+        return _accounts_page_response(
+            request,
+            q=query,
+            account_type="instagram",
+            worker_filter=worker_filter_value,
+            rotation_state=rotation_state_value,
+            views_state=views_state_value,
+            error=f"Helper недоступен: {exc}",
+            status_code=503,
+        )
+
+    selected_ids: set[int] = set()
+    for raw in account_ids or []:
+        value = (raw or "").strip()
+        if not value:
+            continue
+        try:
+            selected_ids.add(int(value))
+        except Exception:
+            return _accounts_page_response(
+                request,
+                q=query,
+                account_type="instagram",
+                worker_filter=worker_filter_value,
+                rotation_state=rotation_state_value,
+                views_state=views_state_value,
+                error="Неверный account_id в запросе аудита.",
+                status_code=400,
+            )
+
+    account_rows = [dict(row) for row in db.list_accounts(
+        q=query,
+        account_type="instagram",
+        owner_worker_id=worker_filter_id,
+        rotation_state=rotation_state_value or None,
+        views_state=views_state_value or None,
+        limit=500,
+    )]
+    if unassigned_only:
+        account_rows = [row for row in account_rows if row.get("owner_worker_id") is None]
+    if selected_ids:
+        account_rows = [row for row in account_rows if int(row["id"]) in selected_ids]
+    if not account_rows:
+        return _accounts_page_response(
+            request,
+            q=query,
+            account_type="instagram",
+            worker_filter=worker_filter_value,
+            rotation_state=rotation_state_value,
+            views_state=views_state_value,
+            error="Для аудита не найдено ни одного Instagram-аккаунта.",
+            status_code=400,
+        )
+
+    prepared_items = _prepare_instagram_audit_items(account_rows, available_serials=_helper_inventory_available_serials(inventory))
+    created = db.create_instagram_audit_batch(prepared_items, created_by_admin=ADMIN_USER)
+    batch_id = int(created["batch_id"])
+    if any(str(item.get("item_state") or "") == "queued" for item in prepared_items):
+        _enqueue_instagram_audit_batch(batch_id)
+    return _redirect(f"/accounts/instagram/audits/{batch_id}", status_code=HTTP_303_SEE_OTHER)
+
+
+@app.get("/accounts/instagram/audits/{audit_id}", response_class=HTMLResponse)
+def instagram_audit_detail_page(
+    request: Request,
+    audit_id: int,
+    _: None = Depends(require_auth),
+):
+    return _instagram_audit_detail_page_response(request, audit_id=int(audit_id))
+
+
+@app.get("/api/accounts/instagram/audits/{audit_id}/progress")
+def instagram_audit_progress_api(
+    audit_id: int,
+    _: None = Depends(require_auth),
+):
+    snapshot = _build_instagram_audit_snapshot(int(audit_id))
+    if snapshot is None:
+        raise HTTPException(status_code=404, detail="audit not found")
+    return JSONResponse(snapshot)
+
+
 @app.get("/accounts/{account_id}", response_class=HTMLResponse)
 def account_detail_page(
     request: Request,
@@ -1429,8 +3433,13 @@ def publishing_page(request: Request, _: None = Depends(require_auth)):
     return _publishing_page_response(request)
 
 
-@app.post("/publishing/batches", response_class=HTMLResponse)
-def publishing_batch_create(
+@app.get("/publishing/start", response_class=HTMLResponse)
+def publishing_start_page(request: Request, _: None = Depends(require_auth)):
+    return _publishing_start_page_response(request)
+
+
+@app.post("/publishing/prepare", response_class=HTMLResponse)
+def publishing_prepare_page(
     request: Request,
     account_ids: Optional[list[str]] = Form(None),
     _: None = Depends(require_auth),
@@ -1443,9 +3452,55 @@ def publishing_batch_create(
         try:
             selected_ids.append(int(value))
         except Exception:
-            return _publishing_page_response(request, error="Неверный account_id в batch.", status_code=400)
+            return _publishing_start_page_response(request, error="Неверный account_id в списке.", status_code=400)
     if not selected_ids:
-        return _publishing_page_response(request, error="Выбери хотя бы один Instagram-аккаунт для batch.", status_code=400)
+        return _publishing_start_page_response(request, error="Выбери хотя бы один Instagram-аккаунт.", status_code=400)
+    return _publishing_confirm_page_response(request, account_ids=selected_ids)
+
+
+@app.post("/publishing/batches", response_class=HTMLResponse)
+def publishing_batch_create(
+    request: Request,
+    account_ids: Optional[list[str]] = Form(None),
+    _: None = Depends(require_auth),
+):
+    if not PUBLISH_N8N_WEBHOOK_URL:
+        fallback_ids: set[int] = set()
+        for raw in account_ids or []:
+            value = (raw or "").strip()
+            if not value:
+                continue
+            try:
+                fallback_ids.add(int(value))
+            except Exception:
+                continue
+        return _publishing_start_page_response(
+            request,
+            error="PUBLISH_N8N_WEBHOOK_URL не настроен. Fully-auto запуск сейчас недоступен.",
+            status_code=503,
+            selected_ids=fallback_ids if fallback_ids else None,
+        )
+
+    selected_ids: list[int] = []
+    for raw in account_ids or []:
+        value = (raw or "").strip()
+        if not value:
+            continue
+        try:
+            selected_ids.append(int(value))
+        except Exception:
+            return _publishing_start_page_response(request, error="Неверный account_id в batch.", status_code=400)
+    if not selected_ids:
+        return _publishing_start_page_response(request, error="Выбери хотя бы один Instagram-аккаунт для batch.", status_code=400)
+
+    selected_accounts, missing = _selected_publish_accounts(selected_ids, limit=500)
+    if missing:
+        return _publishing_start_page_response(
+            request,
+            error=f"Некоторые аккаунты больше недоступны для запуска: {', '.join(str(item) for item in missing)}.",
+            status_code=400,
+            selected_ids=set(selected_ids),
+        )
 
     try:
         created = db.create_publish_batch(
@@ -1454,17 +3509,22 @@ def publishing_batch_create(
             workflow_key=PUBLISH_DEFAULT_WORKFLOW,
         )
     except ValueError as exc:
-        return _publishing_page_response(request, error=str(exc), status_code=400)
+        return _publishing_confirm_page_response(
+            request,
+            account_ids=[int(row["id"]) for row in selected_accounts],
+            error=str(exc),
+            status_code=400,
+        )
 
     batch_id = int(created["batch_id"])
     try:
-        _trigger_publish_generation(request, batch_id)
+        _enqueue_publish_batch_start(batch_id)
     except Exception as exc:
-        db.mark_publish_generation_failed(batch_id, f"Не удалось стартовать n8n workflow: {exc}")
+        db.mark_publish_generation_failed(batch_id, f"Не удалось поставить batch в runtime queue: {exc}")
         return _publishing_batch_detail_page_response(
             request,
             batch_id=batch_id,
-            error=f"Batch создан, но n8n не стартовал: {exc}",
+            error=f"Пакет создан, но runtime worker не поставил запуск в очередь: {exc}",
             status_code=502,
         )
     return _redirect(f"/publishing/batches/{batch_id}", status_code=HTTP_303_SEE_OTHER)
@@ -1477,6 +3537,37 @@ def publishing_batch_detail_page(
     _: None = Depends(require_auth),
 ):
     return _publishing_batch_detail_page_response(request, batch_id=int(batch_id))
+
+
+@app.get("/api/publishing/batches/{batch_id}/progress")
+def publishing_batch_progress_api(
+    batch_id: int,
+    _: None = Depends(require_auth),
+):
+    _run_publish_generation_watchdog(int(batch_id))
+    snapshot = _build_publish_dashboard_snapshot(int(batch_id))
+    if snapshot is None:
+        raise HTTPException(status_code=404, detail="batch not found")
+    return JSONResponse(snapshot)
+
+
+@app.get("/publishing/batches/{batch_id}/artifacts/{artifact_id}/download")
+def publishing_batch_artifact_download(
+    batch_id: int,
+    artifact_id: int,
+    _: None = Depends(require_auth),
+):
+    artifact = db.get_publish_artifact(int(batch_id), int(artifact_id))
+    if artifact is None:
+        raise HTTPException(status_code=404, detail="artifact not found")
+    try:
+        source_path = _normalize_publish_artifact_path(int(batch_id), str(artifact["path"] or ""))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not source_path.exists() or not source_path.is_file():
+        raise HTTPException(status_code=404, detail="artifact file not found")
+    filename = str(artifact["filename"] or source_path.name).strip() or source_path.name
+    return FileResponse(path=source_path, filename=filename, media_type="application/octet-stream")
 
 
 @app.post("/accounts/{account_id}/launch/instagram")
@@ -1678,18 +3769,20 @@ def helper_launch_ticket_get(ticket: str, target: Optional[str] = None, _: None 
         return JSONResponse({"detail": "Ticket not found"}, status_code=404)
 
     account = payload["account"]
-    return JSONResponse(
-        {
-            "ticket": payload["ticket"],
-            "target": payload["target"],
-            "account_id": payload["account_id"],
-            "account_login": account["account_login"],
-            "account_password": account["account_password"],
-            "twofa": account["twofa"],
-            "username": account["username"],
-            "profile_url": _build_social_profile_url("instagram", account["username"]) or "https://www.instagram.com/",
-        }
-    )
+    response_payload = {
+        "ticket": payload["ticket"],
+        "target": payload["target"],
+        "account_id": payload["account_id"],
+        "account_login": account["account_login"],
+        "account_password": account["account_password"],
+        "twofa": account["twofa"],
+        "instagram_emulator_serial": str(account["instagram_emulator_serial"] or ""),
+        "username": account["username"],
+        "profile_url": _build_social_profile_url("instagram", account["username"]) or "https://www.instagram.com/",
+    }
+    if str(payload.get("target") or "") == "instagram_audit_login" and INSTAGRAM_AUDIT_FORCE_CLEAN_LOGIN:
+        response_payload["force_clean_login"] = True
+    return JSONResponse(response_payload)
 
 
 @app.post("/api/helper/accounts/{account_id}/instagram-status")
@@ -1778,18 +3871,135 @@ async def publishing_n8n_callback(
         raise HTTPException(status_code=400, detail="batch_id is required")
     if db.get_publish_batch(batch_id) is None:
         raise HTTPException(status_code=404, detail="Batch not found")
+    _run_publish_generation_watchdog(int(batch_id))
+    account_id_raw = payload.get("account_id")
+    account_id: int | None = None
+    if account_id_raw not in (None, ""):
+        try:
+            account_id = int(account_id_raw)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail="Invalid account_id") from exc
 
     detail = str(payload.get("detail") or "").strip()
+    event_hash = _publish_event_hash(payload)
+    if event_hash and db.publish_event_hash_exists(batch_id, event_hash):
+        return JSONResponse(
+            {"ok": True, "event": event, "batch_id": batch_id, "account_id": account_id, "duplicate": True}
+        )
+    if event != "generation_progress":
+        logger.info("publish_callback: event=%s batch_id=%s account_id=%s", event, batch_id, account_id)
+
+    account_state: Optional[str] = None
+    if account_id is not None:
+        account_state = db.get_publish_batch_account_state(batch_id, account_id)
+    if account_state:
+        if event in {"generation_started", "generation_progress"} and account_state not in {"queued_for_generation", "generating"}:
+            return JSONResponse(
+                {
+                    "ok": True,
+                    "event": event,
+                    "batch_id": batch_id,
+                    "account_id": account_id,
+                    "ignored": True,
+                    "reason": "state already advanced",
+                    "state": account_state,
+                }
+            )
+        if event == "generation_failed" and account_state not in {"queued_for_generation", "generating", "generation_failed"}:
+            return JSONResponse(
+                {
+                    "ok": True,
+                    "event": event,
+                    "batch_id": batch_id,
+                    "account_id": account_id,
+                    "ignored": True,
+                    "reason": "state already advanced",
+                    "state": account_state,
+                }
+            )
     if event == "generation_started":
-        metrics = db.mark_publish_generation_started(batch_id, detail=detail or None)
-        return JSONResponse({"ok": True, "event": event, "batch_id": batch_id, "state": metrics.get("state")})
+        try:
+            metrics = db.mark_publish_generation_started(
+                batch_id,
+                detail=detail or None,
+                account_id=account_id,
+                event_hash=event_hash,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        response_payload = {"ok": True, "event": event, "batch_id": batch_id, "account_id": account_id, "state": metrics.get("state")}
+        cleanup = _maybe_cleanup_publish_batch_stage_dir(batch_id, str(metrics.get("state") or ""))
+        if cleanup is not None:
+            response_payload["cleanup"] = cleanup
+        return JSONResponse(response_payload)
     if event == "generation_completed":
-        metrics = db.mark_publish_generation_completed(batch_id, detail=detail or None)
-        return JSONResponse({"ok": True, "event": event, "batch_id": batch_id, "state": metrics.get("state")})
+        try:
+            metrics = db.mark_publish_generation_completed(batch_id, detail=detail or None, event_hash=event_hash)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        response_payload = {"ok": True, "event": event, "batch_id": batch_id, "state": metrics.get("state")}
+        cleanup = _maybe_cleanup_publish_batch_stage_dir(batch_id, str(metrics.get("state") or ""))
+        if cleanup is not None:
+            response_payload["cleanup"] = cleanup
+        return JSONResponse(response_payload)
     if event == "generation_failed":
-        db.mark_publish_generation_failed(batch_id, detail or "n8n сообщил об ошибке генерации.")
-        batch = db.get_publish_batch(batch_id)
-        return JSONResponse({"ok": True, "event": event, "batch_id": batch_id, "state": str(batch["state"] or "failed_generation")})
+        try:
+            metrics = db.mark_publish_generation_failed(
+                batch_id,
+                detail or "n8n сообщил об ошибке генерации.",
+                account_id=account_id,
+                event_hash=event_hash,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        response_payload = {"ok": True, "event": event, "batch_id": batch_id, "account_id": account_id, "state": metrics.get("state")}
+        cleanup = _maybe_cleanup_publish_batch_stage_dir(batch_id, str(metrics.get("state") or ""))
+        if cleanup is not None:
+            response_payload["cleanup"] = cleanup
+        return JSONResponse(response_payload)
+    if event == "generation_progress":
+        if account_id is None:
+            raise HTTPException(status_code=400, detail="account_id is required for generation_progress")
+        stage_key = str(payload.get("stage_key") or "").strip().lower()
+        stage_label = str(payload.get("stage_label") or "").strip()
+        if not stage_key:
+            raise HTTPException(status_code=400, detail="stage_key is required")
+        if stage_key not in PUBLISH_GENERATION_STAGE_LABELS:
+            raise HTTPException(status_code=400, detail="Unsupported generation stage_key")
+        if not stage_label:
+            raise HTTPException(status_code=400, detail="stage_label is required")
+        try:
+            progress_pct = float(payload.get("progress_pct"))
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail="progress_pct must be a number") from exc
+        if progress_pct < 0 or progress_pct > 100:
+            raise HTTPException(status_code=400, detail="progress_pct must be in range 0..100")
+        meta = payload.get("meta")
+        try:
+            metrics = db.mark_publish_generation_progress(
+                batch_id,
+                account_id=account_id,
+                stage_key=stage_key,
+                stage_label=stage_label,
+                progress_pct=progress_pct,
+                detail=detail or stage_label,
+                meta=meta,
+                event_hash=event_hash,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return JSONResponse(
+            {
+                "ok": True,
+                "event": event,
+                "batch_id": batch_id,
+                "account_id": account_id,
+                "state": metrics.get("state"),
+                "stage_key": stage_key,
+                "stage_label": stage_label,
+                "progress_pct": progress_pct,
+            }
+        )
     if event == "artifact_ready":
         try:
             normalized_path = _normalize_publish_artifact_path(batch_id, str(payload.get("path") or ""))
@@ -1803,15 +4013,24 @@ async def publishing_n8n_callback(
         duration_seconds = payload.get("duration_seconds")
         if size_bytes in (None, ""):
             size_bytes = int(normalized_path.stat().st_size)
-        result = db.register_publish_artifact(
-            batch_id,
-            path=str(normalized_path),
-            filename=filename,
-            checksum=checksum,
-            size_bytes=int(size_bytes) if size_bytes not in (None, "") else None,
-            duration_seconds=float(duration_seconds) if duration_seconds not in (None, "") else None,
-        )
-        return JSONResponse({"ok": True, "event": event, "batch_id": batch_id, **result})
+        try:
+            result = db.register_publish_artifact(
+                batch_id,
+                path=str(normalized_path),
+                filename=filename,
+                checksum=checksum,
+                size_bytes=int(size_bytes) if size_bytes not in (None, "") else None,
+                duration_seconds=float(duration_seconds) if duration_seconds not in (None, "") else None,
+                account_id=account_id,
+                event_hash=event_hash,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        response_payload = {"ok": True, "event": event, "batch_id": batch_id, "account_id": account_id, **result}
+        cleanup = _maybe_cleanup_publish_batch_stage_dir(batch_id, str(result.get("state") or ""))
+        if cleanup is not None:
+            response_payload["cleanup"] = cleanup
+        return JSONResponse(response_payload)
     raise HTTPException(status_code=400, detail="Unsupported publish event")
 
 
@@ -1820,11 +4039,30 @@ def publishing_job_lease(
     payload: Optional[dict] = Body(None),
     _: None = Depends(require_publish_runner_api_key),
 ):
+    _run_publish_generation_watchdog()
     runner_name = str((payload or {}).get("runner_name") or "publish-runner").strip() or "publish-runner"
     job = db.lease_next_publish_job(runner_name=runner_name, lease_seconds=PUBLISH_RUNNER_LEASE_SECONDS)
     if job is None:
         return Response(status_code=204)
     return JSONResponse({"ok": True, "job": job})
+
+
+@app.get("/api/internal/publishing/jobs/{job_id}/artifact")
+def publishing_job_artifact_download(
+    job_id: int,
+    _: None = Depends(require_publish_runner_api_key),
+):
+    job = db.get_publish_job(int(job_id))
+    if job is None:
+        raise HTTPException(status_code=404, detail="job not found")
+    try:
+        source_path = _normalize_publish_artifact_path(int(job["batch_id"]), str(job["source_path"] or ""))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not source_path.exists() or not source_path.is_file():
+        raise HTTPException(status_code=404, detail="artifact file not found")
+    filename = str(job["source_name"] or job["artifact_filename"] or source_path.name).strip() or source_path.name
+    return FileResponse(path=source_path, filename=filename, media_type="application/octet-stream")
 
 
 @app.post("/api/internal/publishing/jobs/{job_id}/status")
@@ -1846,6 +4084,7 @@ def publishing_job_status_update(
             payload={
                 "emulator_serial": str(payload.get("emulator_serial") or "").strip(),
                 "source_path": str(payload.get("source_path") or "").strip(),
+                "account_publish_state": str(payload.get("account_publish_state") or "").strip(),
             },
             lease_seconds=PUBLISH_RUNNER_LEASE_SECONDS,
         )
@@ -1853,7 +4092,16 @@ def publishing_job_status_update(
         msg = str(exc)
         status_code = 409 if msg == "job already finished" else 404 if msg == "job not found" else 400
         raise HTTPException(status_code=status_code, detail=msg) from exc
-    return JSONResponse({"ok": True, **result})
+    logger.info("publish_job_status: job_id=%s batch_id=%s state=%s", job_id, result.get("batch_id"), state_raw)
+    cleanup = _maybe_cleanup_publish_batch_stage_dir(
+        int(result["batch_id"]),
+        str(result.get("batch_state") or result.get("state") or ""),
+        job_id=int(job_id),
+    )
+    response_payload = {"ok": True, **result}
+    if cleanup is not None:
+        response_payload["cleanup"] = cleanup
+    return JSONResponse(response_payload)
 
 
 @app.post("/accounts", response_class=HTMLResponse)
@@ -1915,7 +4163,7 @@ def account_create(
     required = {
         "Логин аккаунта": account_login,
         "Пароль аккаунта": account_password,
-        "Username": username,
+        "Имя профиля": username,
         "Почта": email,
         "Пароль почты": email_password,
     }
@@ -2184,7 +4432,7 @@ def account_update(
     required = {
         "Логин аккаунта": account_login,
         "Пароль аккаунта": account_password,
-        "Username": username,
+        "Имя профиля": username,
         "Почта": email,
         "Пароль почты": email_password,
     }
@@ -2844,7 +5092,7 @@ def worker_account_create(
     required = {
         "Логин аккаунта": account_login,
         "Пароль аккаунта": account_password,
-        "Username": username,
+        "Имя профиля": username,
         "Почта": email,
         "Пароль почты": email_password,
     }
@@ -3078,7 +5326,7 @@ def worker_account_update(
     required = {
         "Логин аккаунта": account_login,
         "Пароль аккаунта": account_password,
-        "Username": username,
+        "Имя профиля": username,
         "Почта": email,
         "Пароль почты": email_password,
     }

@@ -10,12 +10,7 @@
         <div class="row">
           <a class="btn ghost sm" href="{{ urlp(back_url) }}">Назад к списку</a>
         </div>
-        {% if error %}
-          <div class="error mt-sm">{{ error }}</div>
-        {% endif %}
-        {% if success %}
-          <div class="hint mt-sm">{{ success }}</div>
-        {% endif %}
+        {% with extra_class='mt-sm' %}{% include "_flash.html" %}{% endwith %}
       </div>
     </section>
 
@@ -37,9 +32,9 @@
           </div>
 
           <div class="detail-stats mt-sm">
-            <span class="pill">Перешло: {{ stats.starts_unique_total }}</span>
+            <span class="pill">Переходов: {{ stats.starts_unique_total }}</span>
             <span class="pill">Старты: {{ stats.starts_total }}</span>
-            <span class="pill">First-touch: {{ stats.first_touch_total }}</span>
+            <span class="pill">Первый контакт: {{ stats.first_touch_total }}</span>
             <span class="pill">Ссылок: {{ stats.links_total }}</span>
           </div>
         </div>
@@ -64,7 +59,7 @@
             </div>
 
             <div class="field">
-              <label class="label">Username</label>
+              <label class="label">Имя профиля</label>
               <input class="input" name="username" value="{{ account.username }}" required>
             </div>
 
@@ -132,9 +127,9 @@
                   </div>
 
                   <div class="link-stats">
-                    <span class="pill">Перешло: {{ l.starts_unique }}</span>
+                    <span class="pill">Переходов: {{ l.starts_unique }}</span>
                     <span class="pill">Старты: {{ l.starts_total }}</span>
-                    <span class="pill">First-touch: {{ l.first_touch_users }}</span>
+                    <span class="pill">Первый контакт: {{ l.first_touch_users }}</span>
                   </div>
 
                   <div class="link-actions">
@@ -161,7 +156,7 @@
               {% endfor %}
             </div>
           {% else %}
-            <div class="hint">Ссылка не создана.</div>
+            <div class="hint">Ссылки пока нет.</div>
             <form method="post" action="{{ urlp('/worker/accounts') }}/{{ account.id }}/links" class="mt-sm">
               <input type="hidden" name="next_url" value="{{ detail_self_url }}">
               <input type="hidden" name="return_to" value="{{ return_to }}">

@@ -9,7 +9,7 @@
   <div class="grid">
     <section class="card">
       <header class="card__header">
-        <h2 class="card__title">KPI</h2>
+        <h2 class="card__title">Сводка</h2>
       </header>
       <div class="card__body">
         <div class="grid cols-4">
@@ -81,6 +81,9 @@
             {% endfor %}
           </tbody>
         </table>
+        {% if funnel_data.steps|length == 0 %}
+          <div class="hint mt-sm">Данных по воронке пока нет.</div>
+        {% endif %}
       </div>
     </section>
   </div>

@@ -10,7 +10,7 @@
       </header>
       <div class="card__body">
         <form method="get" action="{{ urlp('/users') }}" class="row filters-row">
-          <input class="input input-sm" name="q" value="{{ q or '' }}" placeholder="@username">
+          <input class="input input-sm" name="q" value="{{ q or '' }}" placeholder="Поиск по username или ID">
           <select class="input input-sm" name="step">
             <option value="">Дошли до шага: любой</option>
             {% for s in options %}
@@ -22,6 +22,7 @@
             <a class="btn ghost sm" href="{{ urlp('/users') }}">Сброс</a>
           {% endif %}
         </form>
+        <div class="hint mb-sm">Показаны последние пользователи с текущим шагом воронки.</div>
 
         <div class="list">
           {% for u in users %}

@@ -7,9 +7,7 @@
         <h2 class="card__title">Рассылка</h2>
       </header>
       <div class="card__body">
-        {% if error %}
-          <div class="error mb-sm">{{ error }}</div>
-        {% endif %}
+        {% with extra_class='mb-sm' %}{% include "_flash.html" %}{% endwith %}
 
         <form id="broadcastForm" method="post" action="{{ urlp('/broadcast') }}" class="grid form-gap-md" enctype="multipart/form-data">
           <div class="grid cols-1 form-gap-md">
@@ -64,9 +62,9 @@
           <div class="hint" id="media_hint">Файл не выбран.</div>
 
           <div class="row row-between">
-            <div class="hint">Получателей: <strong id="recipients">{{ recipients }}</strong></div>
+            <div class="section-note">Получателей: <strong id="recipients">{{ recipients }}</strong></div>
             {% if sent is not none %}
-              <div class="hint">
+              <div class="section-note">
                 {% if mode == 'test' %}Тест{% else %}Отправка{% endif %}:
                 <strong>{{ sent }}</strong> · Ошибок: <strong>{{ failed }}</strong>
               </div>
@@ -84,7 +82,12 @@
             <button class="btn ghost" type="button" id="testSend">Отправить тест</button>
           </div>
 
-          <div class="hint">Подсказка: chat_id можно узнать у бота <span class="mono">@userinfobot</span>.</div>
+          <details class="service-details">
+            <summary class="service-details__summary">Служебные детали</summary>
+            <div class="service-details__body hint">
+              Для теста нужен chat_id. Его можно узнать у бота <span class="mono">@userinfobot</span>.
+            </div>
+          </details>
         </form>
       </div>
     </section>
@@ -113,13 +116,13 @@
                 <div class="row row-between row-start">
                   <div>
                     <div class="listitem__title">
-                      {% if h.is_test %}<span class="pill">TEST</span>{% else %}<span class="pill">SEND</span>{% endif %}
+                      {% if h.is_test %}<span class="pill">Тест</span>{% else %}<span class="pill">Рассылка</span>{% endif %}
                       <span class="mono">{{ h.created_at|dt }}</span>
                     </div>
                     <div class="listitem__meta">
                       <span class="brand__tag">Кому: <strong>{{ h.recipients }}</strong></span>
-                      <span class="brand__tag">Sent: <strong>{{ h.sent }}</strong></span>
-                      <span class="brand__tag">Fail: <strong>{{ h.failed }}</strong></span>
+                      <span class="brand__tag">Отправлено: <strong>{{ h.sent }}</strong></span>
+                      <span class="brand__tag">Ошибки: <strong>{{ h.failed }}</strong></span>
                       <span class="brand__tag">{{ h.scope }}</span>
                     </div>
                     <div class="hint mt-sm">{{ (h.message or '')[:140] }}{% if (h.message or '')|length > 140 %}…{% endif %}</div>

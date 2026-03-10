@@ -7,17 +7,12 @@
         <h2 class="card__title">{{ worker_name }}</h2>
       </header>
       <div class="card__body">
-        {% if error %}
-          <div class="error mb-sm">{{ error }}</div>
-        {% endif %}
-        {% if success %}
-          <div class="hint mb-sm">{{ success }}</div>
-        {% endif %}
+        {% with extra_class='mb-sm' %}{% include "_flash.html" %}{% endwith %}
         <div class="detail-stats">
           <span class="pill">Аккаунтов: {{ stats.accounts_total }}</span>
           <span class="pill">Старты: {{ stats.starts_total }}</span>
-          <span class="pill">Перешло: {{ stats.starts_unique_total }}</span>
-          <span class="pill">First-touch: {{ stats.first_touch_total }}</span>
+          <span class="pill">Переходов: {{ stats.starts_unique_total }}</span>
+          <span class="pill">Первый контакт: {{ stats.first_touch_total }}</span>
         </div>
       </div>
     </section>
@@ -51,7 +46,7 @@
           </div>
 
           <div class="field">
-            <label class="label">Username</label>
+            <label class="label">Имя профиля</label>
             <input class="input" name="username" required>
           </div>
 
@@ -110,7 +105,6 @@
               </div>
               <div class="account-card__meta">
                 <span class="pill">Перешло: {{ a.starts_unique_total }}</span>
-                <span class="pill">Ссылок: {{ a.links_total }}</span>
                 <span class="hint">Обновлено: {{ a.updated_at|dt }}</span>
               </div>
               {% if a.primary_bot_url %}
@@ -155,11 +149,14 @@
           </div>
 
           <div class="field accounts-grid-wide">
-            <div class="hint">
-              Формат строки: <span class="mono">login;password;email;email_password;2fa</span><br>
-              Обязательные поля: <span class="mono">login</span>, <span class="mono">password</span>, <span class="mono">email</span>, <span class="mono">email_password</span>. Поле <span class="mono">2fa</span> можно не указывать.<br>
-              Если аккаунт уже есть в системе, новый дубль не создастся: вместо этого уйдёт заявка администратору.
-            </div>
+            <details class="service-details">
+              <summary class="service-details__summary">Требования к файлу</summary>
+              <div class="service-details__body hint">
+                Формат строки: <span class="mono">login;password;email;email_password;2fa</span>.<br>
+                Обязательные поля: <span class="mono">login</span>, <span class="mono">password</span>, <span class="mono">email</span>, <span class="mono">email_password</span>.<br>
+                Если аккаунт уже есть в системе, дубль не создаётся: вместо этого уходит заявка администратору.
+              </div>
+            </details>
           </div>
 
           <div class="accounts-grid-wide row">

@@ -15,7 +15,7 @@ ACCOUNT_ROTATION_STATE_KEYS = {"working", "not_working", "review"}
 ACCOUNT_VIEWS_STATE_KEYS = {"low", "good", "unknown"}
 ACCOUNT_MAIL_PROVIDER_KEYS = {"auto", "imap"}
 ACCOUNT_MAIL_STATUS_KEYS = {"never_checked", "ok", "auth_error", "connect_error", "empty", "unsupported"}
-HELPER_TICKET_TARGET_KEYS = {"instagram_login", "instagram_app_login", "instagram_publish_latest_reel"}
+HELPER_TICKET_TARGET_KEYS = {"instagram_login", "instagram_app_login", "instagram_audit_login", "instagram_publish_latest_reel"}
 INSTAGRAM_LAUNCH_STATUS_KEYS = {
     "idle",
     "login_submitted",
@@ -28,6 +28,9 @@ INSTAGRAM_PUBLISH_STATUS_KEYS = {
     "idle",
     "preparing",
     "login_required",
+    "manual_2fa_required",
+    "challenge_required",
+    "invalid_password",
     "importing_media",
     "opening_reel_flow",
     "selecting_media",
@@ -36,12 +39,84 @@ INSTAGRAM_PUBLISH_STATUS_KEYS = {
     "no_source_video",
     "publish_error",
 }
+INSTAGRAM_AUDIT_BATCH_STATE_KEYS = {
+    "queued",
+    "running",
+    "completed",
+    "completed_with_errors",
+    "failed",
+    "canceled",
+}
+INSTAGRAM_AUDIT_ITEM_STATE_KEYS = {
+    "queued",
+    "launching",
+    "login_check",
+    "mail_check_if_needed",
+    "done",
+}
+INSTAGRAM_AUDIT_RESOLUTION_KEYS = {
+    "login_ok",
+    "manual_2fa_required",
+    "email_code_required",
+    "challenge_required",
+    "invalid_password",
+    "helper_error",
+    "missing_credentials",
+    "missing_device",
+}
+INSTAGRAM_AUDIT_MAIL_PROBE_STATE_KEYS = {
+    "pending",
+    "not_required",
+    "checking",
+    "ok",
+    "empty",
+    "auth_error",
+    "connect_error",
+    "unsupported",
+    "not_configured",
+}
+RUNTIME_TASK_TYPE_KEYS = {
+    "publish_batch_start",
+    "instagram_audit_batch_run",
+    "publish_reconcile",
+    "instagram_audit_reconcile",
+}
+RUNTIME_TASK_ENTITY_TYPE_KEYS = {
+    "publish_batch",
+    "instagram_audit_batch",
+    "system",
+}
+RUNTIME_TASK_STATE_KEYS = {
+    "queued",
+    "running",
+    "retrying",
+    "completed",
+    "failed",
+    "canceled",
+}
 PUBLISH_BATCH_STATE_KEYS = {
+    "queued_to_worker",
+    "worker_started",
     "generating",
     "publishing",
     "completed",
     "completed_with_errors",
     "failed_generation",
+    "canceled",
+}
+PUBLISH_BATCH_ACCOUNT_STATE_KEYS = {
+    "queued_for_generation",
+    "generating",
+    "generation_failed",
+    "queued_for_publish",
+    "leased",
+    "preparing",
+    "importing_media",
+    "opening_reel_flow",
+    "selecting_media",
+    "publishing",
+    "published",
+    "failed",
     "canceled",
 }
 PUBLISH_JOB_STATE_KEYS = {
@@ -56,6 +131,18 @@ PUBLISH_JOB_STATE_KEYS = {
     "failed",
     "canceled",
 }
+PUBLISH_JOB_STATE_ORDER = {
+    "queued": 10,
+    "leased": 20,
+    "preparing": 30,
+    "importing_media": 40,
+    "opening_reel_flow": 50,
+    "selecting_media": 60,
+    "publishing": 70,
+    "published": 80,
+    "failed": 80,
+    "canceled": 80,
+}
 ACTIVE_PUBLISH_JOB_STATES = {
     "leased",
     "preparing",
@@ -63,6 +150,22 @@ ACTIVE_PUBLISH_JOB_STATES = {
     "opening_reel_flow",
     "selecting_media",
     "publishing",
+}
+ACTIVE_PUBLISH_BATCH_ACCOUNT_STATES = {
+    "generating",
+    "queued_for_publish",
+    "leased",
+    "preparing",
+    "importing_media",
+    "opening_reel_flow",
+    "selecting_media",
+    "publishing",
+}
+TERMINAL_PUBLISH_BATCH_ACCOUNT_STATES = {
+    "generation_failed",
+    "published",
+    "failed",
+    "canceled",
 }
 
 ADMIN_FUNNEL_STEPS: List[Dict[str, Any]] = [
@@ -79,6 +182,12 @@ ADMIN_FUNNEL_STEPS: List[Dict[str, Any]] = [
 def _connect() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     conn.row_factory = sqlite3.Row
+    try:
+        conn.execute("PRAGMA foreign_keys=ON")
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=5000")
+    except Exception:
+        pass
     return conn
 
 
@@ -348,6 +457,103 @@ def init_db() -> None:
     )
     cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_account_mail_messages_uid ON account_mail_messages(account_id, message_uid)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_account_mail_messages_received ON account_mail_messages(account_id, received_at DESC, id DESC)")
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS instagram_audit_batches (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            state TEXT NOT NULL DEFAULT 'queued',
+            detail TEXT NOT NULL DEFAULT '',
+            selected_accounts INTEGER NOT NULL DEFAULT 0,
+            created_by_admin TEXT,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            started_at INTEGER,
+            completed_at INTEGER
+        )
+        """
+    )
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_instagram_audit_batches_state ON instagram_audit_batches(state, updated_at DESC)")
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS instagram_audit_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            audit_batch_id INTEGER NOT NULL,
+            account_id INTEGER NOT NULL,
+            queue_position INTEGER NOT NULL DEFAULT 0,
+            item_state TEXT NOT NULL DEFAULT 'queued',
+            assigned_serial TEXT NOT NULL DEFAULT '',
+            login_state TEXT NOT NULL DEFAULT '',
+            login_detail TEXT NOT NULL DEFAULT '',
+            mail_probe_state TEXT NOT NULL DEFAULT 'pending',
+            mail_probe_detail TEXT NOT NULL DEFAULT '',
+            resolution_state TEXT NOT NULL DEFAULT '',
+            resolution_detail TEXT NOT NULL DEFAULT '',
+            diagnostic_path TEXT NOT NULL DEFAULT '',
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            started_at INTEGER,
+            completed_at INTEGER
+        )
+        """
+    )
+    cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_instagram_audit_items_batch_account ON instagram_audit_items(audit_batch_id, account_id)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_instagram_audit_items_batch_state ON instagram_audit_items(audit_batch_id, item_state, queue_position)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_instagram_audit_items_account_id ON instagram_audit_items(account_id, updated_at DESC)")
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS instagram_audit_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            audit_batch_id INTEGER NOT NULL,
+            audit_item_id INTEGER,
+            account_id INTEGER,
+            state TEXT NOT NULL,
+            detail TEXT NOT NULL DEFAULT '',
+            payload_json TEXT NOT NULL DEFAULT '',
+            created_at INTEGER NOT NULL
+        )
+        """
+    )
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_instagram_audit_events_batch_created ON instagram_audit_events(audit_batch_id, created_at DESC, id DESC)")
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS runtime_tasks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            natural_key TEXT NOT NULL UNIQUE,
+            task_type TEXT NOT NULL,
+            entity_type TEXT NOT NULL,
+            entity_id INTEGER NOT NULL,
+            state TEXT NOT NULL DEFAULT 'queued',
+            payload_json TEXT NOT NULL DEFAULT '{}',
+            lease_owner TEXT,
+            lease_expires_at INTEGER,
+            attempt_count INTEGER NOT NULL DEFAULT 0,
+            max_attempts INTEGER NOT NULL DEFAULT 3,
+            last_error TEXT NOT NULL DEFAULT '',
+            available_at INTEGER NOT NULL,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            started_at INTEGER,
+            completed_at INTEGER,
+            last_heartbeat_at INTEGER
+        )
+        """
+    )
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_runtime_tasks_state_available ON runtime_tasks(state, available_at, created_at)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_runtime_tasks_entity ON runtime_tasks(entity_type, entity_id, task_type)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_runtime_tasks_lease ON runtime_tasks(state, lease_expires_at)")
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS runtime_workers (
+            worker_name TEXT PRIMARY KEY,
+            current_task_id INTEGER,
+            last_heartbeat_at INTEGER,
+            last_error TEXT NOT NULL DEFAULT '',
+            first_seen_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        )
+        """
+    )
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_runtime_workers_heartbeat ON runtime_workers(last_heartbeat_at, updated_at)")
 
     cur.execute("PRAGMA table_info(accounts)")
     account_cols = [row["name"] for row in cur.fetchall()]
@@ -494,12 +700,16 @@ def init_db() -> None:
         CREATE TABLE IF NOT EXISTS publish_batch_accounts (
             batch_id INTEGER NOT NULL,
             account_id INTEGER NOT NULL,
+            state TEXT NOT NULL DEFAULT 'queued_for_generation',
+            detail TEXT,
+            artifact_id INTEGER,
+            job_id INTEGER,
             created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
             PRIMARY KEY (batch_id, account_id)
         )
         """
     )
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_publish_batch_accounts_account_id ON publish_batch_accounts(account_id)")
 
     cur.execute(
         """
@@ -554,15 +764,72 @@ def init_db() -> None:
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             batch_id INTEGER NOT NULL,
             job_id INTEGER,
+            account_id INTEGER,
             state TEXT NOT NULL,
             detail TEXT,
             payload_json TEXT,
+            event_hash TEXT,
             created_at INTEGER NOT NULL
         )
         """
     )
+
+    cur.execute("PRAGMA table_info(publish_batch_accounts)")
+    publish_batch_accounts_cols = [row["name"] for row in cur.fetchall()]
+    if "state" not in publish_batch_accounts_cols:
+        cur.execute("ALTER TABLE publish_batch_accounts ADD COLUMN state TEXT NOT NULL DEFAULT 'queued_for_generation'")
+    if "detail" not in publish_batch_accounts_cols:
+        cur.execute("ALTER TABLE publish_batch_accounts ADD COLUMN detail TEXT")
+    if "artifact_id" not in publish_batch_accounts_cols:
+        cur.execute("ALTER TABLE publish_batch_accounts ADD COLUMN artifact_id INTEGER")
+    if "job_id" not in publish_batch_accounts_cols:
+        cur.execute("ALTER TABLE publish_batch_accounts ADD COLUMN job_id INTEGER")
+    if "updated_at" not in publish_batch_accounts_cols:
+        cur.execute("ALTER TABLE publish_batch_accounts ADD COLUMN updated_at INTEGER")
+    cur.execute(
+        """
+        UPDATE publish_batch_accounts
+        SET state = COALESCE(NULLIF(TRIM(state), ''), 'queued_for_generation'),
+            updated_at = COALESCE(updated_at, created_at, ?)
+        """,
+        (int(time.time()),),
+    )
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_publish_batch_accounts_account_id ON publish_batch_accounts(account_id)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_publish_batch_accounts_batch_state ON publish_batch_accounts(batch_id, state)")
+
+    cur.execute("PRAGMA table_info(publish_job_events)")
+    publish_job_events_cols = [row["name"] for row in cur.fetchall()]
+    if "account_id" not in publish_job_events_cols:
+        cur.execute("ALTER TABLE publish_job_events ADD COLUMN account_id INTEGER")
+    if "event_hash" not in publish_job_events_cols:
+        cur.execute("ALTER TABLE publish_job_events ADD COLUMN event_hash TEXT")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_publish_job_events_batch_id ON publish_job_events(batch_id, created_at DESC)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_publish_job_events_job_id ON publish_job_events(job_id, created_at DESC)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_publish_job_events_batch_account ON publish_job_events(batch_id, account_id, created_at DESC)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_publish_job_events_account_id ON publish_job_events(account_id, created_at DESC)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_publish_job_events_event_hash ON publish_job_events(event_hash)")
+
+    cur.execute("PRAGMA table_info(instagram_audit_items)")
+    instagram_audit_items_cols = [row["name"] for row in cur.fetchall()]
+    if instagram_audit_items_cols:
+        if "resolution_detail" not in instagram_audit_items_cols:
+            cur.execute("ALTER TABLE instagram_audit_items ADD COLUMN resolution_detail TEXT NOT NULL DEFAULT ''")
+        if "diagnostic_path" not in instagram_audit_items_cols:
+            cur.execute("ALTER TABLE instagram_audit_items ADD COLUMN diagnostic_path TEXT NOT NULL DEFAULT ''")
+        cur.execute(
+            """
+            UPDATE instagram_audit_items
+            SET item_state = COALESCE(NULLIF(TRIM(item_state), ''), 'queued'),
+                mail_probe_state = COALESCE(NULLIF(TRIM(mail_probe_state), ''), 'pending'),
+                assigned_serial = COALESCE(assigned_serial, ''),
+                login_state = COALESCE(login_state, ''),
+                login_detail = COALESCE(login_detail, ''),
+                mail_probe_detail = COALESCE(mail_probe_detail, ''),
+                resolution_state = COALESCE(resolution_state, ''),
+                resolution_detail = COALESCE(resolution_detail, ''),
+                diagnostic_path = COALESCE(diagnostic_path, '')
+            """
+        )
 
     cur.execute("PRAGMA table_info(partners)")
     partners_cols = [row["name"] for row in cur.fetchall()]
@@ -1563,10 +1830,98 @@ def normalize_instagram_publish_status(raw: Optional[str]) -> str:
     return value
 
 
+def normalize_instagram_audit_batch_state(raw: Optional[str]) -> str:
+    value = (raw or "queued").strip().lower() or "queued"
+    if value not in INSTAGRAM_AUDIT_BATCH_STATE_KEYS:
+        raise ValueError("invalid instagram audit batch state")
+    return value
+
+
+def normalize_instagram_audit_item_state(raw: Optional[str]) -> str:
+    value = (raw or "queued").strip().lower() or "queued"
+    if value not in INSTAGRAM_AUDIT_ITEM_STATE_KEYS:
+        raise ValueError("invalid instagram audit item state")
+    return value
+
+
+def normalize_instagram_audit_resolution(raw: Optional[str]) -> str:
+    value = (raw or "").strip().lower()
+    if value and value not in INSTAGRAM_AUDIT_RESOLUTION_KEYS:
+        raise ValueError("invalid instagram audit resolution")
+    return value
+
+
+def normalize_instagram_audit_mail_probe_state(raw: Optional[str]) -> str:
+    value = (raw or "pending").strip().lower() or "pending"
+    if value not in INSTAGRAM_AUDIT_MAIL_PROBE_STATE_KEYS:
+        raise ValueError("invalid instagram audit mail probe state")
+    return value
+
+
+def normalize_runtime_task_type(raw: Optional[str]) -> str:
+    value = (raw or "").strip().lower()
+    if value not in RUNTIME_TASK_TYPE_KEYS:
+        raise ValueError("invalid runtime task type")
+    return value
+
+
+def normalize_runtime_task_entity_type(raw: Optional[str]) -> str:
+    value = (raw or "").strip().lower()
+    if value not in RUNTIME_TASK_ENTITY_TYPE_KEYS:
+        raise ValueError("invalid runtime task entity type")
+    return value
+
+
+def normalize_runtime_task_state(raw: Optional[str]) -> str:
+    value = (raw or "queued").strip().lower() or "queued"
+    if value not in RUNTIME_TASK_STATE_KEYS:
+        raise ValueError("invalid runtime task state")
+    return value
+
+
+def _publish_account_field(account: Any, key: str, default: Any = "") -> Any:
+    if isinstance(account, dict):
+        return account.get(key, default)
+    try:
+        return account[key]
+    except Exception:
+        return default
+
+
+def publish_account_readiness_issues(account: Any) -> List[str]:
+    issues: List[str] = []
+    login = str(_publish_account_field(account, "account_login") or "").strip()
+    password_present = bool(_publish_account_field(account, "has_account_password", 0))
+    if not password_present:
+        password_present = bool(str(_publish_account_field(account, "account_password") or "").strip())
+    emulator_serial = str(_publish_account_field(account, "instagram_emulator_serial") or "").strip()
+    twofa_secret = str(_publish_account_field(account, "twofa") or "").strip()
+    if not login:
+        issues.append("Не заполнен account login.")
+    if not password_present:
+        issues.append("Не заполнен account password.")
+    if not emulator_serial:
+        issues.append("Не заполнен Instagram emulator serial.")
+    if not twofa_secret:
+        issues.append("Не заполнен TOTP 2FA secret.")
+    return issues
+
+
+def publish_account_automation_warnings(account: Any) -> List[str]:
+    return []
+
+
 def normalize_publish_batch_state(raw: Optional[str]) -> str:
     value = (raw or "generating").strip().lower() or "generating"
     if value not in PUBLISH_BATCH_STATE_KEYS:
         raise ValueError("invalid publish batch state")
+    return value
+
+
+def normalize_publish_batch_account_state(raw: Optional[str]) -> str:
+    value = (raw or "queued_for_generation").strip().lower() or "queued_for_generation"
+    if value not in PUBLISH_BATCH_ACCOUNT_STATE_KEYS:
+        raise ValueError("invalid publish batch account state")
     return value
 
 
@@ -2048,6 +2403,1129 @@ def replace_account_mail_messages(account_id: int, messages: List[Dict[str, Any]
     conn.close()
 
 
+def update_account_instagram_emulator_serial(account_id: int, instagram_emulator_serial: str) -> bool:
+    now = int(time.time())
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        UPDATE accounts
+        SET instagram_emulator_serial = ?,
+            updated_at = ?
+        WHERE id = ?
+        """,
+        ((instagram_emulator_serial or "").strip(), now, int(account_id)),
+    )
+    changed = cur.rowcount > 0
+    conn.commit()
+    conn.close()
+    return changed
+
+
+def count_instagram_emulator_serial_usage(serials: List[str]) -> Dict[str, int]:
+    cleaned = sorted({str(item or "").strip() for item in serials if str(item or "").strip()})
+    if not cleaned:
+        return {}
+    placeholders = ",".join("?" for _ in cleaned)
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute(
+        f"""
+        SELECT
+            instagram_emulator_serial,
+            COUNT(*) AS total
+        FROM accounts
+        WHERE instagram_emulator_serial IN ({placeholders})
+        GROUP BY instagram_emulator_serial
+        """,
+        tuple(cleaned),
+    )
+    rows = cur.fetchall()
+    conn.close()
+    usage = {serial: 0 for serial in cleaned}
+    for row in rows:
+        usage[str(row["instagram_emulator_serial"] or "").strip()] = int(row["total"] or 0)
+    return usage
+
+
+def _append_instagram_audit_event_with_cursor(
+    cur: sqlite3.Cursor,
+    *,
+    audit_batch_id: int,
+    audit_item_id: Optional[int],
+    account_id: Optional[int],
+    state: str,
+    detail: Optional[str] = None,
+    payload: Optional[Dict[str, Any]] = None,
+    created_at: Optional[int] = None,
+) -> int:
+    timestamp = int(created_at or time.time())
+    payload_json = json.dumps(payload or {}, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+    cur.execute(
+        """
+        INSERT INTO instagram_audit_events (
+            audit_batch_id,
+            audit_item_id,
+            account_id,
+            state,
+            detail,
+            payload_json,
+            created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            int(audit_batch_id),
+            int(audit_item_id) if audit_item_id is not None else None,
+            int(account_id) if account_id is not None else None,
+            (state or "").strip(),
+            (detail or "").strip(),
+            payload_json,
+            timestamp,
+        ),
+    )
+    return int(cur.lastrowid)
+
+
+def append_instagram_audit_event(
+    audit_batch_id: int,
+    *,
+    audit_item_id: Optional[int],
+    account_id: Optional[int],
+    state: str,
+    detail: Optional[str] = None,
+    payload: Optional[Dict[str, Any]] = None,
+    created_at: Optional[int] = None,
+) -> int:
+    conn = _connect()
+    cur = conn.cursor()
+    event_id = _append_instagram_audit_event_with_cursor(
+        cur,
+        audit_batch_id=int(audit_batch_id),
+        audit_item_id=audit_item_id,
+        account_id=account_id,
+        state=state,
+        detail=detail,
+        payload=payload,
+        created_at=created_at,
+    )
+    conn.commit()
+    conn.close()
+    return event_id
+
+
+def create_instagram_audit_batch(
+    items: List[Dict[str, Any]],
+    *,
+    created_by_admin: Optional[str],
+) -> Dict[str, Any]:
+    now = int(time.time())
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        INSERT INTO instagram_audit_batches (
+            state,
+            detail,
+            selected_accounts,
+            created_by_admin,
+            created_at,
+            updated_at
+        )
+        VALUES ('queued', '', ?, ?, ?, ?)
+        """,
+        (len(items), (created_by_admin or "").strip(), now, now),
+    )
+    batch_id = int(cur.lastrowid)
+    for index, item in enumerate(items):
+        item_state = normalize_instagram_audit_item_state(str(item.get("item_state") or "queued"))
+        mail_probe_state = normalize_instagram_audit_mail_probe_state(str(item.get("mail_probe_state") or "pending"))
+        resolution_state = normalize_instagram_audit_resolution(str(item.get("resolution_state") or ""))
+        detail = str(item.get("resolution_detail") or item.get("login_detail") or item.get("mail_probe_detail") or "").strip()
+        started_at = int(item["started_at"]) if item.get("started_at") else None
+        completed_at = int(item["completed_at"]) if item.get("completed_at") else None
+        cur.execute(
+            """
+            INSERT INTO instagram_audit_items (
+                audit_batch_id,
+                account_id,
+                queue_position,
+                item_state,
+                assigned_serial,
+                login_state,
+                login_detail,
+                mail_probe_state,
+                mail_probe_detail,
+                resolution_state,
+                resolution_detail,
+                diagnostic_path,
+                created_at,
+                updated_at,
+                started_at,
+                completed_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                batch_id,
+                int(item["account_id"]),
+                int(item.get("queue_position") or index),
+                item_state,
+                str(item.get("assigned_serial") or "").strip(),
+                str(item.get("login_state") or "").strip(),
+                str(item.get("login_detail") or "").strip(),
+                mail_probe_state,
+                str(item.get("mail_probe_detail") or "").strip(),
+                resolution_state,
+                str(item.get("resolution_detail") or detail).strip(),
+                str(item.get("diagnostic_path") or "").strip(),
+                now,
+                now,
+                started_at,
+                completed_at,
+            ),
+        )
+        item_id = int(cur.lastrowid)
+        _append_instagram_audit_event_with_cursor(
+            cur,
+            audit_batch_id=batch_id,
+            audit_item_id=item_id,
+            account_id=int(item["account_id"]),
+            state=item_state,
+            detail=detail or ("Задача поставлена в очередь." if item_state == "queued" else ""),
+            payload={
+                "assigned_serial": str(item.get("assigned_serial") or "").strip(),
+                "resolution_state": resolution_state,
+                "mail_probe_state": mail_probe_state,
+            },
+            created_at=now,
+        )
+    conn.commit()
+    conn.close()
+    refresh_instagram_audit_batch_state(batch_id)
+    return {"batch_id": batch_id, "selected_accounts": len(items)}
+
+
+def get_instagram_audit_batch(batch_id: int) -> Optional[sqlite3.Row]:
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT
+            id,
+            state,
+            detail,
+            selected_accounts,
+            created_by_admin,
+            created_at,
+            updated_at,
+            started_at,
+            completed_at
+        FROM instagram_audit_batches
+        WHERE id = ?
+        """,
+        (int(batch_id),),
+    )
+    row = cur.fetchone()
+    conn.close()
+    return row
+
+
+def list_instagram_audit_items(batch_id: int) -> List[sqlite3.Row]:
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT
+            i.id,
+            i.audit_batch_id,
+            i.account_id,
+            i.queue_position,
+            i.item_state,
+            i.assigned_serial,
+            i.login_state,
+            i.login_detail,
+            i.mail_probe_state,
+            i.mail_probe_detail,
+            i.resolution_state,
+            i.resolution_detail,
+            i.diagnostic_path,
+            i.created_at,
+            i.updated_at,
+            i.started_at,
+            i.completed_at,
+            COALESCE(a.type, '') AS account_type,
+            COALESCE(a.account_login, '') AS account_login,
+            COALESCE(a.username, '') AS username,
+            COALESCE(a.email, '') AS email,
+            COALESCE(a.instagram_emulator_serial, '') AS account_instagram_emulator_serial,
+            COALESCE(a.instagram_launch_status, 'idle') AS instagram_launch_status,
+            COALESCE(a.instagram_launch_detail, '') AS instagram_launch_detail,
+            a.instagram_launch_updated_at,
+            COALESCE(a.mail_status, 'never_checked') AS account_mail_status,
+            COALESCE(a.mail_last_error, '') AS account_mail_last_error,
+            a.mail_last_checked_at,
+            a.owner_worker_id,
+            COALESCE(w.name, '') AS owner_worker_name,
+            COALESCE(w.username, '') AS owner_worker_username
+        FROM instagram_audit_items i
+        JOIN accounts a ON a.id = i.account_id
+        LEFT JOIN workers w ON w.id = a.owner_worker_id
+        WHERE i.audit_batch_id = ?
+        ORDER BY i.queue_position ASC, i.id ASC
+        """,
+        (int(batch_id),),
+    )
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+def get_instagram_audit_item(batch_id: int, account_id: int) -> Optional[sqlite3.Row]:
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT
+            id,
+            audit_batch_id,
+            account_id,
+            queue_position,
+            item_state,
+            assigned_serial,
+            login_state,
+            login_detail,
+            mail_probe_state,
+            mail_probe_detail,
+            resolution_state,
+            resolution_detail,
+            diagnostic_path,
+            created_at,
+            updated_at,
+            started_at,
+            completed_at
+        FROM instagram_audit_items
+        WHERE audit_batch_id = ?
+          AND account_id = ?
+        LIMIT 1
+        """,
+        (int(batch_id), int(account_id)),
+    )
+    row = cur.fetchone()
+    conn.close()
+    return row
+
+
+def list_instagram_audit_events(batch_id: int, limit: int = 100) -> List[sqlite3.Row]:
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT
+            e.id,
+            e.audit_batch_id,
+            e.audit_item_id,
+            e.account_id,
+            e.state,
+            e.detail,
+            e.payload_json,
+            e.created_at,
+            COALESCE(a.username, '') AS account_username,
+            COALESCE(a.account_login, '') AS account_login
+        FROM instagram_audit_events e
+        LEFT JOIN accounts a ON a.id = e.account_id
+        WHERE e.audit_batch_id = ?
+        ORDER BY e.created_at DESC, e.id DESC
+        LIMIT ?
+        """,
+        (int(batch_id), int(limit)),
+    )
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+def list_pending_instagram_audit_batch_ids(limit: int = 20) -> List[int]:
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT id
+        FROM instagram_audit_batches
+        WHERE state IN ('queued', 'running')
+        ORDER BY created_at ASC, id ASC
+        LIMIT ?
+        """,
+        (int(limit),),
+    )
+    rows = [int(row["id"]) for row in cur.fetchall()]
+    conn.close()
+    return rows
+
+
+def reset_instagram_audit_inflight_items(batch_id: int) -> int:
+    now = int(time.time())
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        UPDATE instagram_audit_items
+        SET item_state = 'queued',
+            updated_at = ?
+        WHERE audit_batch_id = ?
+          AND item_state IN ('launching', 'login_check', 'mail_check_if_needed')
+        """,
+        (now, int(batch_id)),
+    )
+    changed = int(cur.rowcount or 0)
+    conn.commit()
+    conn.close()
+    if changed:
+        refresh_instagram_audit_batch_state(batch_id, detail="После рестарта batch поставлен обратно в очередь.")
+    return changed
+
+
+def update_instagram_audit_batch_state(
+    batch_id: int,
+    state: str,
+    *,
+    detail: Optional[str] = None,
+    started_at: Optional[int] = None,
+    completed_at: Optional[int] = None,
+) -> bool:
+    state_value = normalize_instagram_audit_batch_state(state)
+    now = int(time.time())
+    conn = _connect()
+    cur = conn.cursor()
+    if detail is None:
+        cur.execute("SELECT detail, started_at, completed_at FROM instagram_audit_batches WHERE id = ?", (int(batch_id),))
+        row = cur.fetchone()
+        detail_value = str((row["detail"] if row else "") or "").strip()
+        started_value = int((row["started_at"] if row and row["started_at"] is not None else 0) or 0) or None
+        completed_value = int((row["completed_at"] if row and row["completed_at"] is not None else 0) or 0) or None
+    else:
+        detail_value = str(detail or "").strip()
+        started_value = started_at
+        completed_value = completed_at
+    if started_at is not None:
+        started_value = int(started_at)
+    if completed_at is not None:
+        completed_value = int(completed_at)
+    cur.execute(
+        """
+        UPDATE instagram_audit_batches
+        SET state = ?,
+            detail = ?,
+            started_at = ?,
+            completed_at = ?,
+            updated_at = ?
+        WHERE id = ?
+        """,
+        (
+            state_value,
+            detail_value,
+            started_value,
+            completed_value,
+            now,
+            int(batch_id),
+        ),
+    )
+    changed = cur.rowcount > 0
+    conn.commit()
+    conn.close()
+    return changed
+
+
+def update_instagram_audit_item(
+    item_id: int,
+    *,
+    item_state: Optional[str] = None,
+    assigned_serial: Optional[str] = None,
+    login_state: Optional[str] = None,
+    login_detail: Optional[str] = None,
+    mail_probe_state: Optional[str] = None,
+    mail_probe_detail: Optional[str] = None,
+    resolution_state: Optional[str] = None,
+    resolution_detail: Optional[str] = None,
+    diagnostic_path: Optional[str] = None,
+    started_at: Optional[int] = None,
+    completed_at: Optional[int] = None,
+) -> bool:
+    updates: List[str] = []
+    args: List[Any] = []
+    if item_state is not None:
+        updates.append("item_state = ?")
+        args.append(normalize_instagram_audit_item_state(item_state))
+    if assigned_serial is not None:
+        updates.append("assigned_serial = ?")
+        args.append(str(assigned_serial or "").strip())
+    if login_state is not None:
+        updates.append("login_state = ?")
+        args.append(str(login_state or "").strip())
+    if login_detail is not None:
+        updates.append("login_detail = ?")
+        args.append(str(login_detail or "").strip())
+    if mail_probe_state is not None:
+        updates.append("mail_probe_state = ?")
+        args.append(normalize_instagram_audit_mail_probe_state(mail_probe_state))
+    if mail_probe_detail is not None:
+        updates.append("mail_probe_detail = ?")
+        args.append(str(mail_probe_detail or "").strip())
+    if resolution_state is not None:
+        updates.append("resolution_state = ?")
+        args.append(normalize_instagram_audit_resolution(resolution_state))
+    if resolution_detail is not None:
+        updates.append("resolution_detail = ?")
+        args.append(str(resolution_detail or "").strip())
+    if diagnostic_path is not None:
+        updates.append("diagnostic_path = ?")
+        args.append(str(diagnostic_path or "").strip())
+    if started_at is not None:
+        updates.append("started_at = ?")
+        args.append(int(started_at))
+    if completed_at is not None:
+        updates.append("completed_at = ?")
+        args.append(int(completed_at))
+    if not updates:
+        return False
+    updates.append("updated_at = ?")
+    args.append(int(time.time()))
+    args.append(int(item_id))
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute(f"UPDATE instagram_audit_items SET {', '.join(updates)} WHERE id = ?", tuple(args))
+    changed = cur.rowcount > 0
+    conn.commit()
+    conn.close()
+    return changed
+
+
+def refresh_instagram_audit_batch_state(batch_id: int, *, detail: Optional[str] = None) -> Dict[str, Any]:
+    now = int(time.time())
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT
+            COUNT(*) AS total,
+            SUM(CASE WHEN item_state = 'done' THEN 1 ELSE 0 END) AS done_total,
+            SUM(CASE WHEN item_state IN ('launching', 'login_check', 'mail_check_if_needed') THEN 1 ELSE 0 END) AS active_total,
+            SUM(CASE WHEN item_state = 'queued' THEN 1 ELSE 0 END) AS queued_total,
+            SUM(CASE WHEN resolution_state = 'login_ok' THEN 1 ELSE 0 END) AS ok_total,
+            SUM(CASE WHEN resolution_state IN ('manual_2fa_required', 'email_code_required', 'challenge_required', 'invalid_password', 'helper_error', 'missing_credentials', 'missing_device') THEN 1 ELSE 0 END) AS issue_total
+        FROM instagram_audit_items
+        WHERE audit_batch_id = ?
+        """,
+        (int(batch_id),),
+    )
+    metrics = cur.fetchone()
+    cur.execute("SELECT detail, started_at FROM instagram_audit_batches WHERE id = ?", (int(batch_id),))
+    batch_row = cur.fetchone()
+    total = int((metrics["total"] if metrics else 0) or 0)
+    done_total = int((metrics["done_total"] if metrics else 0) or 0)
+    active_total = int((metrics["active_total"] if metrics else 0) or 0)
+    issue_total = int((metrics["issue_total"] if metrics else 0) or 0)
+    started_at_value = int((batch_row["started_at"] if batch_row and batch_row["started_at"] is not None else 0) or 0) or None
+    detail_value = str(detail if detail is not None else ((batch_row["detail"] if batch_row else "") or "")).strip()
+
+    if total > 0 and done_total >= total:
+        next_state = "completed_with_errors" if issue_total > 0 else "completed"
+        completed_at = now
+    elif active_total > 0 or done_total > 0 or started_at_value:
+        next_state = "running"
+        completed_at = None
+    else:
+        next_state = "queued"
+        completed_at = None
+
+    cur.execute(
+        """
+        UPDATE instagram_audit_batches
+        SET state = ?,
+            detail = ?,
+            updated_at = ?,
+            started_at = COALESCE(started_at, ?),
+            completed_at = ?
+        WHERE id = ?
+        """,
+        (
+            next_state,
+            detail_value,
+            now,
+            started_at_value or (now if next_state == "running" else None),
+            completed_at,
+            int(batch_id),
+        ),
+    )
+    conn.commit()
+    conn.close()
+    return {
+        "state": next_state,
+        "total": total,
+        "done_total": done_total,
+        "active_total": active_total,
+        "issue_total": issue_total,
+    }
+
+
+def get_latest_instagram_audit_for_account(account_id: int) -> Optional[sqlite3.Row]:
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT
+            i.audit_batch_id,
+            i.account_id,
+            i.item_state,
+            i.assigned_serial,
+            i.login_state,
+            i.mail_probe_state,
+            i.resolution_state,
+            i.resolution_detail,
+            i.diagnostic_path,
+            i.updated_at,
+            b.state AS batch_state
+        FROM instagram_audit_items i
+        JOIN instagram_audit_batches b ON b.id = i.audit_batch_id
+        WHERE i.account_id = ?
+        ORDER BY i.updated_at DESC, i.id DESC
+        LIMIT 1
+        """,
+        (int(account_id),),
+    )
+    row = cur.fetchone()
+    conn.close()
+    return row
+
+
+def _runtime_task_natural_key(task_type: str, entity_type: str, entity_id: int) -> str:
+    return f"{normalize_runtime_task_type(task_type)}:{normalize_runtime_task_entity_type(entity_type)}:{int(entity_id)}"
+
+
+def create_or_reactivate_runtime_task(
+    *,
+    task_type: str,
+    entity_type: str,
+    entity_id: int,
+    payload: Optional[Dict[str, Any]] = None,
+    max_attempts: int = 3,
+    available_at: Optional[int] = None,
+    reactivate_if_terminal: bool = False,
+) -> Dict[str, Any]:
+    task_type_value = normalize_runtime_task_type(task_type)
+    entity_type_value = normalize_runtime_task_entity_type(entity_type)
+    natural_key = _runtime_task_natural_key(task_type_value, entity_type_value, int(entity_id))
+    now = int(time.time())
+    available_value = int(available_at if available_at is not None else now)
+    payload_json = json.dumps(payload or {}, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+    conn = _connect()
+    cur = conn.cursor()
+    try:
+        cur.execute("BEGIN IMMEDIATE")
+        cur.execute(
+            """
+            INSERT OR IGNORE INTO runtime_tasks (
+                natural_key,
+                task_type,
+                entity_type,
+                entity_id,
+                state,
+                payload_json,
+                attempt_count,
+                max_attempts,
+                last_error,
+                available_at,
+                created_at,
+                updated_at
+            )
+            VALUES (?, ?, ?, ?, 'queued', ?, 0, ?, '', ?, ?, ?)
+            """,
+            (
+                natural_key,
+                task_type_value,
+                entity_type_value,
+                int(entity_id),
+                payload_json,
+                max(1, int(max_attempts or 1)),
+                available_value,
+                now,
+                now,
+            ),
+        )
+        cur.execute(
+            """
+            SELECT
+                id,
+                natural_key,
+                task_type,
+                entity_type,
+                entity_id,
+                state,
+                payload_json,
+                lease_owner,
+                lease_expires_at,
+                attempt_count,
+                max_attempts,
+                last_error,
+                available_at,
+                created_at,
+                updated_at,
+                started_at,
+                completed_at,
+                last_heartbeat_at
+            FROM runtime_tasks
+            WHERE natural_key = ?
+            LIMIT 1
+            """,
+            (natural_key,),
+        )
+        row = cur.fetchone()
+        if row is None:
+            raise RuntimeError("runtime task not created")
+        if reactivate_if_terminal and str(row["state"] or "") in {"completed", "failed", "canceled"}:
+            cur.execute(
+                """
+                UPDATE runtime_tasks
+                SET state = 'queued',
+                    payload_json = ?,
+                    attempt_count = 0,
+                    max_attempts = ?,
+                    last_error = '',
+                    available_at = ?,
+                    updated_at = ?,
+                    started_at = NULL,
+                    completed_at = NULL,
+                    lease_owner = NULL,
+                    lease_expires_at = NULL,
+                    last_heartbeat_at = NULL
+                WHERE id = ?
+                """,
+                (payload_json, max(1, int(max_attempts or 1)), available_value, now, int(row["id"])),
+            )
+            cur.execute("SELECT * FROM runtime_tasks WHERE id = ?", (int(row["id"]),))
+            row = cur.fetchone()
+        conn.commit()
+        return dict(row)
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def get_runtime_task(task_id: int) -> Optional[sqlite3.Row]:
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM runtime_tasks WHERE id = ?", (int(task_id),))
+    row = cur.fetchone()
+    conn.close()
+    return row
+
+
+def get_runtime_task_for_entity(task_type: str, entity_type: str, entity_id: int) -> Optional[sqlite3.Row]:
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT *
+        FROM runtime_tasks
+        WHERE task_type = ?
+          AND entity_type = ?
+          AND entity_id = ?
+        LIMIT 1
+        """,
+        (
+            normalize_runtime_task_type(task_type),
+            normalize_runtime_task_entity_type(entity_type),
+            int(entity_id),
+        ),
+    )
+    row = cur.fetchone()
+    conn.close()
+    return row
+
+
+def list_runtime_tasks(limit: int = 100) -> List[sqlite3.Row]:
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT *
+        FROM runtime_tasks
+        ORDER BY updated_at DESC, id DESC
+        LIMIT ?
+        """,
+        (int(limit),),
+    )
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+def _expire_stale_runtime_tasks_with_cursor(cur: sqlite3.Cursor, *, now: Optional[int] = None) -> int:
+    timestamp = int(now or time.time())
+    cur.execute(
+        """
+        SELECT
+            id,
+            attempt_count,
+            max_attempts
+        FROM runtime_tasks
+        WHERE state = 'running'
+          AND COALESCE(lease_expires_at, 0) > 0
+          AND COALESCE(lease_expires_at, 0) < ?
+        """,
+        (timestamp,),
+    )
+    rows = cur.fetchall()
+    expired = 0
+    for row in rows:
+        task_id = int(row["id"])
+        attempt_count = int(row["attempt_count"] or 0)
+        max_attempts = max(1, int(row["max_attempts"] or 1))
+        next_state = "failed" if attempt_count >= max_attempts else "retrying"
+        completed_at = timestamp if next_state == "failed" else None
+        cur.execute(
+            """
+            UPDATE runtime_tasks
+            SET state = ?,
+                lease_owner = NULL,
+                lease_expires_at = NULL,
+                last_error = ?,
+                updated_at = ?,
+                completed_at = CASE WHEN ? IS NOT NULL THEN ? ELSE completed_at END,
+                available_at = CASE WHEN ? = 'retrying' THEN ? ELSE available_at END
+            WHERE id = ?
+            """,
+            (
+                next_state,
+                "Runtime lease expired",
+                timestamp,
+                completed_at,
+                completed_at,
+                next_state,
+                timestamp,
+                task_id,
+            ),
+        )
+        expired += 1
+    return expired
+
+
+def lease_next_runtime_task(
+    *,
+    worker_name: str,
+    lease_seconds: int = 300,
+    now: Optional[int] = None,
+) -> Optional[Dict[str, Any]]:
+    runner = (worker_name or "").strip() or "runtime-worker"
+    lease_ttl = max(30, int(lease_seconds or 0))
+    timestamp = int(now or time.time())
+    conn = _connect()
+    cur = conn.cursor()
+    try:
+        cur.execute("BEGIN IMMEDIATE")
+        _expire_stale_runtime_tasks_with_cursor(cur, now=timestamp)
+        cur.execute(
+            """
+            SELECT *
+            FROM runtime_tasks
+            WHERE state IN ('queued', 'retrying')
+              AND COALESCE(available_at, 0) <= ?
+            ORDER BY
+              CASE WHEN task_type IN ('publish_reconcile', 'instagram_audit_reconcile') THEN 1 ELSE 0 END ASC,
+              available_at ASC,
+              created_at ASC,
+              id ASC
+            LIMIT 1
+            """,
+            (timestamp,),
+        )
+        row = cur.fetchone()
+        if row is None:
+            conn.rollback()
+            return None
+        cur.execute(
+            """
+            UPDATE runtime_tasks
+            SET state = 'running',
+                lease_owner = ?,
+                lease_expires_at = ?,
+                attempt_count = COALESCE(attempt_count, 0) + 1,
+                updated_at = ?,
+                started_at = COALESCE(started_at, ?),
+                completed_at = NULL,
+                last_heartbeat_at = ?
+            WHERE id = ?
+            """,
+            (runner, timestamp + lease_ttl, timestamp, timestamp, timestamp, int(row["id"])),
+        )
+        cur.execute("SELECT * FROM runtime_tasks WHERE id = ?", (int(row["id"]),))
+        leased = cur.fetchone()
+        conn.commit()
+        return dict(leased) if leased is not None else None
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def heartbeat_runtime_task(task_id: int, *, worker_name: str, lease_seconds: int = 300) -> bool:
+    runner = (worker_name or "").strip() or "runtime-worker"
+    now = int(time.time())
+    lease_ttl = max(30, int(lease_seconds or 0))
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        UPDATE runtime_tasks
+        SET lease_expires_at = ?,
+            last_heartbeat_at = ?,
+            updated_at = ?
+        WHERE id = ?
+          AND state = 'running'
+          AND COALESCE(lease_owner, '') = ?
+        """,
+        (now + lease_ttl, now, now, int(task_id), runner),
+    )
+    changed = cur.rowcount > 0
+    conn.commit()
+    conn.close()
+    return changed
+
+
+def complete_runtime_task(task_id: int, *, worker_name: str, last_error: str = "") -> bool:
+    runner = (worker_name or "").strip() or "runtime-worker"
+    now = int(time.time())
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        UPDATE runtime_tasks
+        SET state = 'completed',
+            lease_owner = NULL,
+            lease_expires_at = NULL,
+            last_error = ?,
+            updated_at = ?,
+            completed_at = ?
+        WHERE id = ?
+          AND state = 'running'
+          AND COALESCE(lease_owner, '') = ?
+        """,
+        ((last_error or "").strip(), now, now, int(task_id), runner),
+    )
+    changed = cur.rowcount > 0
+    conn.commit()
+    conn.close()
+    return changed
+
+
+def fail_runtime_task(
+    task_id: int,
+    *,
+    worker_name: str,
+    error: str,
+    retryable: bool,
+    retry_delay_seconds: int = 30,
+) -> Dict[str, Any]:
+    runner = (worker_name or "").strip() or "runtime-worker"
+    now = int(time.time())
+    conn = _connect()
+    cur = conn.cursor()
+    try:
+        cur.execute("BEGIN IMMEDIATE")
+        cur.execute("SELECT * FROM runtime_tasks WHERE id = ?", (int(task_id),))
+        row = cur.fetchone()
+        if row is None:
+            raise ValueError("runtime task not found")
+        if str(row["state"] or "") != "running":
+            raise ValueError("runtime task is not running")
+        if str(row["lease_owner"] or "") != runner:
+            raise ValueError("runtime task is owned by another worker")
+        attempt_count = int(row["attempt_count"] or 0)
+        max_attempts = max(1, int(row["max_attempts"] or 1))
+        next_state = "retrying" if retryable and attempt_count < max_attempts else "failed"
+        completed_at = now if next_state == "failed" else None
+        available_at = now + max(5, int(retry_delay_seconds or 0)) if next_state == "retrying" else int(row["available_at"] or now)
+        cur.execute(
+            """
+            UPDATE runtime_tasks
+            SET state = ?,
+                lease_owner = NULL,
+                lease_expires_at = NULL,
+                last_error = ?,
+                available_at = ?,
+                updated_at = ?,
+                completed_at = CASE WHEN ? IS NOT NULL THEN ? ELSE NULL END
+            WHERE id = ?
+              AND state = 'running'
+              AND COALESCE(lease_owner, '') = ?
+            """,
+            (
+                next_state,
+                (error or "").strip(),
+                available_at,
+                now,
+                completed_at,
+                completed_at,
+                int(task_id),
+                runner,
+            ),
+        )
+        if cur.rowcount <= 0:
+            raise ValueError("runtime task update failed")
+        cur.execute("SELECT * FROM runtime_tasks WHERE id = ?", (int(task_id),))
+        updated = cur.fetchone()
+        conn.commit()
+        return dict(updated) if updated is not None else {}
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def reschedule_runtime_task(
+    task_id: int,
+    *,
+    worker_name: str,
+    delay_seconds: int,
+    last_error: str = "",
+) -> bool:
+    runner = (worker_name or "").strip() or "runtime-worker"
+    now = int(time.time())
+    conn = _connect()
+    cur = conn.cursor()
+    try:
+        cur.execute("BEGIN IMMEDIATE")
+        cur.execute(
+            """
+            UPDATE runtime_tasks
+            SET state = 'queued',
+                lease_owner = NULL,
+                lease_expires_at = NULL,
+                attempt_count = 0,
+                last_error = ?,
+                available_at = ?,
+                updated_at = ?,
+                started_at = NULL,
+                completed_at = NULL,
+                last_heartbeat_at = NULL
+            WHERE id = ?
+              AND state = 'running'
+              AND COALESCE(lease_owner, '') = ?
+            """,
+            (
+                (last_error or "").strip(),
+                now + max(5, int(delay_seconds or 0)),
+                now,
+                int(task_id),
+                runner,
+            ),
+        )
+        changed = cur.rowcount > 0
+        conn.commit()
+        return changed
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def upsert_runtime_worker_heartbeat(
+    worker_name: str,
+    *,
+    current_task_id: Optional[int] = None,
+    last_error: Optional[str] = None,
+    now: Optional[int] = None,
+) -> None:
+    worker = (worker_name or "").strip() or "runtime-worker"
+    timestamp = int(now or time.time())
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        INSERT INTO runtime_workers (worker_name, current_task_id, last_heartbeat_at, last_error, first_seen_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(worker_name) DO UPDATE SET
+            current_task_id = excluded.current_task_id,
+            last_heartbeat_at = excluded.last_heartbeat_at,
+            last_error = CASE
+                WHEN TRIM(excluded.last_error) <> '' THEN excluded.last_error
+                ELSE runtime_workers.last_error
+            END,
+            updated_at = excluded.updated_at
+        """,
+        (
+            worker,
+            int(current_task_id) if current_task_id is not None else None,
+            timestamp,
+            (last_error or "").strip(),
+            timestamp,
+            timestamp,
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+
+def runtime_health_snapshot(*, live_timeout_seconds: int = 45) -> Dict[str, Any]:
+    now = int(time.time())
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT
+            SUM(CASE WHEN state = 'queued' THEN 1 ELSE 0 END) AS queued_total,
+            SUM(CASE WHEN state = 'retrying' THEN 1 ELSE 0 END) AS retrying_total,
+            SUM(CASE WHEN state = 'running' THEN 1 ELSE 0 END) AS running_total,
+            SUM(CASE WHEN state = 'failed' THEN 1 ELSE 0 END) AS failed_total
+        FROM runtime_tasks
+        """
+    )
+    counts = cur.fetchone()
+    cur.execute(
+        """
+        SELECT MIN(available_at) AS oldest_queued_at
+        FROM runtime_tasks
+        WHERE state IN ('queued', 'retrying')
+        """
+    )
+    oldest_row = cur.fetchone()
+    cur.execute(
+        """
+        SELECT
+            worker_name,
+            current_task_id,
+            last_heartbeat_at,
+            last_error,
+            first_seen_at,
+            updated_at
+        FROM runtime_workers
+        ORDER BY last_heartbeat_at DESC, updated_at DESC
+        """
+    )
+    workers = [dict(row) for row in cur.fetchall()]
+    recent_failed = [dict(row) for row in list_runtime_tasks(limit=20) if str(row["state"] or "") == "failed"][:5]
+    conn.close()
+    oldest_queued_at = int((oldest_row["oldest_queued_at"] if oldest_row and oldest_row["oldest_queued_at"] is not None else 0) or 0) or None
+    live_workers = [row for row in workers if int(row.get("last_heartbeat_at") or 0) >= now - max(10, int(live_timeout_seconds))]
+    return {
+        "workers": workers,
+        "live_workers": live_workers,
+        "counts": {
+            "queued": int((counts["queued_total"] if counts else 0) or 0),
+            "retrying": int((counts["retrying_total"] if counts else 0) or 0),
+            "running": int((counts["running_total"] if counts else 0) or 0),
+            "failed": int((counts["failed_total"] if counts else 0) or 0),
+        },
+        "oldest_queued_at": oldest_queued_at,
+        "recent_failed": recent_failed,
+    }
+
+
 def create_account(
     account_type: str,
     account_login: str,
@@ -2377,8 +3855,16 @@ def update_account_instagram_publish_state(
     return changed
 
 
-def _publish_job_state_to_account_publish_state(job_state: str) -> str:
+def _publish_job_state_to_account_publish_state(job_state: str, payload: Optional[Dict[str, Any]] = None) -> str:
     value = normalize_publish_job_state(job_state)
+    explicit_state = ""
+    if isinstance(payload, dict):
+        explicit_state = str(payload.get("account_publish_state") or "").strip().lower()
+    if explicit_state:
+        try:
+            return normalize_instagram_publish_status(explicit_state)
+        except ValueError:
+            pass
     if value in INSTAGRAM_PUBLISH_STATUS_KEYS:
         return value
     if value == "leased":
@@ -2386,6 +3872,21 @@ def _publish_job_state_to_account_publish_state(job_state: str) -> str:
     if value in {"failed", "canceled"}:
         return "publish_error"
     return "preparing"
+
+
+def _publish_job_state_to_batch_account_state(job_state: str) -> str:
+    value = normalize_publish_job_state(job_state)
+    if value == "queued":
+        return "queued_for_publish"
+    return normalize_publish_batch_account_state(value)
+
+
+def _is_publish_job_state_regression(current_state: str, next_state: str) -> bool:
+    current_value = normalize_publish_job_state(current_state)
+    next_value = normalize_publish_job_state(next_state)
+    if next_value in {"failed", "canceled"}:
+        return False
+    return PUBLISH_JOB_STATE_ORDER.get(next_value, 0) < PUBLISH_JOB_STATE_ORDER.get(current_value, 0)
 
 
 def _append_publish_job_event_with_cursor(
@@ -2396,29 +3897,125 @@ def _append_publish_job_event_with_cursor(
     detail: Optional[str],
     payload: Optional[Dict[str, Any]] = None,
     job_id: Optional[int] = None,
+    account_id: Optional[int] = None,
+    event_hash: Optional[str] = None,
     created_at: Optional[int] = None,
 ) -> None:
     cur.execute(
         """
-        INSERT INTO publish_job_events (batch_id, job_id, state, detail, payload_json, created_at)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO publish_job_events (batch_id, job_id, account_id, state, detail, payload_json, event_hash, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             int(batch_id),
             int(job_id) if job_id is not None else None,
+            int(account_id) if account_id is not None else None,
             (state or "").strip(),
             (detail or "").strip(),
             json.dumps(payload, ensure_ascii=False, sort_keys=True) if payload is not None else None,
+            (event_hash or "").strip() or None,
             int(created_at or time.time()),
         ),
     )
+
+
+def publish_event_hash_exists(batch_id: int, event_hash: str) -> bool:
+    value = (event_hash or "").strip()
+    if not value:
+        return False
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT 1
+        FROM publish_job_events
+        WHERE batch_id = ? AND event_hash = ?
+        LIMIT 1
+        """,
+        (int(batch_id), value),
+    )
+    exists = cur.fetchone() is not None
+    conn.close()
+    return exists
+
+
+def _set_publish_batch_account_state_with_cursor(
+    cur: sqlite3.Cursor,
+    *,
+    batch_id: int,
+    account_id: int,
+    state: str,
+    detail: Optional[str] = None,
+    artifact_id: Optional[int] = None,
+    job_id: Optional[int] = None,
+    updated_at: Optional[int] = None,
+) -> None:
+    state_value = normalize_publish_batch_account_state(state)
+    timestamp = int(updated_at or time.time())
+    cur.execute(
+        """
+        UPDATE publish_batch_accounts
+        SET state = ?,
+            detail = ?,
+            artifact_id = COALESCE(?, artifact_id),
+            job_id = COALESCE(?, job_id),
+            updated_at = ?
+        WHERE batch_id = ? AND account_id = ?
+        """,
+        (
+            state_value,
+            (detail or "").strip(),
+            int(artifact_id) if artifact_id is not None else None,
+            int(job_id) if job_id is not None else None,
+            timestamp,
+            int(batch_id),
+            int(account_id),
+        ),
+    )
+    if cur.rowcount <= 0:
+        raise ValueError("batch account not found")
+
+
+def _publish_batch_account_metrics_with_cursor(cur: sqlite3.Cursor, batch_id: int) -> Dict[str, int]:
+    cur.execute(
+        """
+        SELECT
+            COALESCE(COUNT(*), 0) AS accounts_total,
+            COALESCE(SUM(CASE WHEN state = 'queued_for_generation' THEN 1 ELSE 0 END), 0) AS queued_generation_accounts,
+            COALESCE(SUM(CASE WHEN state = 'generating' THEN 1 ELSE 0 END), 0) AS generating_accounts,
+            COALESCE(SUM(CASE WHEN state = 'queued_for_publish' THEN 1 ELSE 0 END), 0) AS queued_publish_accounts,
+            COALESCE(SUM(CASE WHEN state IN ('leased', 'preparing', 'importing_media', 'opening_reel_flow', 'selecting_media', 'publishing') THEN 1 ELSE 0 END), 0) AS active_publish_accounts,
+            COALESCE(SUM(CASE WHEN state = 'published' THEN 1 ELSE 0 END), 0) AS published_accounts,
+            COALESCE(SUM(CASE WHEN state = 'generation_failed' THEN 1 ELSE 0 END), 0) AS generation_failed_accounts,
+            COALESCE(SUM(CASE WHEN state = 'failed' THEN 1 ELSE 0 END), 0) AS failed_accounts,
+            COALESCE(SUM(CASE WHEN state = 'canceled' THEN 1 ELSE 0 END), 0) AS canceled_accounts,
+            COALESCE(SUM(CASE WHEN state IN ('generation_failed', 'published', 'failed', 'canceled') THEN 1 ELSE 0 END), 0) AS terminal_accounts
+        FROM publish_batch_accounts
+        WHERE batch_id = ?
+        """,
+        (int(batch_id),),
+    )
+    row = cur.fetchone()
+    if row is None:
+        return {
+            "accounts_total": 0,
+            "queued_generation_accounts": 0,
+            "generating_accounts": 0,
+            "queued_publish_accounts": 0,
+            "active_publish_accounts": 0,
+            "published_accounts": 0,
+            "generation_failed_accounts": 0,
+            "failed_accounts": 0,
+            "canceled_accounts": 0,
+            "terminal_accounts": 0,
+        }
+    return {key: int(row[key] or 0) for key in row.keys()}
 
 
 def _publish_batch_metrics_with_cursor(cur: sqlite3.Cursor, batch_id: int) -> Dict[str, int]:
     cur.execute(
         """
         SELECT
-            COALESCE((SELECT COUNT(*) FROM publish_batch_accounts WHERE batch_id = ?), 0) AS accounts_total,
             COALESCE((SELECT COUNT(*) FROM publish_artifacts WHERE batch_id = ?), 0) AS artifacts_total,
             COALESCE((SELECT COUNT(*) FROM publish_jobs WHERE batch_id = ?), 0) AS jobs_total,
             COALESCE((SELECT COUNT(*) FROM publish_jobs WHERE batch_id = ? AND state = 'queued'), 0) AS queued_jobs,
@@ -2428,12 +4025,12 @@ def _publish_batch_metrics_with_cursor(cur: sqlite3.Cursor, batch_id: int) -> Di
             COALESCE((SELECT COUNT(*) FROM publish_jobs WHERE batch_id = ? AND state = 'canceled'), 0) AS canceled_jobs,
             COALESCE((SELECT COUNT(*) FROM publish_jobs WHERE batch_id = ? AND state IN ('preparing', 'importing_media', 'opening_reel_flow', 'selecting_media', 'publishing')), 0) AS running_jobs
         """,
-        (int(batch_id),) * 9,
+        (int(batch_id),) * 8,
     )
     row = cur.fetchone()
+    account_metrics = _publish_batch_account_metrics_with_cursor(cur, int(batch_id))
     if row is None:
-        return {
-            "accounts_total": 0,
+        metrics = {
             "artifacts_total": 0,
             "jobs_total": 0,
             "queued_jobs": 0,
@@ -2443,7 +4040,15 @@ def _publish_batch_metrics_with_cursor(cur: sqlite3.Cursor, batch_id: int) -> Di
             "canceled_jobs": 0,
             "running_jobs": 0,
         }
-    return {key: int(row[key] or 0) for key in row.keys()}
+    else:
+        metrics = {key: int(row[key] or 0) for key in row.keys()}
+    metrics.update(account_metrics)
+    metrics["error_accounts"] = (
+        int(metrics.get("generation_failed_accounts", 0))
+        + int(metrics.get("failed_accounts", 0))
+        + int(metrics.get("canceled_accounts", 0))
+    )
+    return metrics
 
 
 def _refresh_publish_batch_state_with_cursor(cur: sqlite3.Cursor, batch_id: int, *, now: Optional[int] = None) -> Dict[str, Any]:
@@ -2467,7 +4072,7 @@ def _refresh_publish_batch_state_with_cursor(cur: sqlite3.Cursor, batch_id: int,
     if batch is None:
         raise ValueError("batch not found")
 
-    current_state = normalize_publish_batch_state(str(batch["state"] or "generating"))
+    current_state = normalize_publish_batch_state(str(batch["state"] or "queued_to_worker"))
     if current_state in {"failed_generation", "completed", "completed_with_errors", "canceled"}:
         metrics = _publish_batch_metrics_with_cursor(cur, int(batch_id))
         return {"state": current_state, **metrics}
@@ -2476,24 +4081,42 @@ def _refresh_publish_batch_state_with_cursor(cur: sqlite3.Cursor, batch_id: int,
     next_state = current_state
     completed_at = batch["completed_at"]
     detail = str(batch["detail"] or "").strip()
+    accounts_total = int(metrics.get("accounts_total", 0))
+    terminal_accounts = int(metrics.get("terminal_accounts", 0))
+    published_accounts = int(metrics.get("published_accounts", 0))
+    generation_failed_accounts = int(metrics.get("generation_failed_accounts", 0))
+    jobs_total = int(metrics.get("jobs_total", 0))
 
-    if batch["generation_completed_at"]:
-        if metrics["jobs_total"] <= 0:
-            next_state = "failed_generation"
-            completed_at = timestamp
-            detail = detail or "n8n завершил batch без готовых видео."
-        elif metrics["queued_jobs"] > 0 or metrics["leased_jobs"] > 0 or metrics["running_jobs"] > 0:
-            next_state = "publishing"
-            completed_at = None
-        elif metrics["failed_jobs"] > 0 or metrics["canceled_jobs"] > 0:
-            next_state = "completed_with_errors"
-            completed_at = timestamp
-        elif metrics["published_jobs"] == metrics["jobs_total"]:
+    all_accounts_terminal = accounts_total > 0 and terminal_accounts >= accounts_total
+    publish_started = (
+        jobs_total > 0
+        or int(metrics.get("queued_publish_accounts", 0)) > 0
+        or int(metrics.get("active_publish_accounts", 0)) > 0
+        or published_accounts > 0
+        or int(metrics.get("failed_accounts", 0)) > 0
+        or int(metrics.get("canceled_accounts", 0)) > 0
+    )
+
+    if all_accounts_terminal:
+        if published_accounts == accounts_total:
             next_state = "completed"
             completed_at = timestamp
+        elif published_accounts > 0 or jobs_total > 0:
+            next_state = "completed_with_errors"
+            completed_at = timestamp
+        elif generation_failed_accounts == accounts_total:
+            next_state = "failed_generation"
+            completed_at = timestamp
+            detail = detail or "Генерация не создала ни одного publish job."
         else:
-            next_state = "publishing"
-            completed_at = None
+            next_state = "completed_with_errors"
+            completed_at = timestamp
+    elif publish_started:
+        next_state = "publishing"
+        completed_at = None
+    elif current_state in {"queued_to_worker", "worker_started"} and not batch["generation_started_at"]:
+        next_state = current_state
+        completed_at = None
     else:
         next_state = "generating"
         completed_at = None
@@ -2537,6 +4160,46 @@ def list_publish_ready_accounts(limit: int = 500) -> List[sqlite3.Row]:
           AND TRIM(COALESCE(a.account_login, '')) <> ''
           AND TRIM(COALESCE(a.account_password, '')) <> ''
           AND TRIM(COALESCE(a.instagram_emulator_serial, '')) <> ''
+          AND TRIM(COALESCE(a.twofa, '')) <> ''
+        ORDER BY a.updated_at DESC, a.id DESC
+        LIMIT ?
+        """,
+        (int(limit),),
+    )
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+def list_publish_blocked_accounts(limit: int = 500) -> List[sqlite3.Row]:
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT
+            a.id,
+            a.type,
+            a.account_login,
+            a.username,
+            COALESCE(a.twofa, '') AS twofa,
+            COALESCE(a.instagram_emulator_serial, '') AS instagram_emulator_serial,
+            COALESCE(a.instagram_publish_status, 'idle') AS instagram_publish_status,
+            COALESCE(a.instagram_publish_detail, '') AS instagram_publish_detail,
+            a.instagram_publish_updated_at,
+            a.owner_worker_id,
+            COALESCE(w.name, '') AS owner_worker_name,
+            COALESCE(w.username, '') AS owner_worker_username,
+            CASE WHEN TRIM(COALESCE(a.account_password, '')) <> '' THEN 1 ELSE 0 END AS has_account_password,
+            a.updated_at
+        FROM accounts a
+        LEFT JOIN workers w ON w.id = a.owner_worker_id
+        WHERE a.type = 'instagram'
+          AND (
+            TRIM(COALESCE(a.account_login, '')) = ''
+            OR TRIM(COALESCE(a.account_password, '')) = ''
+            OR TRIM(COALESCE(a.instagram_emulator_serial, '')) = ''
+            OR TRIM(COALESCE(a.twofa, '')) = ''
+          )
         ORDER BY a.updated_at DESC, a.id DESC
         LIMIT ?
         """,
@@ -2568,7 +4231,8 @@ def create_publish_batch(
             account_login,
             account_password,
             username,
-            COALESCE(instagram_emulator_serial, '') AS instagram_emulator_serial
+            COALESCE(instagram_emulator_serial, '') AS instagram_emulator_serial,
+            COALESCE(twofa, '') AS twofa
         FROM accounts
         WHERE id IN ({placeholders})
         """,
@@ -2584,12 +4248,10 @@ def create_publish_batch(
         if str(row["type"] or "").strip().lower() != "instagram":
             conn.close()
             raise ValueError("account is not instagram")
-        if not str(row["account_login"] or "").strip() or not str(row["account_password"] or "").strip():
+        issues = publish_account_readiness_issues(row)
+        if issues:
             conn.close()
-            raise ValueError("account missing credentials")
-        if not str(row["instagram_emulator_serial"] or "").strip():
-            conn.close()
-            raise ValueError("account missing emulator serial")
+            raise ValueError(f"account {account_id} is not ready for fully-auto publish: {' '.join(issues)}")
 
     now = int(time.time())
     try:
@@ -2597,7 +4259,7 @@ def create_publish_batch(
         cur.execute(
             """
             INSERT INTO publish_batches (state, detail, workflow_key, created_by_admin, created_at, updated_at)
-            VALUES ('generating', 'Batch создан. Отправляю fixed n8n workflow.', ?, ?, ?, ?)
+            VALUES ('queued_to_worker', 'Batch создан. Жду runtime worker для старта n8n workflow.', ?, ?, ?, ?)
             """,
             ((workflow_key or "default").strip() or "default", (created_by_admin or "").strip(), now, now),
         )
@@ -2605,10 +4267,10 @@ def create_publish_batch(
         for account_id in unique_ids:
             cur.execute(
                 """
-                INSERT INTO publish_batch_accounts (batch_id, account_id, created_at)
-                VALUES (?, ?, ?)
+                INSERT INTO publish_batch_accounts (batch_id, account_id, state, detail, created_at, updated_at)
+                VALUES (?, ?, 'queued_for_generation', 'Ожидает очереди генерации.', ?, ?)
                 """,
-                (batch_id, int(account_id), now),
+                (batch_id, int(account_id), now, now),
             )
         _append_publish_job_event_with_cursor(
             cur,
@@ -2642,6 +4304,14 @@ def get_publish_batch(batch_id: int) -> Optional[sqlite3.Row]:
             b.completed_at,
             b.canceled_at,
             COALESCE((SELECT COUNT(*) FROM publish_batch_accounts pba WHERE pba.batch_id = b.id), 0) AS accounts_total,
+            COALESCE((SELECT COUNT(*) FROM publish_batch_accounts pba WHERE pba.batch_id = b.id AND pba.state = 'queued_for_generation'), 0) AS queued_generation_accounts,
+            COALESCE((SELECT COUNT(*) FROM publish_batch_accounts pba WHERE pba.batch_id = b.id AND pba.state = 'generating'), 0) AS generating_accounts,
+            COALESCE((SELECT COUNT(*) FROM publish_batch_accounts pba WHERE pba.batch_id = b.id AND pba.state = 'queued_for_publish'), 0) AS queued_publish_accounts,
+            COALESCE((SELECT COUNT(*) FROM publish_batch_accounts pba WHERE pba.batch_id = b.id AND pba.state IN ('leased', 'preparing', 'importing_media', 'opening_reel_flow', 'selecting_media', 'publishing')), 0) AS active_publish_accounts,
+            COALESCE((SELECT COUNT(*) FROM publish_batch_accounts pba WHERE pba.batch_id = b.id AND pba.state = 'published'), 0) AS published_accounts,
+            COALESCE((SELECT COUNT(*) FROM publish_batch_accounts pba WHERE pba.batch_id = b.id AND pba.state = 'generation_failed'), 0) AS generation_failed_accounts,
+            COALESCE((SELECT COUNT(*) FROM publish_batch_accounts pba WHERE pba.batch_id = b.id AND pba.state = 'failed'), 0) AS failed_accounts,
+            COALESCE((SELECT COUNT(*) FROM publish_batch_accounts pba WHERE pba.batch_id = b.id AND pba.state = 'canceled'), 0) AS canceled_accounts,
             COALESCE((SELECT COUNT(*) FROM publish_artifacts pa WHERE pa.batch_id = b.id), 0) AS artifacts_total,
             COALESCE((SELECT COUNT(*) FROM publish_jobs pj WHERE pj.batch_id = b.id), 0) AS jobs_total,
             COALESCE((SELECT COUNT(*) FROM publish_jobs pj WHERE pj.batch_id = b.id AND pj.state = 'queued'), 0) AS queued_jobs,
@@ -2678,6 +4348,14 @@ def list_publish_batches(limit: int = 25) -> List[sqlite3.Row]:
             b.generation_completed_at,
             b.completed_at,
             COALESCE((SELECT COUNT(*) FROM publish_batch_accounts pba WHERE pba.batch_id = b.id), 0) AS accounts_total,
+            COALESCE((SELECT COUNT(*) FROM publish_batch_accounts pba WHERE pba.batch_id = b.id AND pba.state = 'queued_for_generation'), 0) AS queued_generation_accounts,
+            COALESCE((SELECT COUNT(*) FROM publish_batch_accounts pba WHERE pba.batch_id = b.id AND pba.state = 'generating'), 0) AS generating_accounts,
+            COALESCE((SELECT COUNT(*) FROM publish_batch_accounts pba WHERE pba.batch_id = b.id AND pba.state = 'queued_for_publish'), 0) AS queued_publish_accounts,
+            COALESCE((SELECT COUNT(*) FROM publish_batch_accounts pba WHERE pba.batch_id = b.id AND pba.state IN ('leased', 'preparing', 'importing_media', 'opening_reel_flow', 'selecting_media', 'publishing')), 0) AS active_publish_accounts,
+            COALESCE((SELECT COUNT(*) FROM publish_batch_accounts pba WHERE pba.batch_id = b.id AND pba.state = 'published'), 0) AS published_accounts,
+            COALESCE((SELECT COUNT(*) FROM publish_batch_accounts pba WHERE pba.batch_id = b.id AND pba.state = 'generation_failed'), 0) AS generation_failed_accounts,
+            COALESCE((SELECT COUNT(*) FROM publish_batch_accounts pba WHERE pba.batch_id = b.id AND pba.state = 'failed'), 0) AS failed_accounts,
+            COALESCE((SELECT COUNT(*) FROM publish_batch_accounts pba WHERE pba.batch_id = b.id AND pba.state = 'canceled'), 0) AS canceled_accounts,
             COALESCE((SELECT COUNT(*) FROM publish_artifacts pa WHERE pa.batch_id = b.id), 0) AS artifacts_total,
             COALESCE((SELECT COUNT(*) FROM publish_jobs pj WHERE pj.batch_id = b.id), 0) AS jobs_total,
             COALESCE((SELECT COUNT(*) FROM publish_jobs pj WHERE pj.batch_id = b.id AND pj.state = 'published'), 0) AS published_jobs,
@@ -2700,20 +4378,33 @@ def list_publish_batch_accounts(batch_id: int) -> List[sqlite3.Row]:
     cur.execute(
         """
         SELECT
+            pba.account_id,
             a.id,
             a.type,
             a.account_login,
             a.username,
+            COALESCE(a.twofa, '') AS twofa,
             COALESCE(a.instagram_emulator_serial, '') AS instagram_emulator_serial,
             COALESCE(a.instagram_publish_status, 'idle') AS instagram_publish_status,
             COALESCE(a.instagram_publish_detail, '') AS instagram_publish_detail,
             a.instagram_publish_updated_at,
             COALESCE(w.name, '') AS owner_worker_name,
             COALESCE(w.username, '') AS owner_worker_username,
-            pba.created_at
+            pba.state,
+            COALESCE(pba.detail, '') AS detail,
+            pba.artifact_id,
+            pba.job_id,
+            pba.created_at,
+            pba.updated_at,
+            COALESCE(pa.filename, '') AS artifact_filename,
+            COALESCE(pa.path, '') AS artifact_path,
+            COALESCE(pj.state, '') AS job_state,
+            COALESCE(pj.detail, '') AS job_detail
         FROM publish_batch_accounts pba
         JOIN accounts a ON a.id = pba.account_id
         LEFT JOIN workers w ON w.id = a.owner_worker_id
+        LEFT JOIN publish_artifacts pa ON pa.id = pba.artifact_id
+        LEFT JOIN publish_jobs pj ON pj.id = pba.job_id
         WHERE pba.batch_id = ?
         ORDER BY a.username COLLATE NOCASE ASC, a.id ASC
         """,
@@ -2722,6 +4413,25 @@ def list_publish_batch_accounts(batch_id: int) -> List[sqlite3.Row]:
     rows = cur.fetchall()
     conn.close()
     return rows
+
+
+def get_publish_batch_account_state(batch_id: int, account_id: int) -> Optional[str]:
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT state
+        FROM publish_batch_accounts
+        WHERE batch_id = ? AND account_id = ?
+        LIMIT 1
+        """,
+        (int(batch_id), int(account_id)),
+    )
+    row = cur.fetchone()
+    conn.close()
+    if row is None:
+        return None
+    return normalize_publish_batch_account_state(str(row["state"] or "queued_for_generation"))
 
 
 def list_publish_artifacts(batch_id: int) -> List[sqlite3.Row]:
@@ -2748,6 +4458,32 @@ def list_publish_artifacts(batch_id: int) -> List[sqlite3.Row]:
     rows = cur.fetchall()
     conn.close()
     return rows
+
+
+def get_publish_artifact(batch_id: int, artifact_id: int) -> Optional[sqlite3.Row]:
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT
+            id,
+            batch_id,
+            path,
+            filename,
+            COALESCE(checksum, '') AS checksum,
+            size_bytes,
+            duration_seconds,
+            created_at,
+            updated_at
+        FROM publish_artifacts
+        WHERE batch_id = ? AND id = ?
+        LIMIT 1
+        """,
+        (int(batch_id), int(artifact_id)),
+    )
+    row = cur.fetchone()
+    conn.close()
+    return row
 
 
 def list_publish_jobs(batch_id: int) -> List[sqlite3.Row]:
@@ -2790,6 +4526,46 @@ def list_publish_jobs(batch_id: int) -> List[sqlite3.Row]:
     return rows
 
 
+def get_publish_job(job_id: int) -> Optional[sqlite3.Row]:
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT
+            j.id,
+            j.batch_id,
+            j.artifact_id,
+            j.account_id,
+            j.emulator_serial,
+            j.state,
+            COALESCE(j.detail, '') AS detail,
+            j.source_path,
+            j.source_name,
+            COALESCE(j.leased_by, '') AS leased_by,
+            j.leased_at,
+            j.lease_expires_at,
+            j.started_at,
+            j.completed_at,
+            COALESCE(j.last_file, '') AS last_file,
+            COALESCE(j.last_error, '') AS last_error,
+            j.created_at,
+            j.updated_at,
+            COALESCE(a.username, '') AS account_username,
+            COALESCE(a.account_login, '') AS account_login,
+            COALESCE(pa.filename, '') AS artifact_filename
+        FROM publish_jobs j
+        JOIN accounts a ON a.id = j.account_id
+        JOIN publish_artifacts pa ON pa.id = j.artifact_id
+        WHERE j.id = ?
+        LIMIT 1
+        """,
+        (int(job_id),),
+    )
+    row = cur.fetchone()
+    conn.close()
+    return row
+
+
 def list_publish_job_events(batch_id: int, limit: int = 200) -> List[sqlite3.Row]:
     conn = _connect()
     cur = conn.cursor()
@@ -2799,6 +4575,7 @@ def list_publish_job_events(batch_id: int, limit: int = 200) -> List[sqlite3.Row
             e.id,
             e.batch_id,
             e.job_id,
+            COALESCE(e.account_id, j.account_id) AS account_id,
             e.state,
             COALESCE(e.detail, '') AS detail,
             COALESCE(e.payload_json, '') AS payload_json,
@@ -2807,7 +4584,7 @@ def list_publish_job_events(batch_id: int, limit: int = 200) -> List[sqlite3.Row
             COALESCE(j.source_name, '') AS source_name
         FROM publish_job_events e
         LEFT JOIN publish_jobs j ON j.id = e.job_id
-        LEFT JOIN accounts a ON a.id = j.account_id
+        LEFT JOIN accounts a ON a.id = COALESCE(e.account_id, j.account_id)
         WHERE e.batch_id = ?
         ORDER BY e.created_at DESC, e.id DESC
         LIMIT ?
@@ -2817,6 +4594,31 @@ def list_publish_job_events(batch_id: int, limit: int = 200) -> List[sqlite3.Row
     rows = cur.fetchall()
     conn.close()
     return rows
+
+
+def append_publish_job_event(
+    batch_id: int,
+    *,
+    state: str,
+    detail: Optional[str],
+    payload: Optional[Dict[str, Any]] = None,
+    job_id: Optional[int] = None,
+    account_id: Optional[int] = None,
+) -> None:
+    conn = _connect()
+    cur = conn.cursor()
+    _append_publish_job_event_with_cursor(
+        cur,
+        batch_id=int(batch_id),
+        job_id=int(job_id) if job_id is not None else None,
+        account_id=int(account_id) if account_id is not None else None,
+        state=(state or "").strip(),
+        detail=detail,
+        payload=payload,
+        created_at=int(time.time()),
+    )
+    conn.commit()
+    conn.close()
 
 
 def update_publish_batch_state(batch_id: int, state: str, detail: Optional[str] = None) -> bool:
@@ -2870,29 +4672,132 @@ def update_publish_batch_state(batch_id: int, state: str, detail: Optional[str] 
     return changed
 
 
-def mark_publish_generation_started(batch_id: int, detail: Optional[str] = None) -> Dict[str, Any]:
+def fail_stale_generation_accounts(
+    *,
+    batch_id: Optional[int] = None,
+    timeout_seconds: int,
+    now: Optional[int] = None,
+) -> List[Dict[str, Any]]:
+    timeout_value = int(timeout_seconds or 0)
+    if timeout_value <= 0:
+        return []
+    timestamp = int(now or time.time())
+    cutoff = timestamp - timeout_value
+    conn = _connect()
+    cur = conn.cursor()
+    results: List[Dict[str, Any]] = []
+    try:
+        cur.execute("BEGIN IMMEDIATE")
+        filters = [int(cutoff)]
+        where = "state = 'generating' AND updated_at < ?"
+        if batch_id is not None:
+            where += " AND batch_id = ?"
+            filters.append(int(batch_id))
+        cur.execute(
+            f"""
+            SELECT batch_id, account_id, updated_at
+            FROM publish_batch_accounts
+            WHERE {where}
+            """,
+            tuple(filters),
+        )
+        rows = cur.fetchall()
+        if not rows:
+            conn.rollback()
+            return []
+        by_batch: Dict[int, List[int]] = {}
+        detail_value = f"Generation timed out after {timeout_value} seconds."
+        for row in rows:
+            batch_id_value = int(row["batch_id"])
+            account_id_value = int(row["account_id"])
+            cur.execute(
+                """
+                UPDATE publish_batch_accounts
+                SET state = 'generation_failed',
+                    detail = ?,
+                    updated_at = ?
+                WHERE batch_id = ? AND account_id = ? AND state = 'generating'
+                """,
+                (detail_value, timestamp, batch_id_value, account_id_value),
+            )
+            _append_publish_job_event_with_cursor(
+                cur,
+                batch_id=batch_id_value,
+                account_id=account_id_value,
+                state="generation_failed",
+                detail=detail_value,
+                payload={"timeout_seconds": timeout_value, "cutoff": cutoff},
+                created_at=timestamp,
+            )
+            by_batch.setdefault(batch_id_value, []).append(account_id_value)
+            results.append(
+                {
+                    "batch_id": batch_id_value,
+                    "account_id": account_id_value,
+                    "timeout_seconds": timeout_value,
+                }
+            )
+        for batch_id_value, account_ids in by_batch.items():
+            cur.execute(
+                """
+                UPDATE publish_batches
+                SET detail = ?,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (f"Generation timed out for {len(account_ids)} account(s).", timestamp, batch_id_value),
+            )
+            _refresh_publish_batch_state_with_cursor(cur, batch_id_value, now=timestamp)
+        conn.commit()
+        return results
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def mark_publish_generation_started(
+    batch_id: int,
+    detail: Optional[str] = None,
+    *,
+    account_id: Optional[int] = None,
+    event_hash: Optional[str] = None,
+) -> Dict[str, Any]:
     now = int(time.time())
+    detail_value = (detail or "").strip() or "n8n начал генерацию видео."
     conn = _connect()
     cur = conn.cursor()
     cur.execute(
         """
         UPDATE publish_batches
-        SET state = 'generating',
-            detail = ?,
+        SET detail = ?,
             updated_at = ?,
             generation_started_at = COALESCE(generation_started_at, ?)
         WHERE id = ?
         """,
-        ((detail or "").strip() or "n8n начал генерацию видео.", now, now, int(batch_id)),
+        (detail_value, now, now, int(batch_id)),
     )
     if cur.rowcount <= 0:
         conn.close()
         raise ValueError("batch not found")
+    if account_id is not None:
+        _set_publish_batch_account_state_with_cursor(
+            cur,
+            batch_id=int(batch_id),
+            account_id=int(account_id),
+            state="generating",
+            detail=detail_value,
+            updated_at=now,
+        )
     _append_publish_job_event_with_cursor(
         cur,
         batch_id=int(batch_id),
         state="generation_started",
-        detail=detail or "n8n начал генерацию видео.",
+        detail=detail_value,
+        payload={"account_id": int(account_id)} if account_id is not None else None,
+        account_id=int(account_id) if account_id is not None else None,
+        event_hash=event_hash,
         created_at=now,
     )
     metrics = _refresh_publish_batch_state_with_cursor(cur, int(batch_id), now=now)
@@ -2901,8 +4806,41 @@ def mark_publish_generation_started(batch_id: int, detail: Optional[str] = None)
     return metrics
 
 
-def mark_publish_generation_completed(batch_id: int, detail: Optional[str] = None) -> Dict[str, Any]:
+def mark_publish_batch_worker_started(batch_id: int, detail: Optional[str] = None) -> Dict[str, Any]:
     now = int(time.time())
+    detail_value = (detail or "").strip() or "Runtime worker начал запуск n8n workflow."
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        UPDATE publish_batches
+        SET state = CASE
+                WHEN state IN ('queued_to_worker', 'worker_started') THEN 'worker_started'
+                ELSE state
+            END,
+            detail = ?,
+            updated_at = ?
+        WHERE id = ?
+        """,
+        (detail_value, now, int(batch_id)),
+    )
+    if cur.rowcount <= 0:
+        conn.close()
+        raise ValueError("batch not found")
+    metrics = _refresh_publish_batch_state_with_cursor(cur, int(batch_id), now=now)
+    conn.commit()
+    conn.close()
+    return metrics
+
+
+def mark_publish_generation_completed(
+    batch_id: int,
+    detail: Optional[str] = None,
+    *,
+    event_hash: Optional[str] = None,
+) -> Dict[str, Any]:
+    now = int(time.time())
+    detail_value = (detail or "").strip() or "n8n закончил генерацию видео."
     conn = _connect()
     cur = conn.cursor()
     cur.execute(
@@ -2914,7 +4852,7 @@ def mark_publish_generation_completed(batch_id: int, detail: Optional[str] = Non
             generation_completed_at = COALESCE(generation_completed_at, ?)
         WHERE id = ?
         """,
-        ((detail or "").strip() or "n8n закончил генерацию видео.", now, now, now, int(batch_id)),
+        (detail_value, now, now, now, int(batch_id)),
     )
     if cur.rowcount <= 0:
         conn.close()
@@ -2923,7 +4861,8 @@ def mark_publish_generation_completed(batch_id: int, detail: Optional[str] = Non
         cur,
         batch_id=int(batch_id),
         state="generation_completed",
-        detail=detail or "n8n закончил генерацию видео.",
+        detail=detail_value,
+        event_hash=event_hash,
         created_at=now,
     )
     metrics = _refresh_publish_batch_state_with_cursor(cur, int(batch_id), now=now)
@@ -2932,35 +4871,190 @@ def mark_publish_generation_completed(batch_id: int, detail: Optional[str] = Non
     return metrics
 
 
-def mark_publish_generation_failed(batch_id: int, detail: Optional[str]) -> bool:
+def mark_publish_generation_failed(
+    batch_id: int,
+    detail: Optional[str],
+    *,
+    account_id: Optional[int] = None,
+    event_hash: Optional[str] = None,
+) -> Dict[str, Any]:
     now = int(time.time())
+    detail_value = (detail or "").strip() or "n8n вернул ошибку генерации."
     conn = _connect()
     cur = conn.cursor()
-    cur.execute(
-        """
-        UPDATE publish_batches
-        SET state = 'failed_generation',
-            detail = ?,
-            updated_at = ?,
-            generation_started_at = COALESCE(generation_started_at, ?),
-            generation_completed_at = COALESCE(generation_completed_at, ?),
-            completed_at = COALESCE(completed_at, ?)
-        WHERE id = ?
-        """,
-        ((detail or "").strip() or "n8n вернул ошибку генерации.", now, now, now, now, int(batch_id)),
-    )
-    changed = cur.rowcount > 0
-    if changed:
+    try:
+        cur.execute("BEGIN IMMEDIATE")
+        cur.execute(
+            """
+            UPDATE publish_batches
+            SET detail = ?,
+                updated_at = ?,
+                generation_started_at = COALESCE(generation_started_at, ?),
+                generation_completed_at = CASE
+                    WHEN ? IS NULL THEN COALESCE(generation_completed_at, ?)
+                    ELSE generation_completed_at
+                END
+            WHERE id = ?
+            """,
+            (detail_value, now, now, account_id, now, int(batch_id)),
+        )
+        if cur.rowcount <= 0:
+            raise ValueError("batch not found")
+
+        if account_id is not None:
+            _set_publish_batch_account_state_with_cursor(
+                cur,
+                batch_id=int(batch_id),
+                account_id=int(account_id),
+                state="generation_failed",
+                detail=detail_value,
+                updated_at=now,
+            )
+        else:
+            cur.execute(
+                """
+                UPDATE publish_batch_accounts
+                SET state = 'generation_failed',
+                    detail = ?,
+                    updated_at = ?
+                WHERE batch_id = ?
+                  AND state IN ('queued_for_generation', 'generating')
+                """,
+                (detail_value, now, int(batch_id)),
+            )
+            cur.execute(
+                """
+                UPDATE publish_batches
+                SET generation_completed_at = COALESCE(generation_completed_at, ?)
+                WHERE id = ?
+                """,
+                (now, int(batch_id)),
+            )
+
         _append_publish_job_event_with_cursor(
             cur,
             batch_id=int(batch_id),
             state="generation_failed",
-            detail=detail or "n8n вернул ошибку генерации.",
+            detail=detail_value,
+            payload={"account_id": int(account_id)} if account_id is not None else None,
+            account_id=int(account_id) if account_id is not None else None,
+            event_hash=event_hash,
             created_at=now,
         )
-    conn.commit()
-    conn.close()
-    return changed
+        metrics = _refresh_publish_batch_state_with_cursor(cur, int(batch_id), now=now)
+        conn.commit()
+        return metrics
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def mark_publish_generation_progress(
+    batch_id: int,
+    *,
+    account_id: int,
+    stage_key: str,
+    stage_label: str,
+    progress_pct: float,
+    detail: Optional[str] = None,
+    meta: Optional[Dict[str, Any]] = None,
+    event_hash: Optional[str] = None,
+) -> Dict[str, Any]:
+    now = int(time.time())
+    stage_key_value = (stage_key or "").strip()
+    stage_label_value = (stage_label or "").strip()
+    progress_value = max(0.0, min(100.0, float(progress_pct)))
+    detail_value = (detail or "").strip() or stage_label_value or "Получен generation progress."
+    conn = _connect()
+    cur = conn.cursor()
+    try:
+        cur.execute("BEGIN IMMEDIATE")
+        cur.execute(
+            """
+            SELECT id
+            FROM publish_batches
+            WHERE id = ?
+            LIMIT 1
+            """,
+            (int(batch_id),),
+        )
+        if cur.fetchone() is None:
+            raise ValueError("batch not found")
+
+        cur.execute(
+            """
+            SELECT state
+            FROM publish_batch_accounts
+            WHERE batch_id = ? AND account_id = ?
+            LIMIT 1
+            """,
+            (int(batch_id), int(account_id)),
+        )
+        account_row = cur.fetchone()
+        if account_row is None:
+            raise ValueError("batch account not found")
+
+        current_state = normalize_publish_batch_account_state(str(account_row["state"] or "queued_for_generation"))
+        if current_state in {"queued_for_generation", "generating"}:
+            _set_publish_batch_account_state_with_cursor(
+                cur,
+                batch_id=int(batch_id),
+                account_id=int(account_id),
+                state="generating",
+                detail=detail_value,
+                updated_at=now,
+            )
+        else:
+            cur.execute(
+                """
+                UPDATE publish_batch_accounts
+                SET detail = ?,
+                    updated_at = ?
+                WHERE batch_id = ? AND account_id = ?
+                """,
+                (detail_value, now, int(batch_id), int(account_id)),
+            )
+
+        cur.execute(
+            """
+            UPDATE publish_batches
+            SET detail = ?,
+                updated_at = ?,
+                generation_started_at = COALESCE(generation_started_at, ?)
+            WHERE id = ?
+            """,
+            (detail_value, now, now, int(batch_id)),
+        )
+
+        payload = {
+            "account_id": int(account_id),
+            "stage_key": stage_key_value,
+            "stage_label": stage_label_value,
+            "progress_pct": progress_value,
+        }
+        if meta is not None:
+            payload["meta"] = meta
+
+        _append_publish_job_event_with_cursor(
+            cur,
+            batch_id=int(batch_id),
+            account_id=int(account_id),
+            state="generation_progress",
+            detail=detail_value,
+            payload=payload,
+            event_hash=event_hash,
+            created_at=now,
+        )
+        metrics = _refresh_publish_batch_state_with_cursor(cur, int(batch_id), now=now)
+        conn.commit()
+        return metrics
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def register_publish_artifact(
@@ -2971,6 +5065,8 @@ def register_publish_artifact(
     checksum: Optional[str] = None,
     size_bytes: Optional[int] = None,
     duration_seconds: Optional[float] = None,
+    account_id: Optional[int] = None,
+    event_hash: Optional[str] = None,
 ) -> Dict[str, Any]:
     now = int(time.time())
     path_value = (path or "").strip()
@@ -3039,23 +5135,37 @@ def register_publish_artifact(
                 ),
             )
 
+        account_filters = [int(batch_id)]
+        account_where = "WHERE pba.batch_id = ?"
+        if account_id is not None:
+            account_where += " AND pba.account_id = ?"
+            account_filters.append(int(account_id))
         cur.execute(
-            """
+            f"""
             SELECT
                 pba.account_id,
+                pba.artifact_id,
+                pba.job_id,
+                pba.state,
                 COALESCE(a.instagram_emulator_serial, '') AS instagram_emulator_serial
             FROM publish_batch_accounts pba
             JOIN accounts a ON a.id = pba.account_id
-            WHERE pba.batch_id = ?
+            {account_where}
             ORDER BY pba.account_id ASC
             """,
-            (int(batch_id),),
+            tuple(account_filters),
         )
+        account_rows = cur.fetchall()
+        if account_id is not None and not account_rows:
+            raise ValueError("batch account not found")
         jobs_created = 0
-        for row in cur.fetchall():
+        job_ids: List[int] = []
+        target_account_ids: List[int] = []
+        for row in account_rows:
             emulator_serial = str(row["instagram_emulator_serial"] or "").strip()
             if not emulator_serial:
                 continue
+            target_account_id = int(row["account_id"])
             cur.execute(
                 """
                 INSERT OR IGNORE INTO publish_jobs (
@@ -3075,7 +5185,7 @@ def register_publish_artifact(
                 (
                     int(batch_id),
                     artifact_id,
-                    int(row["account_id"]),
+                    target_account_id,
                     emulator_serial,
                     path_value,
                     filename_value,
@@ -3085,26 +5195,170 @@ def register_publish_artifact(
             )
             if cur.rowcount > 0:
                 jobs_created += 1
+            cur.execute(
+                """
+                SELECT id
+                FROM publish_jobs
+                WHERE batch_id = ? AND artifact_id = ? AND account_id = ?
+                LIMIT 1
+                """,
+                (int(batch_id), artifact_id, target_account_id),
+            )
+            job_row = cur.fetchone()
+            job_id_value = int(job_row["id"]) if job_row is not None else None
+            current_state = normalize_publish_batch_account_state(str(row["state"] or "queued_for_generation"))
+            should_advance = current_state in {"queued_for_generation", "generating", "generation_failed", "queued_for_publish"}
+            if should_advance:
+                _set_publish_batch_account_state_with_cursor(
+                    cur,
+                    batch_id=int(batch_id),
+                    account_id=target_account_id,
+                    state="queued_for_publish",
+                    detail=f"Видео {filename_value} готово. Ожидает lease runner-а.",
+                    artifact_id=artifact_id,
+                    job_id=job_id_value,
+                    updated_at=now,
+                )
+            else:
+                cur.execute(
+                    """
+                    UPDATE publish_batch_accounts
+                    SET artifact_id = COALESCE(artifact_id, ?),
+                        job_id = COALESCE(job_id, ?),
+                        updated_at = ?
+                    WHERE batch_id = ? AND account_id = ?
+                    """,
+                    (artifact_id, job_id_value, now, int(batch_id), target_account_id),
+                )
+            if job_id_value is not None:
+                job_ids.append(job_id_value)
+            target_account_ids.append(target_account_id)
+        detail_value = (
+            f"Получен файл {filename_value} для account_id={int(account_id)}. Создано jobs: {jobs_created}."
+            if account_id is not None
+            else f"Получен файл {filename_value}. Создано jobs: {jobs_created}."
+        )
 
         _append_publish_job_event_with_cursor(
             cur,
             batch_id=int(batch_id),
             state="artifact_ready",
-            detail=f"Получен файл {filename_value}. Создано jobs: {jobs_created}.",
+            detail=detail_value,
             payload={
                 "artifact_id": artifact_id,
                 "path": path_value,
                 "filename": filename_value,
                 "jobs_created": jobs_created,
                 "created": created,
+                "account_id": int(account_id) if account_id is not None else None,
+                "job_ids": job_ids,
             },
+            account_id=int(account_id) if account_id is not None else None,
+            event_hash=event_hash,
             created_at=now,
         )
         metrics = _refresh_publish_batch_state_with_cursor(cur, int(batch_id), now=now)
         conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()
-    return {"artifact_id": artifact_id, "created": created, "jobs_created": jobs_created, **metrics}
+    return {
+        "artifact_id": artifact_id,
+        "created": created,
+        "jobs_created": jobs_created,
+        "job_ids": job_ids,
+        "account_ids": target_account_ids,
+        **metrics,
+    }
+
+
+def _expire_stale_publish_jobs_with_cursor(cur: sqlite3.Cursor, *, now: int) -> int:
+    active_states = tuple(sorted(ACTIVE_PUBLISH_JOB_STATES))
+    if not active_states:
+        return 0
+    placeholders = ", ".join("?" for _ in active_states)
+    cur.execute(
+        f"""
+        SELECT
+            id,
+            batch_id,
+            account_id,
+            source_name,
+            COALESCE(last_file, '') AS last_file,
+            COALESCE(lease_expires_at, 0) AS lease_expires_at
+        FROM publish_jobs
+        WHERE state IN ({placeholders})
+          AND COALESCE(lease_expires_at, 0) < ?
+        """,
+        (*active_states, int(now)),
+    )
+    rows = cur.fetchall()
+    if not rows:
+        return 0
+    expired = 0
+    detail_value = "Publish job lease expired; marking failed."
+    for row in rows:
+        job_id = int(row["id"])
+        batch_id = int(row["batch_id"])
+        account_id = int(row["account_id"])
+        last_file_value = (str(row["last_file"] or "").strip() or str(row["source_name"] or "").strip())
+
+        cur.execute(
+            """
+            UPDATE publish_jobs
+            SET state = 'failed',
+                detail = ?,
+                completed_at = ?,
+                last_file = ?,
+                last_error = ?,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (detail_value, int(now), last_file_value, detail_value, int(now), job_id),
+        )
+        cur.execute(
+            """
+            UPDATE accounts
+            SET instagram_publish_status = ?,
+                instagram_publish_detail = ?,
+                instagram_publish_updated_at = ?,
+                instagram_publish_last_file = ?,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                _publish_job_state_to_account_publish_state("failed"),
+                detail_value,
+                int(now),
+                last_file_value,
+                int(now),
+                account_id,
+            ),
+        )
+        _set_publish_batch_account_state_with_cursor(
+            cur,
+            batch_id=batch_id,
+            account_id=account_id,
+            state="failed",
+            detail=detail_value,
+            job_id=job_id,
+            updated_at=int(now),
+        )
+        _append_publish_job_event_with_cursor(
+            cur,
+            batch_id=batch_id,
+            job_id=job_id,
+            account_id=account_id,
+            state="failed",
+            detail=detail_value,
+            payload={"expired": True},
+            created_at=int(now),
+        )
+        _refresh_publish_batch_state_with_cursor(cur, batch_id, now=int(now))
+        expired += 1
+    return expired
 
 
 def lease_next_publish_job(
@@ -3119,6 +5373,7 @@ def lease_next_publish_job(
     cur = conn.cursor()
     try:
         cur.execute("BEGIN IMMEDIATE")
+        _expire_stale_publish_jobs_with_cursor(cur, now=now)
         cur.execute(
             """
             SELECT j.id
@@ -3194,6 +5449,16 @@ def lease_next_publish_job(
         if row is None:
             conn.rollback()
             return None
+        _set_publish_batch_account_state_with_cursor(
+            cur,
+            batch_id=int(row["batch_id"]),
+            account_id=int(row["account_id"]),
+            state="leased",
+            detail=f"Runner {runner} взял job в lease.",
+            artifact_id=int(row["artifact_id"]),
+            job_id=job_id,
+            updated_at=now,
+        )
         _append_publish_job_event_with_cursor(
             cur,
             batch_id=int(row["batch_id"]),
@@ -3201,6 +5466,7 @@ def lease_next_publish_job(
             state="leased",
             detail=f"Runner {runner} взял job.",
             payload={"runner_name": runner, "lease_seconds": lease_ttl},
+            account_id=int(row["account_id"]),
             created_at=now,
         )
         _refresh_publish_batch_state_with_cursor(cur, int(row["batch_id"]), now=now)
@@ -3249,6 +5515,16 @@ def update_publish_job_state(
         current_state = normalize_publish_job_state(str(row["state"] or "queued"))
         if current_state in {"published", "failed", "canceled"} and state_value != current_state:
             raise ValueError("job already finished")
+        if _is_publish_job_state_regression(current_state, state_value):
+            metrics = _refresh_publish_batch_state_with_cursor(cur, int(row["batch_id"]), now=timestamp)
+            conn.commit()
+            return {
+                "job_id": int(job_id),
+                "batch_id": int(row["batch_id"]),
+                "job_state": current_state,
+                "batch_state": str(metrics.get("state") or ""),
+                **metrics,
+            }
 
         last_file_value = (last_file or "").strip() or str(row["last_file"] or "").strip() or str(row["source_name"] or "").strip()
         detail_value = (detail or "").strip()
@@ -3297,13 +5573,22 @@ def update_publish_job_state(
             WHERE id = ?
             """,
             (
-                _publish_job_state_to_account_publish_state(state_value),
+                _publish_job_state_to_account_publish_state(state_value, payload),
                 detail_value,
                 timestamp,
                 last_file_value,
                 timestamp,
                 int(row["account_id"]),
             ),
+        )
+        _set_publish_batch_account_state_with_cursor(
+            cur,
+            batch_id=int(row["batch_id"]),
+            account_id=int(row["account_id"]),
+            state=_publish_job_state_to_batch_account_state(state_value),
+            detail=detail_value,
+            job_id=int(job_id),
+            updated_at=timestamp,
         )
 
         _append_publish_job_event_with_cursor(
@@ -3313,11 +5598,21 @@ def update_publish_job_state(
             state=state_value,
             detail=detail_value,
             payload=payload,
+            account_id=int(row["account_id"]),
             created_at=timestamp,
         )
         metrics = _refresh_publish_batch_state_with_cursor(cur, int(row["batch_id"]), now=timestamp)
         conn.commit()
-        return {"job_id": int(job_id), "batch_id": int(row["batch_id"]), "state": state_value, **metrics}
+        return {
+            "job_id": int(job_id),
+            "batch_id": int(row["batch_id"]),
+            "job_state": state_value,
+            "batch_state": str(metrics.get("state") or ""),
+            **metrics,
+        }
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()
 
@@ -3459,6 +5754,7 @@ def consume_helper_launch_ticket(ticket: str, *, target: Optional[str] = None) -
             "account_login": str(account_dict.get("account_login") or ""),
             "account_password": str(account_dict.get("account_password") or ""),
             "twofa": str(account_dict.get("twofa") or ""),
+            "instagram_emulator_serial": str(account_dict.get("instagram_emulator_serial") or ""),
         },
     }
 
