@@ -3,11 +3,12 @@
 """
 
 import logging
-import requests
+import os
+import http_utils
 
 # Токен бота обучения
-TRAINING_BOT_TOKEN = "8263517231:AAEuKr3Kw9KiIQVsNw7FOmAEBxo1bj19Ksw"
-ADMIN_ID = 481659934
+TRAINING_BOT_TOKEN = (os.getenv("TRAINING_BOT_TOKEN") or os.getenv("BOT_TOKEN") or "").strip()
+ADMIN_ID = int((os.getenv("TRAINING_ADMIN_ID") or os.getenv("ADMIN_TEST_CHAT_ID") or "481659934").strip())
 
 def send_screenshot_for_training_sync(file_path: str, verification_result: dict, user_id: int = None):
     """
@@ -58,8 +59,10 @@ def send_screenshot_for_training_sync(file_path: str, verification_result: dict,
         
         # Дополнительно отправляем через HTTP API
         try:
-            import requests
-            
+            if not TRAINING_BOT_TOKEN:
+                logging.warning("TRAINING_BOT_TOKEN is not configured; direct Telegram send skipped")
+                return True
+
             caption = (
                 f"🤖 Новый скриншот для обучения ИИ\n\n"
                 f"👤 От пользователя: {user_id or 'Неизвестно'}\n\n"
@@ -79,7 +82,15 @@ def send_screenshot_for_training_sync(file_path: str, verification_result: dict,
                     'caption': caption
                 }
                 
-                response = requests.post(url, data=data, files=files, timeout=10)
+                response = http_utils.request_with_retry(
+                    "POST",
+                    url,
+                    data=data,
+                    files=files,
+                    timeout=10,
+                    allow_retry=False,
+                    log_context="training_direct_send",
+                )
                 
                 if response.status_code == 200:
                     logging.info(f"✅ Скриншот также отправлен напрямую в Telegram")

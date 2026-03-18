@@ -12,14 +12,13 @@
       <aside class="sidebar">
         <div class="brand">
           <div class="brand__title">СЛЕЖКА</div>
-          <div class="brand__tag">Admin</div>
         </div>
         <nav class="nav">
           <a href="{{ urlp('/') }}" class="{% if path == '/' %}active{% endif %}">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M3 13h8V3H3v10zM13 21h8V11h-8v10zM13 3h8v6h-8V3zM3 17h8v4H3v-4z"/>
             </svg>
-            <span>Статистика</span>
+            <span>Обзор</span>
           </a>
           <a href="{{ urlp('/users') }}" class="{% if path == '/users' %}active{% endif %}">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -69,10 +68,8 @@
         <header class="topbar">
           <div>
             <h1 class="topbar__title">{% block title %}Панель{% endblock %}</h1>
-            <p class="topbar__sub">Внутренняя панель</p>
           </div>
           <div class="row topbar__right">
-            <span class="brand__tag">Закрытый доступ</span>
             <a class="btn ghost sm" href="{{ urlp('/logout') }}">Выйти</a>
           </div>
         </header>

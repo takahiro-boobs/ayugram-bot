@@ -2,17 +2,10 @@
 {% block title %}Аккаунт{% endblock %}
 {% block content %}
   <div class="grid">
-    <section class="card">
-      <header class="card__header">
-        <h2 class="card__title">Аккаунт</h2>
-      </header>
-      <div class="card__body">
-        <div class="row">
-          <a class="btn ghost sm" href="{{ urlp(back_url) }}">Назад к списку</a>
-        </div>
-        {% with extra_class='mt-sm' %}{% include "_flash.html" %}{% endwith %}
-      </div>
-    </section>
+    <div class="row">
+      <a class="btn ghost sm" href="{{ urlp(back_url) }}">Назад к списку</a>
+    </div>
+    {% with extra_class='' %}{% include "_flash.html" %}{% endwith %}
 
     {% if not account %}
       <section class="card">
@@ -22,368 +15,426 @@
       </section>
     {% else %}
       <section class="card">
-        <header class="card__header">
-          <h2 class="card__title">Профиль</h2>
-        </header>
         <div class="card__body">
           <div class="account-card__head">
             <div>
               <div class="listitem__title">Аккаунт {{ account.type_label }}</div>
               <div class="hint mono">@{{ account.username }}</div>
             </div>
+            <form method="post"
+                  action="{{ urlp('/accounts') }}/{{ account.id }}/rotation-state"
+                  class="status-picker {% if account.rotation_state == 'working' %}status-picker--working{% else %}status-picker--not-working{% endif %}">
+              <input type="hidden" name="next_url" value="{{ detail_self_url }}">
+              <input type="hidden" name="return_to" value="{{ return_to }}">
+              <div class="status-picker__wrap">
+                <span class="status-picker__dot" aria-hidden="true"></span>
+                <select class="status-picker__select"
+                        name="rotation_state"
+                        aria-label="Состояние аккаунта"
+                        onchange="this.form.submit()">
+                  <option value="working" {% if account.rotation_state == 'working' %}selected{% endif %}>Рабочий</option>
+                  <option value="not_working" {% if account.rotation_state != 'working' %}selected{% endif %}>Нерабочий</option>
+                </select>
+              </div>
+              <noscript>
+                <button class="btn ghost sm" type="submit">Сохранить</button>
+              </noscript>
+            </form>
           </div>
 
           <div class="detail-stats mt-sm">
             <span class="pill">Переходов: {{ stats.starts_unique_total }}</span>
-            <span class="status-pill {% if account.rotation_state == 'working' %}working{% else %}not_working{% endif %}">
-              {% if account.rotation_state == 'working' %}Рабочий{% else %}Нерабочий{% endif %}
-            </span>
           </div>
+        </div>
+      </section>
 
-          <details class="service-details mt-sm">
-            <summary class="service-details__summary">Детали</summary>
-            <div class="service-details__body">
-              <div class="detail-stats">
-                <span class="pill">{{ account.owner_label }}</span>
-                <span class="hint">Обновлено: {{ account.updated_at|dt }}</span>
-                <span class="pill">Старты: {{ stats.starts_total }}</span>
-                <span class="pill">Первый контакт: {{ stats.first_touch_total }}</span>
-                <span class="pill">Ссылок: {{ stats.links_total }}</span>
-                <span class="status-pill {{ account.views_state_class }}">{{ account.views_state_label }}</span>
-                <span class="status-pill {{ account.mail_status_class }}">{{ account.mail_status_label }}</span>
-                <span class="status-pill {{ account.instagram_launch_status_class }}">{{ account.instagram_launch_status_label }}</span>
-                <span class="status-pill {{ account.instagram_publish_status_class }}">{{ account.instagram_publish_status_label }}</span>
-                {% if account.audit_joke_label %}
-                  <span class="status-pill {{ account.audit_joke_class }}">Аккаунт: {{ account.audit_joke_label }}</span>
-                {% endif %}
-              </div>
-
-              <div class="list mt-sm">
-                <div class="listitem">
-                  <div class="listitem__title">Идентификация</div>
-                  <div class="listitem__meta">
-                    <span class="pill">ID: {{ account.id }}</span>
-                    <span class="pill">Профиль: @{{ account.identity_handle }}</span>
-                    {% if account.instagram_emulator_serial %}
-                      <span class="pill mono">{{ account.instagram_emulator_serial }}</span>
+      <section class="card">
+        <div class="card__body">
+          <details class="service-details">
+            <summary class="service-details__summary">Служебное</summary>
+            <div class="service-details__body service-stack">
+              <details class="service-details">
+                <summary class="service-details__summary">Сводка</summary>
+                <div class="service-details__body">
+                  <div class="detail-stats">
+                    <span class="pill">{{ account.owner_label }}</span>
+                    <span class="hint">Обновлено: {{ account.updated_at|dt }}</span>
+                    <span class="pill">Переходов: {{ stats.starts_unique_total }}</span>
+                    <span class="pill">Старты: {{ stats.starts_total }}</span>
+                    <span class="pill">Первый контакт: {{ stats.first_touch_total }}</span>
+                    <span class="pill">Ссылок: {{ stats.links_total }}</span>
+                    <span class="status-pill {{ account.views_state_class }}">{{ account.views_state_label }}</span>
+                    <span class="status-pill {{ account.mail_status_class }}">{{ account.mail_status_label }}</span>
+                    <span class="status-pill {{ account.mail_ready_class }}">{{ account.mail_ready_label }}</span>
+                    <span class="pill">Mail: {{ account.mail_provider_label }}</span>
+                    <span class="status-pill {{ account.instagram_launch_status_class }}">{{ account.instagram_launch_status_label }}</span>
+                    <span class="status-pill {{ account.instagram_publish_status_class }}">{{ account.instagram_publish_status_label }}</span>
+                    {% if account.audit_joke_label %}
+                      <span class="status-pill {{ account.audit_joke_class }}">Аккаунт: {{ account.audit_joke_label }}</span>
                     {% endif %}
                   </div>
-                  <div class="listitem__meta">
-                    <span class="hint mono">Логин: {{ account.account_login }}</span>
-                    <span class="hint mono">Почта: {{ account.email }}</span>
-                  </div>
-                </div>
-              </div>
-
-              {% if account.has_profile_url or account.can_launch_instagram or latest_audit %}
-                <div class="row mt-sm">
-                  {% if account.has_profile_url %}
-                    <a class="btn action" href="{{ account.profile_url }}" target="_blank" rel="noopener noreferrer">
-                      <span>Открыть в {{ account.type_label }}</span>
-                    </a>
+                  {% if account.rotation_state_reason %}
+                    <div class="hint mt-sm">{{ account.rotation_state_reason }}</div>
                   {% endif %}
-                  {% if account.can_launch_instagram %}
-                    <form method="post" action="{{ urlp('/accounts') }}/{{ account.id }}/launch/instagram" class="inline-form">
-                      <input type="hidden" name="return_to" value="{{ return_to }}">
-                      <button class="btn primary sm" type="submit">Войти в Instagram</button>
-                    </form>
-                  {% endif %}
-                  {% if latest_audit %}
-                    <a class="btn ghost sm" href="{{ latest_audit.url }}">Последняя проверка</a>
-                  {% endif %}
-                </div>
-              {% endif %}
 
-              {% if account.instagram_launch_updated_at or account.instagram_launch_detail %}
-                <div class="hint mt-sm">
-                  {% if account.instagram_launch_updated_at %}Helper: {{ account.instagram_launch_updated_at|dt }}.{% endif %}
-                  {% if account.instagram_launch_detail %} {{ account.instagram_launch_detail }}{% endif %}
-                </div>
-              {% endif %}
-              {% if account.instagram_publish_updated_at or account.instagram_publish_detail %}
-                <div class="hint mt-sm">
-                  {% if account.instagram_publish_updated_at %}Публикация: {{ account.instagram_publish_updated_at|dt }}.{% endif %}
-                  {% if account.instagram_publish_detail %} {{ account.instagram_publish_detail }}{% endif %}
-                </div>
-              {% endif %}
-              {% if latest_audit %}
-                <div class="hint mt-sm">
-                  Последняя проверка: <a href="{{ latest_audit.url }}">{{ latest_audit.resolution_label }}</a>.
-                  Проверено: {{ latest_audit.updated_at_label }}.
-                </div>
-              {% endif %}
-            </div>
-          </details>
-        </div>
-      </section>
-
-      <section class="card">
-        <div class="card__body">
-          <details class="service-details">
-            <summary class="service-details__summary">Данные аккаунта</summary>
-            <div class="service-details__body">
-              <form method="post" action="{{ urlp('/accounts') }}/{{ account.id }}/update" class="grid accounts-grid">
-                <input type="hidden" name="next_url" value="{{ detail_self_url }}">
-                <input type="hidden" name="return_to" value="{{ return_to }}">
-
-            <div class="field">
-              <label class="label">Тип</label>
-              <select class="input" name="type" required>
-                {% for t in type_options %}
-                  <option value="{{ t.key }}" {% if account.type == t.key %}selected{% endif %}>{{ t.label }}</option>
-                {% endfor %}
-              </select>
-            </div>
-
-            <div class="field">
-              <label class="label">Имя профиля</label>
-              <input class="input" name="username" value="{{ account.username }}" required>
-            </div>
-
-            <div class="field">
-              <label class="label">Логин аккаунта</label>
-              <input class="input" name="account_login" value="{{ account.account_login }}" required>
-            </div>
-
-            <div class="field">
-              <label class="label">Пароль аккаунта</label>
-              <input class="input" name="account_password" value="{{ account.account_password }}" required>
-            </div>
-
-            <div class="field">
-              <label class="label">Почта</label>
-              <input class="input" name="email" value="{{ account.email }}" required>
-            </div>
-
-            <div class="field">
-              <label class="label">Пароль почты</label>
-              <input class="input" name="email_password" value="{{ account.email_password }}" required>
-            </div>
-
-            <div class="field accounts-grid-wide">
-              <label class="label">2FA</label>
-              <input class="input mono" name="twofa" value="{{ account.twofa }}">
-            </div>
-
-            <div class="field accounts-grid-wide">
-              <label class="label">Серийный номер эмулятора Instagram</label>
-              <input class="input mono" name="instagram_emulator_serial" value="{{ account.instagram_emulator_serial or '' }}" placeholder="например: emulator-5554">
-            </div>
-
-            <div class="field">
-              <label class="label">Состояние аккаунта</label>
-              <select class="input" name="rotation_state">
-                {% for item in rotation_state_options %}
-                  <option value="{{ item.key }}" {% if account.rotation_state == item.key %}selected{% endif %}>{{ item.label }}</option>
-                {% endfor %}
-              </select>
-            </div>
-
-            <div class="field">
-              <label class="label">Состояние по просмотрам</label>
-              <select class="input" name="views_state">
-                {% for item in views_state_options %}
-                  <option value="{{ item.key }}" {% if account.views_state == item.key %}selected{% endif %}>{{ item.label }}</option>
-                {% endfor %}
-              </select>
-            </div>
-
-            <div class="field accounts-grid-wide">
-              <label class="label">Proxy</label>
-              <input class="input mono" name="proxy" value="{{ account.proxy }}">
-            </div>
-
-            <div class="field accounts-grid-wide">
-              <label class="label">Работник-владелец</label>
-              <select class="input" name="owner_worker_id">
-                <option value="">Без работника</option>
-                {% for w in workers %}
-                  <option value="{{ w.id }}" {% if (account.owner_worker_id|string) == (w.id|string) %}selected{% endif %}>{{ w.name }} (@{{ w.username }})</option>
-                {% endfor %}
-              </select>
-            </div>
-
-                <div class="accounts-grid-wide row">
-                  <button class="btn primary sm" type="submit">Сохранить</button>
-                </div>
-              </form>
-
-              <form method="post" action="{{ urlp('/accounts') }}/{{ account.id }}/delete" class="mt-sm">
-                <input type="hidden" name="next_url" value="{{ back_url }}">
-                <button class="btn danger sm" type="submit">Удалить аккаунт</button>
-              </form>
-            </div>
-          </details>
-        </div>
-      </section>
-
-      <section class="card">
-        <div class="card__body">
-          <details class="service-details">
-            <summary class="service-details__summary">Публикация Reel</summary>
-            <div class="service-details__body">
-              <div class="section-note">Источник видео: <span class="mono">{{ instagram_publish_source_dir }}</span></div>
-              <div class="detail-stats mt-sm">
-                <span class="status-pill {{ account.instagram_publish_status_class }}">{{ account.instagram_publish_status_label }}</span>
-                <span class="pill">Последний опубликованный файл: {{ account.instagram_publish_last_file or '—' }}</span>
-              </div>
-              <div id="instagram-publish-source-box"
-                   class="list mt-sm"
-                   data-source-url="{{ instagram_publish_source_info_url }}"
-                   data-source-dir="{{ instagram_publish_source_dir }}">
-                <div class="listitem">
-                  <div class="listitem__title">Локальная папка</div>
-                  <div class="listitem__meta">
-                    <span class="hint">Проверяю helper на этом Mac…</span>
-                  </div>
-                  <div class="hint mt-sm mono" data-role="source-dir">{{ instagram_publish_source_dir }}</div>
-                  <div class="hint mt-sm" data-role="source-file">Последний файл: —</div>
-                  <div class="hint mt-sm" data-role="source-updated">Изменён: —</div>
-                  <div class="hint mt-sm" data-role="source-status">Если helper недоступен, нажми кнопку — helper сам проверит папку перед публикацией.</div>
-                </div>
-              </div>
-              {% if account.can_publish_instagram %}
-                <div class="row mt-sm">
-                  <form method="post" action="{{ urlp('/accounts') }}/{{ account.id }}/publish/latest-reel" class="inline-form">
-                    <input type="hidden" name="return_to" value="{{ return_to }}">
-                    <button class="btn primary sm" type="submit">Опубликовать последний Reel</button>
-                  </form>
-                </div>
-                <div class="hint mt-sm">Будет взят самый новый <span class="mono">.mp4/.mov</span> из папки источника. Файл удаляется только после подтверждённой публикации.</div>
-              {% else %}
-                <div class="hint mt-sm">Для автопубликации нужен Instagram-аккаунт с заполненными логином и паролем.</div>
-              {% endif %}
-            </div>
-          </details>
-        </div>
-      </section>
-
-      <section class="card">
-        <div class="card__body">
-          <details class="service-details">
-            <summary class="service-details__summary">Почта</summary>
-            <div class="service-details__body">
-              <div class="row">
-                <form method="post" action="{{ urlp('/accounts') }}/{{ account.id }}/mail/check" class="inline-form">
-                  <input type="hidden" name="return_to" value="{{ return_to }}">
-                  <button class="btn primary sm" type="submit">Проверить почту</button>
-                </form>
-              </div>
-
-              <div class="detail-stats mt-sm">
-                <span class="status-pill {{ account.mail_status_class }}">{{ account.mail_status_label }}</span>
-                <span class="pill">Провайдер: {{ account.mail_provider|upper }}</span>
-                <span class="pill">Проверка: {{ account.mail_last_checked_at|dt }}</span>
-                {% if latest_mail and latest_mail.received_at %}
-                  <span class="pill">Последнее письмо: {{ latest_mail.received_at|dt }}</span>
-                {% endif %}
-              </div>
-
-              {% if account.mail_last_error %}
-                <div class="hint mt-sm">{{ account.mail_last_error }}</div>
-              {% endif %}
-
-              {% if latest_mail %}
-                <div class="list mt-sm">
-                  <div class="listitem">
-                    <div class="listitem__title">Последнее письмо</div>
-                    <div class="listitem__meta">
-                      <span class="brand__tag">{{ latest_mail.from_text or '—' }}</span>
-                      <span class="hint">{{ latest_mail.received_at|dt }}</span>
-                    </div>
-                    <div class="mt-sm"><strong>{{ latest_mail.subject or '(без темы)' }}</strong></div>
-                    {% if latest_mail.snippet %}
-                      <div class="hint mt-sm">{{ latest_mail.snippet }}</div>
-                    {% endif %}
-                  </div>
-                </div>
-              {% endif %}
-
-              {% if mail_messages %}
-                <div class="list mt-sm">
-                  {% for item in mail_messages %}
-                    <div class="listitem">
-                      <div class="row row-between row-start">
-                        <div>
-                          <div class="listitem__title">{{ item.subject or '(без темы)' }}</div>
-                          <div class="listitem__meta">
-                            <span class="brand__tag">{{ item.from_text or '—' }}</span>
-                            <span class="hint">{{ item.received_at|dt }}</span>
-                          </div>
-                        </div>
-                      </div>
-                      {% if item.snippet %}
-                        <div class="hint mt-sm">{{ item.snippet }}</div>
+                  {% if account.has_profile_url or account.can_launch_instagram or latest_audit %}
+                    <div class="row mt-sm">
+                      {% if account.has_profile_url %}
+                        <a class="btn action" href="{{ account.profile_url }}" target="_blank" rel="noopener noreferrer">
+                          <span>Открыть в {{ account.type_label }}</span>
+                        </a>
+                      {% endif %}
+                      {% if account.can_launch_instagram %}
+                        <form method="post" action="{{ urlp('/accounts') }}/{{ account.id }}/launch/instagram" class="inline-form">
+                          <input type="hidden" name="return_to" value="{{ return_to }}">
+                          <button class="btn primary sm" type="submit">Войти в Instagram</button>
+                        </form>
+                      {% endif %}
+                      {% if latest_audit %}
+                        <a class="btn ghost sm" href="{{ latest_audit.url }}">Последняя проверка</a>
                       {% endif %}
                     </div>
-                  {% endfor %}
+                  {% endif %}
+
+                  {% if account.instagram_launch_updated_at or account.instagram_launch_detail %}
+                    <div class="hint mt-sm">
+                      {% if account.instagram_launch_updated_at %}Helper: {{ account.instagram_launch_updated_at|dt }}.{% endif %}
+                      {% if account.instagram_launch_detail %} {{ account.instagram_launch_detail }}{% endif %}
+                    </div>
+                  {% endif %}
+                  {% if account.instagram_publish_updated_at or account.instagram_publish_detail %}
+                    <div class="hint mt-sm">
+                      {% if account.instagram_publish_updated_at %}Публикация: {{ account.instagram_publish_updated_at|dt }}.{% endif %}
+                      {% if account.instagram_publish_detail %} {{ account.instagram_publish_detail }}{% endif %}
+                    </div>
+                  {% endif %}
+                  {% if latest_audit %}
+                    <div class="hint mt-sm">
+                      Последняя проверка: <a href="{{ latest_audit.url }}">{{ latest_audit.resolution_label }}</a>.
+                      Проверено: {{ latest_audit.updated_at_label }}.
+                    </div>
+                  {% endif %}
                 </div>
-              {% else %}
-                <div class="hint mt-sm">Кэш последних писем пока пустой.</div>
-              {% endif %}
-            </div>
-          </details>
-        </div>
-      </section>
+              </details>
 
-      <section class="card">
-        <div class="card__body">
-          <details class="service-details">
-            <summary class="service-details__summary">Ссылки аккаунта</summary>
-            <div class="service-details__body">
-              {% if links|length > 0 %}
-                <div class="links-list">
-                  {% for l in links %}
-                    <div class="link-row">
-                      <div class="link-row__top">
-                        <div class="mono"><strong>{{ l.name }}</strong> · {{ l.code }}</div>
-                        <span class="status-pill {% if l.is_active %}on{% else %}off{% endif %}">
-                          {% if l.is_active %}Активна{% else %}Выключена{% endif %}
-                        </span>
+              <details class="service-details">
+                <summary class="service-details__summary">Данные аккаунта</summary>
+                <div class="service-details__body">
+                  <div class="list mb-sm">
+                    <div class="listitem">
+                      <div class="listitem__title">Идентификация</div>
+                      <div class="listitem__meta">
+                        <span class="pill">ID: {{ account.id }}</span>
+                        <span class="pill">Профиль: @{{ account.identity_handle }}</span>
+                        {% if account.instagram_emulator_serial %}
+                          <span class="pill mono">{{ account.instagram_emulator_serial }}</span>
+                        {% endif %}
                       </div>
-
-                      <div class="link-meta">
-                        <span class="hint mono">Ссылка: {{ l.bot_url }}</span>
-                        <span class="hint">Обновлено: {{ l.updated_at|dt }}</span>
-                      </div>
-
-                      <div class="link-stats">
-                        <span class="pill">Переходов: {{ l.starts_unique }}</span>
-                        <span class="pill">Старты: {{ l.starts_total }}</span>
-                        <span class="pill">Первый контакт: {{ l.first_touch_users }}</span>
-                      </div>
-
-                      <div class="link-actions">
-                        <button class="btn action copy" type="button" onclick='copyToClipboard({{ l.bot_url|tojson }})'>
-                          <span>Копировать ссылку</span>
-                        </button>
-
-                        <form method="post" action="{{ urlp('/accounts/links') }}/{{ l.code }}/toggle" class="inline-form">
-                          <input type="hidden" name="next_url" value="{{ detail_self_url }}">
-                          <input type="hidden" name="active" value="{% if l.is_active %}0{% else %}1{% endif %}">
-                          <button class="btn action" type="submit">
-                            <span>{% if l.is_active %}Выключить{% else %}Включить{% endif %}</span>
-                          </button>
-                        </form>
-
-                        <form method="post" action="{{ urlp('/accounts/links') }}/{{ l.code }}/delete" class="inline-form">
-                          <input type="hidden" name="next_url" value="{{ detail_self_url }}">
-                          <button class="btn action delete" type="submit">
-                            <span>Удалить</span>
-                          </button>
-                        </form>
+                      <div class="listitem__meta">
+                        <span class="hint mono">Логин: {{ account.account_login }}</span>
+                        <span class="hint mono">Почта: {{ account.email }}</span>
                       </div>
                     </div>
-                  {% endfor %}
+                  </div>
+
+                  <form method="post" action="{{ urlp('/accounts') }}/{{ account.id }}/update" class="grid accounts-grid">
+                    <input type="hidden" name="next_url" value="{{ detail_self_url }}">
+                    <input type="hidden" name="return_to" value="{{ return_to }}">
+
+                    <div class="field">
+                      <label class="label">Тип</label>
+                      <select class="input" name="type" required>
+                        {% for t in type_options %}
+                          <option value="{{ t.key }}" {% if account.type == t.key %}selected{% endif %}>{{ t.label }}</option>
+                        {% endfor %}
+                      </select>
+                    </div>
+
+                    <div class="field">
+                      <label class="label">Имя профиля</label>
+                      <input class="input" name="username" value="{{ account.username }}" required>
+                    </div>
+
+                    <div class="field">
+                      <label class="label">Логин аккаунта</label>
+                      <input class="input" name="account_login" value="{{ account.account_login }}" required>
+                    </div>
+
+                    <div class="field">
+                      <label class="label">Пароль аккаунта</label>
+                      <input class="input" name="account_password" value="{{ account.account_password }}" required>
+                    </div>
+
+                    <div class="field">
+                      <label class="label">Почта</label>
+                      <input class="input" name="email" value="{{ account.email }}" required>
+                    </div>
+
+                    <div class="field">
+                      <label class="label">Mail provider</label>
+                      <select class="input" name="mail_provider">
+                        {% for item in mail_provider_options %}
+                          <option value="{{ item.key }}" {% if account.mail_provider == item.key %}selected{% endif %}>{{ item.label }}</option>
+                        {% endfor %}
+                      </select>
+                    </div>
+
+                    <div class="field">
+                      <label class="label">Пароль почты / app password</label>
+                      <input class="input" name="email_password" value="{{ account.email_password }}" placeholder="Нужен для auto / imap">
+                    </div>
+
+                    <div class="field accounts-grid-wide">
+                      <label class="label">Mail auth JSON</label>
+                      <textarea class="input mono" name="mail_auth_json" rows="6" placeholder='Для Gmail API / Microsoft Graph'>{{ account.mail_auth_json }}</textarea>
+                    </div>
+
+                    <div class="field accounts-grid-wide">
+                      <label class="label">2FA (опционально)</label>
+                      <input class="input mono" name="twofa" value="{{ account.twofa }}" placeholder="Base32 secret или otpauth:// URI из Authenticator">
+                    </div>
+
+                    <div class="field accounts-grid-wide">
+                      <label class="label">Серийный номер эмулятора Instagram</label>
+                      <input class="input mono" name="instagram_emulator_serial" value="{{ account.instagram_emulator_serial or '' }}" placeholder="если пусто, подставится автоматически перед публикацией">
+                    </div>
+
+                    <div class="field">
+                      <label class="label">Состояние аккаунта</label>
+                      <select class="input" name="rotation_state">
+                        {% for item in rotation_state_options %}
+                          <option value="{{ item.key }}" {% if account.rotation_state == item.key %}selected{% endif %}>{{ item.label }}</option>
+                        {% endfor %}
+                      </select>
+                    </div>
+
+                    <div class="field">
+                      <label class="label">Состояние по просмотрам</label>
+                      <select class="input" name="views_state">
+                        {% for item in views_state_options %}
+                          <option value="{{ item.key }}" {% if account.views_state == item.key %}selected{% endif %}>{{ item.label }}</option>
+                        {% endfor %}
+                      </select>
+                    </div>
+
+                    <div class="field accounts-grid-wide">
+                      <label class="label">Proxy</label>
+                      <input class="input mono" name="proxy" value="{{ account.proxy }}">
+                    </div>
+
+                    <div class="field accounts-grid-wide">
+                      <label class="label">Работник-владелец</label>
+                      <select class="input" name="owner_worker_id">
+                        <option value="">Без работника</option>
+                        {% for w in workers %}
+                          <option value="{{ w.id }}" {% if (account.owner_worker_id|string) == (w.id|string) %}selected{% endif %}>{{ w.name }} (@{{ w.username }})</option>
+                        {% endfor %}
+                      </select>
+                    </div>
+
+                    <div class="accounts-grid-wide row">
+                      <button class="btn primary sm" type="submit">Сохранить</button>
+                    </div>
+                  </form>
+
+                  <form method="post" action="{{ urlp('/accounts') }}/{{ account.id }}/delete" class="mt-sm">
+                    <input type="hidden" name="next_url" value="{{ back_url }}">
+                    <button class="btn danger sm" type="submit">Удалить аккаунт</button>
+                  </form>
                 </div>
-              {% else %}
-                <form method="post" action="{{ urlp('/accounts') }}/{{ account.id }}/links">
-                  <input type="hidden" name="next_url" value="{{ detail_self_url }}">
-                  <input type="hidden" name="return_to" value="{{ return_to }}">
-                  <input type="hidden" name="name" value="Основная ссылка">
-                  <button class="btn primary sm" type="submit">Создать системную ссылку</button>
-                </form>
-              {% endif %}
+              </details>
+
+              <details class="service-details">
+                <summary class="service-details__summary">Публикация Reel</summary>
+                <div class="service-details__body">
+                  <div class="section-note">Источник видео: <span class="mono">{{ instagram_publish_source_dir }}</span></div>
+                  <div class="detail-stats mt-sm">
+                    <span class="status-pill {{ account.instagram_publish_status_class }}">{{ account.instagram_publish_status_label }}</span>
+                    <span class="pill">Последний опубликованный файл: {{ account.instagram_publish_last_file or '—' }}</span>
+                  </div>
+                  <div id="instagram-publish-source-box"
+                       class="list mt-sm"
+                       data-source-url="{{ instagram_publish_source_info_url }}"
+                       data-source-dir="{{ instagram_publish_source_dir }}">
+                    <div class="listitem">
+                      <div class="listitem__title">Локальная папка</div>
+                      <div class="listitem__meta">
+                        <span class="hint">Проверяю helper на этом Mac…</span>
+                      </div>
+                      <div class="hint mt-sm mono" data-role="source-dir">{{ instagram_publish_source_dir }}</div>
+                      <div class="hint mt-sm" data-role="source-file">Последний файл: —</div>
+                      <div class="hint mt-sm" data-role="source-updated">Изменён: —</div>
+                      <div class="hint mt-sm" data-role="source-status">Если helper недоступен, кнопка публикации всё равно запустит проверку папки.</div>
+                    </div>
+                  </div>
+                  {% if account.can_publish_instagram %}
+                    <div class="row mt-sm">
+                      <form method="post" action="{{ urlp('/accounts') }}/{{ account.id }}/publish/latest-reel" class="inline-form">
+                        <input type="hidden" name="return_to" value="{{ return_to }}">
+                        <button class="btn primary sm" type="submit">Опубликовать последний Reel</button>
+                      </form>
+                    </div>
+                  {% else %}
+                    <div class="hint mt-sm">Для автопубликации нужен Instagram-аккаунт с заполненными логином и паролем.</div>
+                  {% endif %}
+                </div>
+              </details>
+
+              <details class="service-details">
+                <summary class="service-details__summary">Почта</summary>
+                <div class="service-details__body">
+                  <div class="row">
+                    <form method="post" action="{{ urlp('/accounts') }}/{{ account.id }}/mail/check" class="inline-form">
+                      <input type="hidden" name="return_to" value="{{ return_to }}">
+                      <button class="btn primary sm" type="submit">Проверить почту</button>
+                    </form>
+                  </div>
+
+                  <div class="detail-stats mt-sm">
+                    <span class="status-pill {{ account.mail_status_class }}">{{ account.mail_status_label }}</span>
+                    <span class="status-pill {{ account.mail_ready_class }}">{{ account.mail_ready_label }}</span>
+                    <span class="pill">Провайдер: {{ account.mail_provider_label }}</span>
+                    <span class="pill">Проверка: {{ account.mail_last_checked_at|dt }}</span>
+                    {% if account.mail_last_synced_at %}
+                      <span class="pill">Sync: {{ account.mail_last_synced_at|dt }}</span>
+                    {% endif %}
+                    {% if latest_mail and latest_mail.received_at %}
+                      <span class="pill">Последнее письмо: {{ latest_mail.received_at|dt }}</span>
+                    {% endif %}
+                  </div>
+
+                  {% if account.mail_ready_detail %}
+                    <div class="hint mt-sm">{{ account.mail_ready_detail }}</div>
+                  {% endif %}
+                  {% if account.mail_challenge_status != 'idle' or account.mail_challenge_updated_at %}
+                    <div class="detail-stats mt-sm">
+                      <span class="status-pill {{ account.mail_challenge_class }}">{{ account.mail_challenge_label }}</span>
+                      {% if account.mail_challenge_kind_label %}
+                        <span class="pill">{{ account.mail_challenge_kind_label }}</span>
+                      {% endif %}
+                      {% if account.mail_challenge_masked_code %}
+                        <span class="pill mono">Код: {{ account.mail_challenge_masked_code }}</span>
+                      {% endif %}
+                      {% if account.mail_challenge_updated_at %}
+                        <span class="pill">Challenge: {{ account.mail_challenge_updated_at|dt }}</span>
+                      {% endif %}
+                      {% if account.mail_challenge_confidence %}
+                        <span class="pill">Уверенность: {{ (account.mail_challenge_confidence * 100)|round|int }}%</span>
+                      {% endif %}
+                    </div>
+                  {% endif %}
+
+                  {% if account.mail_last_error %}
+                    <div class="hint mt-sm">{{ account.mail_last_error }}</div>
+                  {% endif %}
+                  {% if account.mail_challenge_reason_text %}
+                    <div class="hint mt-sm">{{ account.mail_challenge_reason_text }}</div>
+                  {% endif %}
+
+                  {% if latest_mail %}
+                    <div class="list mt-sm">
+                      <div class="listitem">
+                        <div class="listitem__title">Последнее письмо</div>
+                        <div class="listitem__meta">
+                          <span class="brand__tag">{{ latest_mail.from_text or '—' }}</span>
+                          <span class="hint">{{ latest_mail.received_at|dt }}</span>
+                        </div>
+                        <div class="mt-sm"><strong>{{ latest_mail.subject or '(без темы)' }}</strong></div>
+                        {% if latest_mail.snippet %}
+                          <div class="hint mt-sm">{{ latest_mail.snippet }}</div>
+                        {% endif %}
+                      </div>
+                    </div>
+                  {% endif %}
+
+                  {% if mail_messages %}
+                    <div class="list mt-sm">
+                      {% for item in mail_messages %}
+                        <div class="listitem">
+                          <div class="row row-between row-start">
+                            <div>
+                              <div class="listitem__title">{{ item.subject or '(без темы)' }}</div>
+                              <div class="listitem__meta">
+                                <span class="brand__tag">{{ item.from_text or '—' }}</span>
+                                <span class="hint">{{ item.received_at|dt }}</span>
+                                {% if item.candidate_code %}
+                                  <span class="pill mono">Код: {{ item.candidate_code[:3] }}***</span>
+                                {% elif item.candidate_link %}
+                                  <span class="pill">Есть approval link</span>
+                                {% endif %}
+                              </div>
+                            </div>
+                          </div>
+                          {% if item.snippet %}
+                            <div class="hint mt-sm">{{ item.snippet }}</div>
+                          {% endif %}
+                        </div>
+                      {% endfor %}
+                    </div>
+                  {% else %}
+                    <div class="hint mt-sm">Кэш последних писем пока пустой.</div>
+                  {% endif %}
+                </div>
+              </details>
+
+              <details class="service-details">
+                <summary class="service-details__summary">Ссылки аккаунта</summary>
+                <div class="service-details__body">
+                  {% if links|length > 0 %}
+                    <div class="links-list">
+                      {% for l in links %}
+                        <div class="link-row">
+                          <div class="link-row__top">
+                            <div class="mono"><strong>{{ l.name }}</strong> · {{ l.code }}</div>
+                            <span class="status-pill {% if l.is_active %}on{% else %}off{% endif %}">
+                              {% if l.is_active %}Активна{% else %}Выключена{% endif %}
+                            </span>
+                          </div>
+
+                          <div class="link-meta">
+                            <span class="hint mono">Ссылка: {{ l.bot_url }}</span>
+                            <span class="hint">Обновлено: {{ l.updated_at|dt }}</span>
+                          </div>
+
+                          <div class="link-stats">
+                            <span class="pill">Переходов: {{ l.starts_unique }}</span>
+                            <span class="pill">Старты: {{ l.starts_total }}</span>
+                            <span class="pill">Первый контакт: {{ l.first_touch_users }}</span>
+                          </div>
+
+                          <div class="link-actions">
+                            <button class="btn action copy" type="button" onclick='copyToClipboard({{ l.bot_url|tojson }})'>
+                              <span>Копировать ссылку</span>
+                            </button>
+
+                            <form method="post" action="{{ urlp('/accounts/links') }}/{{ l.code }}/toggle" class="inline-form">
+                              <input type="hidden" name="next_url" value="{{ detail_self_url }}">
+                              <input type="hidden" name="active" value="{% if l.is_active %}0{% else %}1{% endif %}">
+                              <button class="btn action" type="submit">
+                                <span>{% if l.is_active %}Выключить{% else %}Включить{% endif %}</span>
+                              </button>
+                            </form>
+
+                            <form method="post" action="{{ urlp('/accounts/links') }}/{{ l.code }}/delete" class="inline-form">
+                              <input type="hidden" name="next_url" value="{{ detail_self_url }}">
+                              <button class="btn action delete" type="submit">
+                                <span>Удалить</span>
+                              </button>
+                            </form>
+                          </div>
+                        </div>
+                      {% endfor %}
+                    </div>
+                  {% else %}
+                    <form method="post" action="{{ urlp('/accounts') }}/{{ account.id }}/links">
+                      <input type="hidden" name="next_url" value="{{ detail_self_url }}">
+                      <input type="hidden" name="return_to" value="{{ return_to }}">
+                      <input type="hidden" name="name" value="Основная ссылка">
+                      <button class="btn primary sm" type="submit">Создать системную ссылку</button>
+                    </form>
+                  {% endif %}
+                </div>
+              </details>
             </div>
           </details>
         </div>

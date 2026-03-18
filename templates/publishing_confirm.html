@@ -13,7 +13,7 @@
           <span class="pill">Аккаунтов: {{ accounts_total }}</span>
         </div>
         <div class="section-note mb-sm">
-          После подтверждения пакет будет создан, видео начнут генерироваться автоматически, а публикация запустится по мере готовности файлов.
+          После подтверждения пакет пойдёт строго по очереди: сначала генерация, затем публикация и проверка для первого аккаунта, потом только следующий.
         </div>
         <details class="service-details mb-md">
           <summary class="service-details__summary">Служебные детали</summary>
@@ -30,18 +30,23 @@
             <div class="listitem">
               <div class="row row-between row-start">
                 <div>
-                  <div class="listitem__title">@{{ account.username }}</div>
+                  <div class="listitem__title">{{ loop.index }}. @{{ account.username }}</div>
                   <div class="listitem__meta">
                     <span class="pill">ID: {{ account.id }}</span>
                     <span class="pill mono">{{ account.account_login }}</span>
                     <span class="pill mono">{{ account.instagram_emulator_serial }}</span>
+                    <span class="status-pill {{ account.mail_ready_class }}">{{ account.mail_ready_label }}</span>
+                    <span class="pill">Mail: {{ account.mail_provider_label }}</span>
                     <span class="brand__tag">{{ account.owner_label }}</span>
                     <span class="status-pill {% if account.twofa_ready %}on{% else %}review{% endif %}">
-                      {% if account.twofa_ready %}2FA готов{% else %}Нет 2FA{% endif %}
+                      {% if account.twofa_ready %}2FA готов{% else %}2FA не заполнен{% endif %}
                     </span>
                   </div>
                   {% if account.publish_warnings %}
                     <div class="hint mt-sm">{{ account.publish_warnings|join(' ') }}</div>
+                  {% endif %}
+                  {% if account.mail_ready_detail %}
+                    <div class="hint mt-sm">{{ account.mail_ready_detail }}</div>
                   {% endif %}
                 </div>
               </div>
@@ -67,15 +72,15 @@
           <div class="list">
             <div class="listitem">
               <div class="listitem__title">1. Генерация видео</div>
-              <div class="hint mt-sm">Для каждого выбранного аккаунта создаётся отдельный файл.</div>
+              <div class="hint mt-sm">Система начинает с первого аккаунта в очереди и генерирует видео только для него.</div>
             </div>
             <div class="listitem">
               <div class="listitem__title">2. Публикация</div>
-              <div class="hint mt-sm">Как только файл готов, он сразу уходит в публикацию для конкретного аккаунта.</div>
+              <div class="hint mt-sm">Как только файл готов, helper делает clean login в Instagram, а если всплывает mail challenge, пытается автоматически получить код из почты и продолжить без ручного шага.</div>
             </div>
             <div class="listitem">
-              <div class="listitem__title">3. Завершение</div>
-              <div class="hint mt-sm">После завершения будет виден итог по каждому аккаунту.</div>
+              <div class="listitem__title">3. Следующий аккаунт</div>
+              <div class="hint mt-sm">Только после terminal-результата система переходит к следующему аккаунту из очереди.</div>
             </div>
           </div>
         </div>

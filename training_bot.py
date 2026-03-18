@@ -15,7 +15,6 @@ import logging
 import os
 import json
 import time
-import requests
 from datetime import datetime
 from typing import Dict, List
 
@@ -40,10 +39,10 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(level
 logger = logging.getLogger(__name__)
 
 # Токен бота для обучения ИИ
-BOT_TOKEN = "8263517231:AAEuKr3Kw9KiIQVsNw7FOmAEBxo1bj19Ksw"
+BOT_TOKEN = (os.getenv("TRAINING_BOT_TOKEN") or os.getenv("BOT_TOKEN") or "").strip()
 
 # ID администратора (ваш Telegram ID)
-ADMIN_ID = 481659934  # Замените на ваш ID
+ADMIN_ID = int((os.getenv("TRAINING_ADMIN_ID") or os.getenv("ADMIN_TEST_CHAT_ID") or "481659934").strip())
 
 # Папки для сохранения данных
 ACCEPTED_DIR = "training_data/accepted"
@@ -59,7 +58,10 @@ os.makedirs("training_data", exist_ok=True)
 async def send_to_training_bot(file_path: str, verification_result: dict):
     """Отправляет скриншот в бот обучения для принятия решения"""
     try:
-        training_bot = Bot(token="8263517231:AAEuKr3Kw9KiIQVsNw7FOmAEBxo1bj19Ksw", parse_mode="HTML")
+        if not BOT_TOKEN:
+            logger.error("TRAINING_BOT_TOKEN is not configured")
+            return
+        training_bot = Bot(token=BOT_TOKEN, parse_mode="HTML")
         
         # Отправляем скриншот админу для принятия решения
         with open(file_path, 'rb') as photo:
@@ -84,8 +86,8 @@ async def send_to_training_bot(file_path: str, verification_result: dict):
     except Exception as e:
         logger.error(f"Ошибка отправки в бот обучения: {e}")
 
-# Создание бота и диспетчера
-bot = Bot(token=BOT_TOKEN, parse_mode="HTML")
+# Создание диспетчера
+bot: Bot | None = None
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
 router = Router()
@@ -539,6 +541,11 @@ async def handle_other_messages(message: Message):
 
 # Основная функция
 async def main():
+    global bot
+    if not BOT_TOKEN:
+        raise RuntimeError("TRAINING_BOT_TOKEN is not configured")
+    bot = Bot(token=BOT_TOKEN, parse_mode="HTML")
+
     # Подключаем роутер
     dp.include_router(router)
     
@@ -552,10 +559,9 @@ async def main():
 
 if __name__ == "__main__":
     # Проверяем токен
-    if BOT_TOKEN == "YOUR_BOT_TOKEN_HERE":
+    if not BOT_TOKEN:
         print("❌ ОШИБКА: Не установлен токен бота!")
-        print("Замените YOUR_BOT_TOKEN_HERE на ваш токен в файле training_bot.py")
-        print("Или создайте файл .env с BOT_TOKEN=ваш_токен")
+        print("Укажите TRAINING_BOT_TOKEN или BOT_TOKEN в окружении / .env")
         exit(1)
     
     asyncio.run(main())

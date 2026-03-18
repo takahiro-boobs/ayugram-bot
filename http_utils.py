@@ -36,6 +36,7 @@ def request_with_retry(
         return requests.request(method, url, timeout=timeout, **kwargs)
 
     last_error: Optional[Exception] = None
+    response: Optional[requests.Response] = None
     for attempt in range(1, attempts + 1):
         try:
             response = _do_request()
@@ -61,4 +62,6 @@ def request_with_retry(
             time.sleep(delay)
     if last_error is not None:
         raise last_error
+    if response is not None:
+        return response
     raise RuntimeError("request_with_retry failed without response")

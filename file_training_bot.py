@@ -6,12 +6,12 @@
 import os
 import json
 import time
-import requests
 from datetime import datetime
 
+import http_utils
 # Токен бота обучения
-BOT_TOKEN = "8263517231:AAEuKr3Kw9KiIQVsNw7FOmAEBxo1bj19Ksw"
-ADMIN_ID = 481659934
+BOT_TOKEN = (os.getenv("TRAINING_BOT_TOKEN") or os.getenv("BOT_TOKEN") or "").strip()
+ADMIN_ID = int((os.getenv("TRAINING_ADMIN_ID") or os.getenv("ADMIN_TEST_CHAT_ID") or "481659934").strip())
 
 # Папки для работы
 QUEUE_DIR = "training_queue"
@@ -23,6 +23,9 @@ os.makedirs(PROCESSED_DIR, exist_ok=True)
 def send_message(text, reply_markup=None):
     """Отправляет сообщение через HTTP API"""
     try:
+        if not BOT_TOKEN:
+            print("TRAINING_BOT_TOKEN is not configured")
+            return False
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
         data = {
             'chat_id': ADMIN_ID,
@@ -33,7 +36,14 @@ def send_message(text, reply_markup=None):
         if reply_markup:
             data['reply_markup'] = json.dumps(reply_markup)
         
-        response = requests.post(url, data=data, timeout=10)
+        response = http_utils.request_with_retry(
+            "POST",
+            url,
+            data=data,
+            timeout=10,
+            allow_retry=False,
+            log_context="training_bot_send_message",
+        )
         return response.status_code == 200
     except Exception as e:
         print(f"Ошибка отправки сообщения: {e}")
@@ -99,6 +109,8 @@ def process_queue():
 
 def main():
     """Основной цикл"""
+    if not BOT_TOKEN:
+        raise SystemExit("TRAINING_BOT_TOKEN is not configured")
     print("⚠️ Запущен файловый training-бот (legacy). Рекомендуемый сценарий: training_bot.py")
     print("🤖 Файловый бот обучения запущен!")
     print(f"📁 Папка очереди: {QUEUE_DIR}")

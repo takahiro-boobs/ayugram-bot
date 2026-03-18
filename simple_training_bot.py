@@ -25,12 +25,12 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 # Токен бота обучения
-BOT_TOKEN = "8263517231:AAEuKr3Kw9KiIQVsNw7FOmAEBxo1bj19Ksw"
-ADMIN_ID = 481659934
+BOT_TOKEN = (os.getenv("TRAINING_BOT_TOKEN") or os.getenv("BOT_TOKEN") or "").strip()
+ADMIN_ID = int((os.getenv("TRAINING_ADMIN_ID") or os.getenv("ADMIN_TEST_CHAT_ID") or "481659934").strip())
 
 # Создание бота с хранилищем состояний
 storage = MemoryStorage()
-bot = Bot(token=BOT_TOKEN)
+bot: Bot | None = None
 dp = Dispatcher(storage=storage)
 router = Router()
 
@@ -349,6 +349,10 @@ async def handle_other(message: Message):
     )
 
 async def main():
+    global bot
+    if not BOT_TOKEN:
+        raise RuntimeError("TRAINING_BOT_TOKEN is not configured")
+    bot = Bot(token=BOT_TOKEN)
     dp.include_router(router)
     logger.info("⚠️ Запущен упрощенный training-бот (legacy). Рекомендуемый сценарий: training_bot.py")
     logger.info("🤖 Простой бот обучения запущен!")
@@ -356,4 +360,6 @@ async def main():
 
 if __name__ == "__main__":
     import asyncio
+    if not BOT_TOKEN:
+        raise SystemExit("TRAINING_BOT_TOKEN is not configured")
     asyncio.run(main())

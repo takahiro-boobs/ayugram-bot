@@ -4,7 +4,7 @@
   <div class="grid cols-2">
     <section class="card">
       <header class="card__header">
-        <h2 class="card__title">1. Выбери аккаунты</h2>
+        <h2 class="card__title">Готовые аккаунты</h2>
       </header>
       <div class="card__body">
         {% with extra_class='mb-sm' %}{% include "_flash.html" %}{% endwith %}
@@ -17,22 +17,20 @@
             {% if n8n_webhook_configured %}Автозапуск готов{% else %}Автозапуск не настроен{% endif %}
           </span>
         </div>
-        <div class="section-note mb-sm">Оставь в выборе только те аккаунты, которые нужно запустить сейчас.</div>
         <details class="service-details mb-sm">
-          <summary class="service-details__summary">Служебные детали</summary>
+          <summary class="service-details__summary">Служебное</summary>
           <div class="service-details__body">
             <div class="detail-stats">
               <span class="pill">Сценарий: {{ publish_workflow_key }}</span>
               <span class="pill mono">Папка staging: {{ staging_root }}</span>
             </div>
-            <div class="hint mt-sm">Для запуска нужны логин, пароль, серийный номер эмулятора и 2FA.</div>
           </div>
         </details>
 
         <form method="post" action="{{ urlp('/publishing/batches') }}" class="grid form-gap-md" id="publish-select-form">
           <div class="publish-select-toolbar">
             <div class="publish-select-summary">
-              Автозапуск: {% if n8n_webhook_configured %}готов{% else %}недоступен{% endif %}
+              К запуску готовы только выбранные аккаунты. Batch пойдёт по ним строго по очереди в порядке выбора.
             </div>
             <div class="publish-select-actions">
               <button class="btn ghost sm" type="button" id="select-all-accounts">Выбрать все</button>
@@ -56,14 +54,10 @@
                     @{{ account.username }}
                   </label>
                   <div class="listitem__meta">
-                    <span class="pill">ID: {{ account.id }}</span>
-                    <span class="pill mono">{{ account.account_login }}</span>
-                    <span class="pill mono">{{ account.instagram_emulator_serial }}</span>
-                    <span class="brand__tag">{{ account.owner_label }}</span>
                     <span class="status-pill {{ account.instagram_publish_status_class }}">{{ account.instagram_publish_status_label }}</span>
-                    <span class="status-pill {% if account.twofa_ready %}on{% else %}review{% endif %}">
-                      {% if account.twofa_ready %}2FA готов{% else %}Нет 2FA{% endif %}
-                    </span>
+                    <span class="status-pill {{ account.mail_ready_class }}">{{ account.mail_ready_label }}</span>
+                    <span class="pill">Mail: {{ account.mail_provider_label }}</span>
+                    <span class="brand__tag">{{ account.owner_label }}</span>
                   </div>
                   {% if account.publish_warnings %}
                     <div class="hint mt-sm">{{ account.publish_warnings|join(' ') }}</div>
@@ -71,14 +65,35 @@
                   {% if account.instagram_publish_detail %}
                     <div class="hint mt-sm">{{ account.instagram_publish_detail }}</div>
                   {% endif %}
+                  <details class="service-details mt-sm">
+                    <summary class="service-details__summary">Служебное</summary>
+                    <div class="service-details__body">
+                      <div class="detail-stats">
+                        <span class="pill">ID: {{ account.id }}</span>
+                        <span class="pill mono">{{ account.account_login }}</span>
+                        <span class="pill mono">{{ account.instagram_emulator_serial }}</span>
+                        <span class="status-pill {{ account.mail_status_class }}">{{ account.mail_status_label }}</span>
+                        {% if account.mail_challenge_status != 'idle' %}
+                          <span class="status-pill {{ account.mail_challenge_class }}">{{ account.mail_challenge_label }}</span>
+                        {% endif %}
+                        <span class="status-pill {% if account.twofa_ready %}on{% else %}review{% endif %}">
+                          {% if account.twofa_ready %}2FA готов{% else %}2FA не заполнен{% endif %}
+                        </span>
+                      </div>
+                      {% if account.mail_ready_detail %}
+                        <div class="hint mt-sm">{{ account.mail_ready_detail }}</div>
+                      {% endif %}
+                    </div>
+                  </details>
                 </div>
                 <a class="btn action sm" href="{{ urlp('/accounts') }}/{{ account.id }}">Открыть</a>
               </div>
             {% endfor %}
           </div>
+          <div id="publish-account-order" hidden></div>
 
           {% if accounts|length == 0 %}
-            <div class="hint">Нет готовых аккаунтов с логином, паролем, серийным номером эмулятора и 2FA.</div>
+            <div class="hint">Нет готовых аккаунтов с логином, паролем и рабочим serial эмулятора.</div>
           {% endif %}
           <div class="row row-between">
             <a class="btn ghost" href="{{ urlp('/publishing') }}">Назад</a>
@@ -98,7 +113,7 @@
 
     <section class="card">
       <header class="card__header">
-        <h2 class="card__title">Неполные аккаунты</h2>
+        <h2 class="card__title">Пока не готовы</h2>
       </header>
       <div class="card__body">
         <div class="list">
@@ -108,17 +123,29 @@
                 <div>
                   <div class="listitem__title">@{{ account.username }}</div>
                   <div class="listitem__meta">
-                    <span class="pill">ID: {{ account.id }}</span>
-                    {% if account.account_login %}
-                      <span class="pill mono">{{ account.account_login }}</span>
-                    {% endif %}
-                    {% if account.instagram_emulator_serial %}
-                      <span class="pill mono">{{ account.instagram_emulator_serial }}</span>
-                    {% endif %}
-                    <span class="brand__tag">{{ account.owner_label }}</span>
                     <span class="status-pill off">Не готов</span>
+                    <span class="brand__tag">{{ account.owner_label }}</span>
                   </div>
                   <div class="hint mt-sm">{{ account.publish_blockers|join(' ') }}</div>
+                  <details class="service-details mt-sm">
+                    <summary class="service-details__summary">Служебное</summary>
+                    <div class="service-details__body">
+                      <div class="detail-stats">
+                        <span class="pill">ID: {{ account.id }}</span>
+                        {% if account.account_login %}
+                          <span class="pill mono">{{ account.account_login }}</span>
+                        {% endif %}
+                        {% if account.instagram_emulator_serial %}
+                          <span class="pill mono">{{ account.instagram_emulator_serial }}</span>
+                        {% endif %}
+                        <span class="status-pill {{ account.mail_ready_class }}">{{ account.mail_ready_label }}</span>
+                        <span class="pill">Mail: {{ account.mail_provider_label }}</span>
+                      </div>
+                      {% if account.mail_ready_detail %}
+                        <div class="hint mt-sm">{{ account.mail_ready_detail }}</div>
+                      {% endif %}
+                    </div>
+                  </details>
                 </div>
                 <a class="btn action sm" href="{{ urlp('/accounts') }}/{{ account.id }}">Открыть</a>
               </div>
@@ -136,13 +163,36 @@
       const form = document.getElementById('publish-select-form');
       if (!form) return;
 
-      const checkboxes = Array.from(form.querySelectorAll('input[name="account_ids"]'));
+      const checkboxes = Array.from(form.querySelectorAll('.publish-select-check'));
       const countEl = document.getElementById('selected-count');
       const selectAllBtn = document.getElementById('select-all-accounts');
       const clearAllBtn = document.getElementById('clear-all-accounts');
       const submitBtn = document.getElementById('publish-start-btn');
+      const orderContainer = document.getElementById('publish-account-order');
       const webhookReady = submitBtn ? submitBtn.dataset.webhookReady === '1' : false;
       const readyCount = submitBtn ? Number(submitBtn.dataset.readyCount || '0') : 0;
+      let orderedSelection = [];
+
+      function removeFromOrdered(accountId) {
+        orderedSelection = orderedSelection.filter((value) => value !== accountId);
+      }
+
+      function appendToOrdered(accountId) {
+        removeFromOrdered(accountId);
+        orderedSelection.push(accountId);
+      }
+
+      function syncHiddenInputs() {
+        if (!orderContainer) return;
+        orderContainer.innerHTML = '';
+        orderedSelection.forEach((accountId) => {
+          const input = document.createElement('input');
+          input.type = 'hidden';
+          input.name = 'account_ids';
+          input.value = accountId;
+          orderContainer.appendChild(input);
+        });
+      }
 
       function syncSelectionState() {
         let selected = 0;
@@ -166,11 +216,15 @@
             submitBtn.title = '';
           }
         }
+        syncHiddenInputs();
       }
 
       if (selectAllBtn) {
         selectAllBtn.addEventListener('click', function () {
           checkboxes.forEach((checkbox) => {
+            if (!checkbox.checked) {
+              appendToOrdered(String(checkbox.value));
+            }
             checkbox.checked = true;
           });
           syncSelectionState();
@@ -182,12 +236,30 @@
           checkboxes.forEach((checkbox) => {
             checkbox.checked = false;
           });
+          orderedSelection = [];
           syncSelectionState();
         });
       }
 
       checkboxes.forEach((checkbox) => {
-        checkbox.addEventListener('change', syncSelectionState);
+        if (checkbox.checked) {
+          appendToOrdered(String(checkbox.value));
+        }
+        checkbox.addEventListener('change', function () {
+          if (checkbox.checked) {
+            appendToOrdered(String(checkbox.value));
+          } else {
+            removeFromOrdered(String(checkbox.value));
+          }
+          syncSelectionState();
+        });
+      });
+
+      form.addEventListener('submit', function () {
+        syncHiddenInputs();
+        checkboxes.forEach((checkbox) => {
+          checkbox.removeAttribute('name');
+        });
       });
 
       syncSelectionState();

@@ -3,34 +3,37 @@
 Тест отправки скриншота в бот обучения
 """
 
-import requests
+import os
 import sys
 
-TRAINING_BOT_TOKEN = "8263517231:AAEuKr3Kw9KiIQVsNw7FOmAEBxo1bj19Ksw"
-ADMIN_ID = 481659934
+import http_utils
+import pytest
+TRAINING_BOT_TOKEN = (os.getenv("TRAINING_BOT_TOKEN") or os.getenv("BOT_TOKEN") or "").strip()
+ADMIN_ID = int((os.getenv("TRAINING_ADMIN_ID") or os.getenv("ADMIN_TEST_CHAT_ID") or "481659934").strip())
 
 def test_send():
     """Тестовая отправка сообщения"""
-    try:
-        url = f"https://api.telegram.org/bot{TRAINING_BOT_TOKEN}/sendMessage"
-        
-        data = {
-            'chat_id': ADMIN_ID,
-            'text': '🧪 Тест отправки из основного бота!\n\nЕсли вы видите это сообщение, то интеграция работает! ✅'
-        }
-        
-        response = requests.post(url, data=data, timeout=10)
-        
-        if response.status_code == 200:
-            print("✅ Тестовое сообщение отправлено успешно!")
-            return True
-        else:
-            print(f"❌ Ошибка отправки: {response.status_code} - {response.text}")
-            return False
-        
-    except Exception as e:
-        print(f"❌ Ошибка: {e}")
-        return False
+    if not TRAINING_BOT_TOKEN:
+        pytest.skip("TRAINING_BOT_TOKEN is not configured")
+
+    url = f"https://api.telegram.org/bot{TRAINING_BOT_TOKEN}/sendMessage"
+    data = {
+        "chat_id": ADMIN_ID,
+        "text": "🧪 Тест отправки из основного бота!\n\nЕсли вы видите это сообщение, то интеграция работает! ✅",
+    }
+
+    response = http_utils.request_with_retry(
+        "POST",
+        url,
+        data=data,
+        timeout=10,
+        allow_retry=False,
+        log_context="training_test_send",
+    )
+
+    assert response.status_code == 200, (
+        f"Telegram sendMessage failed: {response.status_code} - {response.text}"
+    )
 
 if __name__ == "__main__":
     test_send()

@@ -10,6 +10,15 @@
         {% with extra_class='mb-sm' %}{% include "_flash.html" %}{% endwith %}
 
         <form id="broadcastForm" method="post" action="{{ urlp('/broadcast') }}" class="grid form-gap-md" enctype="multipart/form-data">
+          <div class="detail-stats">
+            <span class="pill">Получателей: <strong id="recipients">{{ recipients }}</strong></span>
+            {% if sent is not none %}
+              <span class="pill">
+                {% if mode == 'test' %}Тест{% else %}Отправка{% endif %}: {{ sent }} / Ошибок: {{ failed }}
+              </span>
+            {% endif %}
+          </div>
+
           <div class="grid cols-1 form-gap-md">
             <div class="field">
               <label class="label">Кому</label>
@@ -46,7 +55,7 @@
 
           <div class="grid cols-2 form-gap-md">
             <div class="field">
-              <label class="label">Тип файла (если нужен)</label>
+              <label class="label">Тип файла</label>
               <select class="input" name="media_kind" id="media_kind">
                 <option value="" {% if not media_kind %}selected{% endif %}>Без файла</option>
                 <option value="photo" {% if media_kind == 'photo' %}selected{% endif %}>Фото</option>
@@ -59,91 +68,81 @@
             </div>
           </div>
 
-          <div class="hint" id="media_hint">Файл не выбран.</div>
-
-          <div class="row row-between">
-            <div class="section-note">Получателей: <strong id="recipients">{{ recipients }}</strong></div>
-            {% if sent is not none %}
-              <div class="section-note">
-                {% if mode == 'test' %}Тест{% else %}Отправка{% endif %}:
-                <strong>{{ sent }}</strong> · Ошибок: <strong>{{ failed }}</strong>
-              </div>
-            {% endif %}
-          </div>
-
           <div class="row row-end">
             <button class="btn primary" type="submit">Отправить</button>
-
-            <div class="field test-chat-field">
-              <label class="label">Тестовый chat_id</label>
-              <input class="input mono" name="test_chat_id" id="test_chat_id" value="{{ test_chat_id or '' }}" placeholder="например: 123456789">
-            </div>
-
-            <button class="btn ghost" type="button" id="testSend">Отправить тест</button>
           </div>
-
-          <details class="service-details">
-            <summary class="service-details__summary">Служебные детали</summary>
-            <div class="service-details__body hint">
-              Для теста нужен chat_id. Его можно узнать у бота <span class="mono">@userinfobot</span>.
-            </div>
-          </details>
         </form>
       </div>
     </section>
 
-    <div class="grid form-gap-md">
-      <section class="card">
-        <header class="card__header">
-          <h2 class="card__title">Предпросмотр</h2>
-          <button class="btn action copy" type="button" onclick="copyToClipboard(document.getElementById('message').value)">
-            <span>Копировать текст</span>
-          </button>
-        </header>
-        <div class="card__body">
-          <pre class="preview" id="preview">{{ message or '—' }}</pre>
-        </div>
-      </section>
-
-      <section class="card">
-        <header class="card__header">
-          <h2 class="card__title">История</h2>
-        </header>
-        <div class="card__body">
-          <div class="list">
-            {% for h in history %}
-              <div class="listitem">
-                <div class="row row-between row-start">
-                  <div>
-                    <div class="listitem__title">
-                      {% if h.is_test %}<span class="pill">Тест</span>{% else %}<span class="pill">Рассылка</span>{% endif %}
-                      <span class="mono">{{ h.created_at|dt }}</span>
-                    </div>
-                    <div class="listitem__meta">
-                      <span class="brand__tag">Кому: <strong>{{ h.recipients }}</strong></span>
-                      <span class="brand__tag">Отправлено: <strong>{{ h.sent }}</strong></span>
-                      <span class="brand__tag">Ошибки: <strong>{{ h.failed }}</strong></span>
-                      <span class="brand__tag">{{ h.scope }}</span>
-                    </div>
-                    <div class="hint mt-sm">{{ (h.message or '')[:140] }}{% if (h.message or '')|length > 140 %}…{% endif %}</div>
+    <section class="card">
+      <header class="card__header">
+        <h2 class="card__title">История</h2>
+      </header>
+      <div class="card__body">
+        <div class="list">
+          {% for h in history %}
+            <div class="listitem">
+              <div class="row row-between row-start">
+                <div>
+                  <div class="listitem__title">
+                    {% if h.is_test %}<span class="pill">Тест</span>{% else %}<span class="pill">Рассылка</span>{% endif %}
                   </div>
-                  <div class="listitem__actions actions no-margin-top">
-                    <button class="btn action copy" type="button" onclick="copyToClipboard(document.getElementById('bmsg-{{ h.id }}').textContent)">
-                      <span>Копировать</span>
-                    </button>
+                  <div class="listitem__meta">
+                    <span class="brand__tag">{{ h.scope }}</span>
+                    <span class="pill">Кому: {{ h.recipients }}</span>
+                    <span class="pill">Отправлено: {{ h.sent }}</span>
+                    <span class="pill">Ошибки: {{ h.failed }}</span>
+                    <span class="hint">{{ h.created_at|dt }}</span>
                   </div>
                 </div>
-                <pre id="bmsg-{{ h.id }}" class="hidden">{{ h.message or '' }}</pre>
+                <div class="listitem__actions actions no-margin-top">
+                  <button class="btn action copy" type="button" onclick="copyToClipboard(document.getElementById('bmsg-{{ h.id }}').textContent)">
+                    <span>Копировать</span>
+                  </button>
+                </div>
               </div>
-            {% endfor %}
-          </div>
-
-          {% if history|length == 0 %}
-            <div class="hint mt-sm">Истории пока нет.</div>
-          {% endif %}
+              <pre id="bmsg-{{ h.id }}" class="hidden">{{ h.message or '' }}</pre>
+            </div>
+          {% endfor %}
         </div>
-      </section>
-    </div>
+
+        {% if history|length == 0 %}
+          <div class="hint mt-sm">Истории пока нет.</div>
+        {% endif %}
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="card__body">
+        <details class="service-details">
+          <summary class="service-details__summary">Служебное</summary>
+          <div class="service-details__body service-stack">
+            <details class="service-details">
+              <summary class="service-details__summary">Предпросмотр</summary>
+              <div class="service-details__body">
+                <pre class="preview" id="preview">{{ message or '—' }}</pre>
+                <div class="hint mt-sm" id="media_hint">Файл не выбран.</div>
+              </div>
+            </details>
+
+            <details class="service-details">
+              <summary class="service-details__summary">Тестовая отправка</summary>
+              <div class="service-details__body">
+                <div class="field test-chat-field">
+                  <label class="label">Тестовый chat_id</label>
+                  <input class="input mono" name="test_chat_id" id="test_chat_id" form="broadcastForm" value="{{ test_chat_id or '' }}" placeholder="например: 123456789">
+                </div>
+                <div class="hint mt-sm">Для теста нужен `chat_id`. Его можно узнать у `@userinfobot`.</div>
+                <div class="row mt-sm">
+                  <button class="btn ghost" type="button" id="testSend">Отправить тест</button>
+                </div>
+              </div>
+            </details>
+          </div>
+        </details>
+      </div>
+    </section>
   </div>
 
   <script>

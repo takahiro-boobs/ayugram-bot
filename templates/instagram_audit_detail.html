@@ -49,7 +49,7 @@
                 <div class="publish-hero__phase-label" id="audit-phase-label">{{ dashboard_snapshot.batch.phase_label }}</div>
                 <div class="publish-hero__phase-subtitle hint" id="audit-phase-subtitle">{{ dashboard_snapshot.batch.phase_subtitle }}</div>
               </div>
-              <div class="publish-progress">
+              <div class="publish-progress publish-progress--live{% if dashboard_snapshot.batch.is_terminal %} publish-progress--terminal{% endif %}">
                 <div class="publish-progress__meta">
                   <span>Общий прогресс</span>
                   <strong id="audit-progress-text">{{ dashboard_snapshot.batch.progress_pct }}%</strong>
@@ -67,10 +67,10 @@
               <span class="pill">2FA: {{ dashboard_snapshot.batch.counts.manual_2fa_required }}</span>
               <span class="pill">Код почты: {{ dashboard_snapshot.batch.counts.email_code_required }}</span>
             </div>
-            <div class="publish-hero__meta hint" id="audit-meta">
-              Создан: {{ dashboard_snapshot.batch.created_at_label }}.
-              Обновлён: {{ dashboard_snapshot.batch.updated_at_label }}.
-              {{ dashboard_snapshot.batch.detail }}
+            <div class="publish-hero__meta-row">
+              <span class="pill" id="audit-created-pill">Создан: {{ dashboard_snapshot.batch.created_at_label }}</span>
+              <span class="pill" id="audit-updated-pill">Данные: {{ dashboard_snapshot.batch.updated_at_relative_label }}</span>
+              <span class="pill pill--live" id="audit-sync-pill">Синхр. только что</span>
             </div>
           </div>
         </div>
@@ -95,7 +95,6 @@
       <section class="card">
         <header class="card__header">
           <h2 class="card__title">Аккаунты</h2>
-          <span class="hint">Сначала активные, затем аккаунты с ручными шагами.</span>
         </header>
         <div class="card__body">
           <div id="audit-items" class="publish-accounts-grid"></div>
@@ -113,13 +112,20 @@
 
       <section class="card">
         <header class="card__header">
-          <h2 class="card__title">Диагностика</h2>
-          <span class="hint">Сырой лог для диагностики</span>
+          <h2 class="card__title">Служебное</h2>
         </header>
-        <div class="card__body">
-          <details class="publish-log-details">
-            <summary class="publish-log-details__summary">Показать журнал событий</summary>
-            <div id="audit-raw-events" class="list mt-sm"></div>
+        <div class="card__body service-stack">
+          <details class="service-details">
+            <summary class="service-details__summary">Параметры проверки</summary>
+            <div class="service-details__body">
+              <div id="audit-service-meta" class="detail-stats"></div>
+            </div>
+          </details>
+          <details class="service-details">
+            <summary class="service-details__summary">Показать журнал событий</summary>
+            <div class="service-details__body">
+              <div id="audit-raw-events" class="list"></div>
+            </div>
           </details>
         </div>
       </section>
@@ -137,6 +143,11 @@
             snapshot = {};
           }
 
+          let lastSyncAt = Date.now();
+          let syncTimer = null;
+          const animatedProgress = new Map();
+          const progressFrames = new Map();
+
           const escapeHtml = function (value) {
             return String(value || '')
               .replace(/&/g, '&amp;')
@@ -146,8 +157,8 @@
               .replace(/'/g, '&#39;');
           };
 
-          const pill = function (text) {
-            return '<span class="pill">' + escapeHtml(text) + '</span>';
+          const pill = function (text, extraClass) {
+            return '<span class="pill' + (extraClass ? ' ' + extraClass : '') + '">' + escapeHtml(text) + '</span>';
           };
 
           const statusPill = function (label, cls) {
@@ -177,42 +188,58 @@
             }).join('');
           };
 
+          const renderServiceMeta = function (batch) {
+            const safe = batch || {};
+            return [
+              pill('Создан: ' + String(safe.created_at_label || '—')),
+              pill('Обновлён: ' + String(safe.updated_at_label || '—')),
+              safe.detail ? '<div class="section-note">' + escapeHtml(safe.detail) + '</div>' : ''
+            ].filter(Boolean).join('');
+          };
+
           const renderItems = function (items) {
             if (!Array.isArray(items) || !items.length) {
               return '<div class="hint">В этой проверке пока нет аккаунтов.</div>';
             }
             return items.map(function (item) {
-              const meta = [
+              const handle = escapeHtml(item.username || item.account_login || ('аккаунт-' + Number(item.account_id || 0)));
+              const progressPct = Number(item.progress_pct || 0);
+              const primaryMeta = [
+                statusPill(item.item_state_label, item.item_state_class),
+                item.resolution_state ? statusPill(item.resolution_label, item.resolution_class) : ''
+              ].filter(Boolean).join('');
+              const details = [
+                item.detail ? '<div class="hint">' + escapeHtml(item.detail) + '</div>' : ''
+              ].filter(Boolean).join('');
+              const serviceMeta = [
                 pill('ID: ' + Number(item.account_id || 0)),
                 item.assigned_serial ? '<span class="pill mono">' + escapeHtml(item.assigned_serial) + '</span>' : '',
                 item.owner_label ? '<span class="brand__tag">' + escapeHtml(item.owner_label) + '</span>' : '',
-                statusPill(item.item_state_label, item.item_state_class),
                 statusPill(item.login_state_label, item.login_state_class),
                 statusPill(item.mail_probe_state_label, item.mail_probe_state_class),
-                statusPill(item.resolution_label, item.resolution_class)
+                item.diagnostic_path ? '<span class="pill mono">' + escapeHtml(item.diagnostic_path) + '</span>' : ''
               ].filter(Boolean).join('');
-
-              const details = [
-                item.detail ? '<div class="hint mt-sm">' + escapeHtml(item.detail) + '</div>' : '',
-                item.diagnostic_path ? '<div class="hint mt-sm mono">Диагностика: ' + escapeHtml(item.diagnostic_path) + '</div>' : ''
-              ].join('');
 
               return [
                 '<article class="publish-account-card ',
                 item.is_active ? 'publish-account-card--active' : '',
                 '">',
                 '<div class="publish-account-card__head">',
-                '<div>',
-                '<div class="listitem__title">@', escapeHtml(item.username || item.account_login || ('аккаунт-' + Number(item.account_id || 0))), '</div>',
-                '<div class="listitem__meta">', meta, '</div>',
+                '<div class="publish-account-card__summary">',
+                '<div class="listitem__title">@', handle, '</div>',
+                primaryMeta ? '<div class="listitem__meta">' + primaryMeta + '</div>' : '',
                 '</div>',
                 '<div class="publish-account-card__actions"><a class="btn action sm" href="', escapeHtml(item.open_url || '#'), '">Открыть</a></div>',
                 '</div>',
-                '<div class="publish-account-card__phase">',
+                '<div class="publish-account-card__phase" data-progress-key="audit-account-', Number(item.account_id || 0), '" data-progress-target="', progressPct, '">',
+                item.is_active ? '<div class="publish-account-card__live">В работе</div>' : '',
                 '<div class="publish-account-card__phase-title">', escapeHtml(item.resolution_label || item.item_state_label || 'Ожидание'), '</div>',
-                '<div class="publish-account-card__progress-meta"><span>', escapeHtml(item.updated_at_label || '—'), '</span><strong>', Number(item.progress_pct || 0), '%</strong></div>',
-                '<div class="publish-progress publish-progress--mini"><div class="publish-progress__track" aria-hidden="true"><div class="publish-progress__fill" style="width: ', Number(item.progress_pct || 0), '%;"></div></div></div>',
+                '<div class="publish-account-card__progress-meta"><span>', escapeHtml(item.updated_at_relative_label || item.updated_at_label || '—'), '</span><strong data-progress-text>', progressPct, '%</strong></div>',
+                '<div class="publish-progress publish-progress--mini', item.is_active ? ' publish-progress--live' : '', '">',
+                '<div class="publish-progress__track" aria-hidden="true"><div class="publish-progress__fill" data-progress-fill style="width: ', progressPct, '%;"></div></div>',
+                '</div>',
                 details,
+                serviceMeta ? '<details class="service-details publish-account-card__service"><summary class="service-details__summary">Служебное</summary><div class="service-details__body"><div class="detail-stats">' + serviceMeta + '</div></div></details>' : '',
                 '</div>',
                 '</article>'
               ].join('');
@@ -233,7 +260,7 @@
                 '<div class="publish-activity-item__meta">',
                 event.account_username ? '<span class="brand__tag">@' + escapeHtml(event.account_username) + '</span>' : '',
                 '</div>',
-                event.detail ? '<div class="hint mt-sm">' + escapeHtml(event.detail) + '</div>' : '',
+                event.detail ? '<div class="hint">' + escapeHtml(event.detail) + '</div>' : '',
                 '</div>'
               ].join('');
             }).join('');
@@ -251,11 +278,72 @@
                 '<span class="hint">', escapeHtml(event.created_at_label || '—'), '</span>',
                 event.account_username ? '<span class="brand__tag">@' + escapeHtml(event.account_username) + '</span>' : '',
                 '</div>',
-                event.detail ? '<div class="hint mt-sm">' + escapeHtml(event.detail) + '</div>' : '',
-                event.payload_preview ? '<div class="hint mt-sm mono">' + escapeHtml(event.payload_preview) + '</div>' : '',
+                event.detail ? '<div class="hint">' + escapeHtml(event.detail) + '</div>' : '',
+                event.payload_preview ? '<div class="hint mono">' + escapeHtml(event.payload_preview) + '</div>' : '',
                 '</div>'
               ].join('');
             }).join('');
+          };
+
+          const animateProgress = function (key, target, textEl, fillEl) {
+            const safeTarget = Math.max(0, Math.min(100, Number(target || 0)));
+            const previous = animatedProgress.has(key) ? Number(animatedProgress.get(key)) : safeTarget;
+            const from = previous <= safeTarget ? previous : safeTarget;
+            if (progressFrames.has(key)) {
+              window.cancelAnimationFrame(progressFrames.get(key));
+            }
+            const startedAt = performance.now();
+            const duration = Math.max(220, Math.min(1200, Math.abs(safeTarget - from) * 75));
+
+            const step = function (ts) {
+              const progress = duration <= 0 ? 1 : Math.min(1, (ts - startedAt) / duration);
+              const eased = 1 - Math.pow(1 - progress, 3);
+              const value = Math.round(from + ((safeTarget - from) * eased));
+              animatedProgress.set(key, value);
+              if (textEl) textEl.textContent = value + '%';
+              if (fillEl) fillEl.style.width = value + '%';
+              if (progress < 1) {
+                progressFrames.set(key, window.requestAnimationFrame(step));
+              } else {
+                animatedProgress.set(key, safeTarget);
+                if (textEl) textEl.textContent = safeTarget + '%';
+                if (fillEl) fillEl.style.width = safeTarget + '%';
+                progressFrames.delete(key);
+              }
+            };
+
+            if (!textEl && !fillEl) {
+              animatedProgress.set(key, safeTarget);
+              return;
+            }
+            progressFrames.set(key, window.requestAnimationFrame(step));
+          };
+
+          const hydrateScopedProgress = function (root) {
+            if (!root) return;
+            root.querySelectorAll('[data-progress-key]').forEach(function (node) {
+              animateProgress(
+                node.getAttribute('data-progress-key') || '',
+                node.getAttribute('data-progress-target'),
+                node.querySelector('[data-progress-text]'),
+                node.querySelector('[data-progress-fill]')
+              );
+            });
+          };
+
+          const updateSyncPill = function () {
+            const syncEl = document.getElementById('audit-sync-pill');
+            if (!syncEl) return;
+            const batch = snapshot.batch || {};
+            if (batch.is_terminal) {
+              syncEl.className = 'pill';
+              syncEl.textContent = 'Финальный статус';
+              return;
+            }
+            const pollSeconds = Math.max(2, Number(snapshot.poll_interval_seconds || 2));
+            const delta = Math.max(0, Math.floor((Date.now() - lastSyncAt) / 1000));
+            syncEl.className = 'pill pill--live' + (delta > pollSeconds * 3 ? ' pill--stale' : '');
+            syncEl.textContent = delta <= 1 ? 'Синхр. только что' : ('Синхр. ' + delta + ' сек назад');
           };
 
           const renderSnapshot = function (data) {
@@ -272,10 +360,12 @@
             const progressText = document.getElementById('audit-progress-text');
             const progressFill = document.getElementById('audit-progress-fill');
             const countsEl = document.getElementById('audit-counts');
-            const metaEl = document.getElementById('audit-meta');
+            const createdPillEl = document.getElementById('audit-created-pill');
+            const updatedPillEl = document.getElementById('audit-updated-pill');
             const stepsEl = document.getElementById('audit-steps');
             const itemsEl = document.getElementById('audit-items');
             const activityEl = document.getElementById('audit-recent-activity');
+            const serviceMetaEl = document.getElementById('audit-service-meta');
             const rawEl = document.getElementById('audit-raw-events');
 
             if (statePillEl) {
@@ -294,20 +384,23 @@
             }
             if (phaseLabelEl) phaseLabelEl.textContent = String(batch.phase_label || '—');
             if (phaseSubtitleEl) phaseSubtitleEl.textContent = String(batch.phase_subtitle || '');
-            if (progressText) progressText.textContent = progressPct + '%';
-            if (progressFill) progressFill.style.width = progressPct + '%';
+            animateProgress('audit-overall', progressPct, progressText, progressFill);
             if (countsEl) countsEl.innerHTML = renderCounts(batch.counts || {});
-            if (metaEl) {
-              metaEl.textContent = [
-                'Создан: ' + String(batch.created_at_label || '—') + '.',
-                'Обновлён: ' + String(batch.updated_at_label || '—') + '.',
-                String(batch.detail || '')
-              ].join(' ');
-            }
+            if (createdPillEl) createdPillEl.textContent = 'Создан: ' + String(batch.created_at_label || '—');
+            if (updatedPillEl) updatedPillEl.textContent = 'Данные: ' + String(batch.updated_at_relative_label || batch.updated_at_label || '—');
             if (stepsEl) stepsEl.innerHTML = renderSteps(batch.steps || []);
-            if (itemsEl) itemsEl.innerHTML = renderItems(snapshot.items || []);
+            if (itemsEl) {
+              itemsEl.innerHTML = renderItems(snapshot.items || []);
+              hydrateScopedProgress(itemsEl);
+            }
             if (activityEl) activityEl.innerHTML = renderActivity(snapshot.recent_activity || []);
+            if (serviceMetaEl) serviceMetaEl.innerHTML = renderServiceMeta(batch);
             if (rawEl) rawEl.innerHTML = renderRawEvents(snapshot.events || []);
+            updateSyncPill();
+          };
+
+          const scheduleNextPoll = function (delaySeconds) {
+            window.setTimeout(pollOnce, Math.max(2, Number(delaySeconds || snapshot.poll_interval_seconds || 2)) * 1000);
           };
 
           const pollOnce = async function () {
@@ -326,19 +419,29 @@
                 throw new Error('audit polling failed');
               }
               const data = await response.json();
+              lastSyncAt = Date.now();
               renderSnapshot(data);
               if (data.batch && !data.batch.is_terminal) {
-                window.setTimeout(pollOnce, Number(data.poll_interval_seconds || 3) * 1000);
+                scheduleNextPoll(data.poll_interval_seconds || 2);
               }
             } catch (error) {
-              window.setTimeout(pollOnce, Number((snapshot && snapshot.poll_interval_seconds) || 3) * 1000);
+              updateSyncPill();
+              scheduleNextPoll((snapshot && snapshot.poll_interval_seconds) || 2);
             }
           };
 
           renderSnapshot(snapshot);
+          lastSyncAt = Date.now();
+          updateSyncPill();
+          syncTimer = window.setInterval(updateSyncPill, 1000);
           if (snapshot.batch && !snapshot.batch.is_terminal) {
-            window.setTimeout(pollOnce, Number(snapshot.poll_interval_seconds || 3) * 1000);
+            scheduleNextPoll(snapshot.poll_interval_seconds || 2);
           }
+          window.addEventListener('beforeunload', function () {
+            if (syncTimer) {
+              window.clearInterval(syncTimer);
+            }
+          });
         })();
       </script>
     {% endif %}

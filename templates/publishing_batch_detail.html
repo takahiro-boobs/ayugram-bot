@@ -48,7 +48,7 @@
                 <div class="publish-hero__phase-label" id="dashboard-phase-label">{{ dashboard_snapshot.batch.phase_label }}</div>
                 <div class="publish-hero__phase-subtitle hint" id="dashboard-phase-subtitle">{{ dashboard_snapshot.batch.phase_subtitle }}</div>
               </div>
-              <div class="publish-progress">
+              <div class="publish-progress publish-progress--live{% if dashboard_snapshot.batch.is_terminal %} publish-progress--terminal{% endif %}">
                 <div class="publish-progress__meta">
                   <span>Общий прогресс</span>
                   <strong id="dashboard-progress-text">{{ dashboard_snapshot.batch.progress_pct }}%</strong>
@@ -66,12 +66,10 @@
               <span class="pill">Готово: {{ dashboard_snapshot.batch.counts.published }}</span>
               <span class="pill">Ошибки: {{ dashboard_snapshot.batch.counts.failed }}</span>
             </div>
-            <div class="publish-hero__meta hint" id="dashboard-meta">
-              Сценарий: {{ dashboard_snapshot.batch.workflow_key }}.
-              Создан: {{ dashboard_snapshot.batch.created_at_label }}.
-              Обновлён: {{ dashboard_snapshot.batch.updated_at_label }}.
-              Папка staging: {{ dashboard_snapshot.batch.stage_dir }}.
-              {% if dashboard_snapshot.batch.stage_dir_exists %}Папка активна.{% else %}Папка очищена.{% endif %}
+            <div class="publish-hero__meta-row">
+              <span class="pill" id="dashboard-created-pill">Создан: {{ dashboard_snapshot.batch.created_at_label }}</span>
+              <span class="pill" id="dashboard-updated-pill">Данные: {{ dashboard_snapshot.batch.updated_at_relative_label }}</span>
+              <span class="pill pill--live" id="dashboard-sync-pill">Синхр. только что</span>
             </div>
           </div>
         </div>
@@ -90,14 +88,12 @@
               </li>
             {% endfor %}
           </ol>
-          <div class="hint mt-sm">Страница обновляет статус сама, без перезагрузки.</div>
         </div>
       </section>
 
       <section class="card">
         <header class="card__header">
           <h2 class="card__title">Аккаунты</h2>
-          <span class="hint">Сначала активные, затем ожидающие, затем завершённые.</span>
         </header>
         <div class="card__body">
           <div id="dashboard-accounts" class="publish-accounts-grid"></div>
@@ -107,42 +103,40 @@
       <section class="card">
         <header class="card__header">
           <h2 class="card__title">Последние события</h2>
-          <span class="hint">Последние события пакета</span>
         </header>
         <div class="card__body">
           <div id="dashboard-recent-activity" class="publish-activity-list"></div>
         </div>
       </section>
 
-      <div class="grid cols-2">
-        <section class="card">
-          <header class="card__header">
-            <h2 class="card__title">Видео пакета</h2>
-          </header>
-          <div class="card__body">
-            <div id="dashboard-artifacts" class="list"></div>
-          </div>
-        </section>
-
-        <section class="card">
-          <header class="card__header">
-            <h2 class="card__title">Задачи публикации</h2>
-          </header>
-          <div class="card__body">
-            <div id="dashboard-jobs" class="list"></div>
-          </div>
-        </section>
-      </div>
-
       <section class="card">
         <header class="card__header">
-          <h2 class="card__title">Диагностика</h2>
-          <span class="hint">Служебные события пакета</span>
+          <h2 class="card__title">Служебное</h2>
         </header>
-        <div class="card__body">
-          <details class="publish-log-details" id="dashboard-raw-log-details">
-            <summary class="publish-log-details__summary">Показать журнал событий</summary>
-            <div id="dashboard-raw-events" class="list mt-sm"></div>
+        <div class="card__body service-stack">
+          <details class="service-details">
+            <summary class="service-details__summary">Параметры пакета</summary>
+            <div class="service-details__body">
+              <div id="dashboard-service-meta" class="detail-stats"></div>
+            </div>
+          </details>
+          <details class="service-details">
+            <summary class="service-details__summary">Видео пакета</summary>
+            <div class="service-details__body">
+              <div id="dashboard-artifacts" class="list"></div>
+            </div>
+          </details>
+          <details class="service-details">
+            <summary class="service-details__summary">Задачи публикации</summary>
+            <div class="service-details__body">
+              <div id="dashboard-jobs" class="list"></div>
+            </div>
+          </details>
+          <details class="service-details">
+            <summary class="service-details__summary">Показать журнал событий</summary>
+            <div class="service-details__body">
+              <div id="dashboard-raw-events" class="list"></div>
+            </div>
           </details>
         </div>
       </section>
@@ -160,6 +154,11 @@
             snapshot = {};
           }
 
+          let lastSyncAt = Date.now();
+          let syncTimer = null;
+          const animatedProgress = new Map();
+          const progressFrames = new Map();
+
           const escapeHtml = function (value) {
             return String(value || '')
               .replace(/&/g, '&amp;')
@@ -169,8 +168,8 @@
               .replace(/'/g, '&#39;');
           };
 
-          const pill = function (text) {
-            return '<span class="pill">' + escapeHtml(text) + '</span>';
+          const pill = function (text, extraClass) {
+            return '<span class="pill' + (extraClass ? ' ' + extraClass : '') + '">' + escapeHtml(text) + '</span>';
           };
 
           const statusPill = function (label, cls) {
@@ -203,30 +202,76 @@
             }).join('');
           };
 
+          const renderServiceMeta = function (batch) {
+            const safe = batch || {};
+            return [
+              pill('Сценарий: ' + String(safe.workflow_key || 'default')),
+              safe.stage_dir ? '<span class="pill mono">Staging: ' + escapeHtml(safe.stage_dir) + '</span>' : '',
+              pill(safe.stage_dir_exists ? 'Staging активен' : 'Staging очищен'),
+              pill('Создан: ' + String(safe.created_at_label || '—')),
+              pill('Обновлён: ' + String(safe.updated_at_label || '—'))
+            ].filter(Boolean).join('');
+          };
+
           const renderAccounts = function (accounts) {
             if (!Array.isArray(accounts) || !accounts.length) {
               return '<div class="hint">Аккаунты пакета пока не найдены.</div>';
             }
             return accounts.map(function (account) {
-              const meta = [
+              const handle = escapeHtml(account.username || account.account_login || ('аккаунт-' + Number(account.id || 0)));
+              const progressPct = Number(account.progress_pct || 0);
+              const mailChallengeVisible = Boolean(account.mail_challenge_status && account.mail_challenge_status !== 'idle');
+              const mailChallengeConfidence = Number(account.mail_challenge_confidence || 0);
+              const mailChallengeDetails = [
+                account.mail_challenge_reason_text || '',
+                account.mail_challenge_masked_code ? ('Код: ' + account.mail_challenge_masked_code) : '',
+                mailChallengeConfidence > 0 ? ('Уверенность: ' + Math.round(mailChallengeConfidence * 100) + '%') : ''
+              ].filter(Boolean).join(' · ');
+              const primaryMeta = [
+                statusPill(account.batch_state_label || '—', account.batch_state_class || 'unknown'),
+                account.instagram_publish_status_label && account.is_failed
+                  ? statusPill(account.instagram_publish_status_label, account.instagram_publish_status_class || 'unknown')
+                  : '',
+                mailChallengeVisible
+                  ? statusPill(account.mail_challenge_label || 'Mail challenge', account.mail_challenge_class || 'unknown')
+                  : ''
+              ].filter(Boolean).join('');
+              const detailLines = [
+                account.phase_detail ? '<div class="hint">' + escapeHtml(account.phase_detail) + '</div>' : '',
+                account.artifact_filename ? '<div class="hint">Видео: ' + escapeHtml(account.artifact_filename) + '</div>' : '',
+                account.is_failed && account.instagram_publish_detail ? '<div class="hint">' + escapeHtml(account.instagram_publish_detail) + '</div>' : '',
+                mailChallengeVisible
+                  ? '<div class="hint">Mail challenge: '
+                      + escapeHtml(account.mail_challenge_label || '—')
+                      + (account.mail_challenge_kind_label ? ' · ' + escapeHtml(account.mail_challenge_kind_label) : '')
+                      + (mailChallengeDetails ? ' · ' + escapeHtml(mailChallengeDetails) : '')
+                      + '</div>'
+                  : ''
+              ].filter(Boolean).join('');
+              const serviceMeta = [
                 pill('ID: ' + Number(account.id || 0)),
                 account.instagram_emulator_serial ? '<span class="pill mono">' + escapeHtml(account.instagram_emulator_serial) + '</span>' : '',
                 account.owner_label ? '<span class="brand__tag">' + escapeHtml(account.owner_label) + '</span>' : '',
-                statusPill(account.batch_state_label || '—', account.batch_state_class || 'unknown'),
                 account.job_state_label ? statusPill(account.job_state_label, account.job_state_class || 'unknown') : '',
-                statusPill(account.instagram_publish_status_label || '—', account.instagram_publish_status_class || 'unknown'),
+                account.instagram_publish_status_label && !account.is_failed
+                  ? statusPill(account.instagram_publish_status_label, account.instagram_publish_status_class || 'unknown')
+                  : '',
+                account.mail_ready_label ? statusPill(account.mail_ready_label, account.mail_ready_class || 'unknown') : '',
+                account.mail_status_label ? statusPill(account.mail_status_label, account.mail_status_class || 'unknown') : '',
+                account.mail_provider_label ? pill('Mail: ' + account.mail_provider_label) : '',
+                mailChallengeVisible
+                  ? statusPill(account.mail_challenge_label || 'Mail challenge', account.mail_challenge_class || 'unknown')
+                  : '',
                 '<span class="status-pill ' + (account.twofa_ready ? 'on' : 'review') + '">' + (account.twofa_ready ? '2FA готов' : 'Нет 2FA') + '</span>'
               ].filter(Boolean).join('');
-
-              const details = [
-                account.phase_detail ? '<div class="hint mt-sm">' + escapeHtml(account.phase_detail) + '</div>' : '',
-                account.artifact_filename ? '<div class="hint mt-sm">Видео: ' + escapeHtml(account.artifact_filename) + '</div>' : '',
-                account.is_failed && account.instagram_publish_detail ? '<div class="hint mt-sm">' + escapeHtml(account.instagram_publish_detail) + '</div>' : ''
-              ].join('');
-
-              const actions = [
-                account.artifact_download_url ? '<a class="btn ghost sm" href="' + escapeHtml(account.artifact_download_url) + '">Скачать видео</a>' : '',
-                '<a class="btn action sm" href="' + escapeHtml(account.open_url || '#') + '">Открыть</a>'
+              const serviceHints = [
+                account.mail_ready_detail ? '<div class="hint">' + escapeHtml(account.mail_ready_detail) + '</div>' : '',
+                mailChallengeVisible && account.mail_challenge_kind_label
+                  ? '<div class="hint">Сценарий: '
+                      + escapeHtml(account.mail_challenge_kind_label)
+                      + (mailChallengeDetails ? ' · ' + escapeHtml(mailChallengeDetails) : '')
+                      + '</div>'
+                  : ''
               ].filter(Boolean).join('');
 
               return [
@@ -235,18 +280,29 @@
                 account.is_active ? 'publish-account-card--active' : '',
                 '">',
                 '<div class="publish-account-card__head">',
-                '<div>',
-                '<div class="listitem__title">@', escapeHtml(account.username || account.account_login || ('аккаунт-' + Number(account.id || 0))), '</div>',
-                '<div class="listitem__meta">', meta, '</div>',
+                '<div class="publish-account-card__summary">',
+                '<div class="listitem__title">@', handle, '</div>',
+                primaryMeta ? '<div class="listitem__meta">' + primaryMeta + '</div>' : '',
                 '</div>',
-                '<div class="publish-account-card__actions">', actions, '</div>',
+                '<div class="publish-account-card__actions">',
+                account.artifact_download_url ? '<a class="btn ghost sm" href="' + escapeHtml(account.artifact_download_url) + '">Скачать</a>' : '',
+                '<a class="btn action sm" href="' + escapeHtml(account.open_url || '#') + '">Открыть</a>',
                 '</div>',
-                '<div class="publish-account-card__phase">',
+                '</div>',
+                '<div class="publish-account-card__phase" data-progress-key="publish-account-', Number(account.id || 0), '" data-progress-target="', progressPct, '">',
                 account.is_active ? '<div class="publish-account-card__live">В работе</div>' : '',
                 '<div class="publish-account-card__phase-title">', escapeHtml(account.phase_label || 'Ожидание'), '</div>',
-                '<div class="publish-account-card__progress-meta"><span>', escapeHtml(account.updated_at_label || '—'), '</span><strong>', Number(account.progress_pct || 0), '%</strong></div>',
-                '<div class="publish-progress publish-progress--mini"><div class="publish-progress__track" aria-hidden="true"><div class="publish-progress__fill" style="width: ', Number(account.progress_pct || 0), '%;"></div></div></div>',
-                details,
+                '<div class="publish-account-card__progress-meta"><span>', escapeHtml(account.updated_at_relative_label || account.updated_at_label || '—'), '</span><strong data-progress-text>', progressPct, '%</strong></div>',
+                '<div class="publish-progress publish-progress--mini', account.is_active ? ' publish-progress--live' : '', '">',
+                '<div class="publish-progress__track" aria-hidden="true"><div class="publish-progress__fill" data-progress-fill style="width: ', progressPct, '%;"></div></div>',
+                '</div>',
+                detailLines,
+                (serviceMeta || serviceHints)
+                  ? '<details class="service-details publish-account-card__service"><summary class="service-details__summary">Служебное</summary><div class="service-details__body">'
+                      + (serviceMeta ? '<div class="detail-stats">' + serviceMeta + '</div>' : '')
+                      + serviceHints
+                      + '</div></details>'
+                  : '',
                 '</div>',
                 '</article>'
               ].join('');
@@ -268,7 +324,7 @@
                 event.account_username ? '<span class="brand__tag">@' + escapeHtml(event.account_username) + '</span>' : '',
                 event.source_name ? pill(event.source_name) : '',
                 '</div>',
-                event.detail ? '<div class="hint mt-sm">' + escapeHtml(event.detail) + '</div>' : '',
+                event.detail ? '<div class="hint">' + escapeHtml(event.detail) + '</div>' : '',
                 '</div>'
               ].join('');
             }).join('');
@@ -285,12 +341,11 @@
                 '<div>',
                 '<div class="listitem__title">', escapeHtml(artifact.filename || 'файл'), '</div>',
                 '<div class="listitem__meta">',
-                pill('ID: ' + Number(artifact.id || 0)),
                 pill(artifact.size_label || '—'),
                 pill(artifact.duration_label || '—'),
                 '<span class="hint">', escapeHtml(artifact.created_at_label || '—'), '</span>',
                 '</div>',
-                '<div class="hint mt-sm mono">', escapeHtml(artifact.path || ''), '</div>',
+                '<div class="hint mono">', escapeHtml(artifact.path || ''), '</div>',
                 '</div>',
                 '<a class="btn ghost sm" href="', escapeHtml(artifact.download_url || '#'), '">Скачать</a>',
                 '</div>',
@@ -308,16 +363,17 @@
                 '<div class="listitem">',
                 '<div class="row row-between row-start">',
                 '<div>',
-                '<div class="listitem__title">Задача #', Number(job.id || 0), ' · @', escapeHtml(job.identity_handle || 'аккаунт'), ' · ', escapeHtml(job.source_name || 'видео'), '</div>',
+                '<div class="listitem__title">@', escapeHtml(job.identity_handle || 'аккаунт'), ' · ', escapeHtml(job.source_name || 'видео'), '</div>',
                 '<div class="listitem__meta">',
                 statusPill(job.state_label || '—', job.state_class || 'unknown'),
-                '<span class="pill mono">', escapeHtml(job.emulator_serial || ''), '</span>',
+                job.emulator_serial ? '<span class="pill mono">' + escapeHtml(job.emulator_serial) + '</span>' : '',
                 pill('Создан: ' + (job.created_at_label || '—')),
                 job.started_at ? pill('Старт: ' + (job.started_at_label || '—')) : '',
-                job.completed_at ? pill('Финиш: ' + (job.completed_at_label || '—')) : '',
+                job.completed_at ? pill('Финиш: ' + (job.completed_at_label || '—')) : ''
+                ,
                 '</div>',
-                job.detail ? '<div class="hint mt-sm">' + escapeHtml(job.detail) + '</div>' : '',
-                '<div class="hint mt-sm mono">' + escapeHtml(job.source_path || '') + '</div>',
+                job.detail ? '<div class="hint">' + escapeHtml(job.detail) + '</div>' : '',
+                '<div class="hint mono">' + escapeHtml(job.source_path || '') + '</div>',
                 '</div>',
                 '<a class="btn ghost sm" href="', escapeHtml(job.download_url || '#'), '">Скачать</a>',
                 '</div>',
@@ -333,29 +389,84 @@
             return events.map(function (event) {
               return [
                 '<div class="listitem">',
-                '<div class="row row-between row-start">',
-                '<div>',
                 '<div class="listitem__title">', escapeHtml(event.state || event.title || 'event'), '</div>',
                 '<div class="listitem__meta">',
                 '<span class="hint">', escapeHtml(event.created_at_label || '—'), '</span>',
                 event.account_username ? '<span class="brand__tag">@' + escapeHtml(event.account_username) + '</span>' : '',
                 event.source_name ? pill(event.source_name) : '',
                 '</div>',
-                event.detail ? '<div class="hint mt-sm">' + escapeHtml(event.detail) + '</div>' : '',
-                event.payload_preview ? '<div class="hint mt-sm mono">' + escapeHtml(event.payload_preview) + '</div>' : '',
-                '</div>',
-                '</div>',
+                event.detail ? '<div class="hint">' + escapeHtml(event.detail) + '</div>' : '',
+                event.payload_preview ? '<div class="hint mono">' + escapeHtml(event.payload_preview) + '</div>' : '',
                 '</div>'
               ].join('');
             }).join('');
+          };
+
+          const animateProgress = function (key, target, textEl, fillEl) {
+            const safeTarget = Math.max(0, Math.min(100, Number(target || 0)));
+            const previous = animatedProgress.has(key) ? Number(animatedProgress.get(key)) : safeTarget;
+            const from = previous <= safeTarget ? previous : safeTarget;
+            if (progressFrames.has(key)) {
+              window.cancelAnimationFrame(progressFrames.get(key));
+            }
+            const startedAt = performance.now();
+            const duration = Math.max(220, Math.min(1200, Math.abs(safeTarget - from) * 75));
+
+            const step = function (ts) {
+              const progress = duration <= 0 ? 1 : Math.min(1, (ts - startedAt) / duration);
+              const eased = 1 - Math.pow(1 - progress, 3);
+              const value = Math.round(from + ((safeTarget - from) * eased));
+              animatedProgress.set(key, value);
+              if (textEl) textEl.textContent = value + '%';
+              if (fillEl) fillEl.style.width = value + '%';
+              if (progress < 1) {
+                progressFrames.set(key, window.requestAnimationFrame(step));
+              } else {
+                animatedProgress.set(key, safeTarget);
+                if (textEl) textEl.textContent = safeTarget + '%';
+                if (fillEl) fillEl.style.width = safeTarget + '%';
+                progressFrames.delete(key);
+              }
+            };
+
+            if (!textEl && !fillEl) {
+              animatedProgress.set(key, safeTarget);
+              return;
+            }
+            progressFrames.set(key, window.requestAnimationFrame(step));
+          };
+
+          const hydrateScopedProgress = function (root) {
+            if (!root) return;
+            root.querySelectorAll('[data-progress-key]').forEach(function (node) {
+              animateProgress(
+                node.getAttribute('data-progress-key') || '',
+                node.getAttribute('data-progress-target'),
+                node.querySelector('[data-progress-text]'),
+                node.querySelector('[data-progress-fill]')
+              );
+            });
+          };
+
+          const updateSyncPill = function () {
+            const syncEl = document.getElementById('dashboard-sync-pill');
+            if (!syncEl) return;
+            const batch = snapshot.batch || {};
+            if (batch.is_terminal) {
+              syncEl.className = 'pill';
+              syncEl.textContent = 'Финальный статус';
+              return;
+            }
+            const pollSeconds = Math.max(2, Number(snapshot.poll_interval_seconds || 2));
+            const delta = Math.max(0, Math.floor((Date.now() - lastSyncAt) / 1000));
+            syncEl.className = 'pill pill--live' + (delta > pollSeconds * 3 ? ' pill--stale' : '');
+            syncEl.textContent = delta <= 1 ? 'Синхр. только что' : ('Синхр. ' + delta + ' сек назад');
           };
 
           const renderSnapshot = function (data) {
             snapshot = data || {};
             const batch = snapshot.batch || {};
             const progressPct = Number(batch.progress_pct || 0);
-            const progressFill = document.getElementById('dashboard-progress-fill');
-            const progressText = document.getElementById('dashboard-progress-text');
             const batchIdEl = document.getElementById('dashboard-batch-id');
             const statePillEl = document.getElementById('dashboard-state-pill');
             const liveBadgeEl = document.getElementById('dashboard-live-badge');
@@ -363,11 +474,15 @@
             const stageChipEl = document.getElementById('dashboard-stage-chip');
             const phaseLabelEl = document.getElementById('dashboard-phase-label');
             const phaseSubtitleEl = document.getElementById('dashboard-phase-subtitle');
+            const progressText = document.getElementById('dashboard-progress-text');
+            const progressFill = document.getElementById('dashboard-progress-fill');
             const countsEl = document.getElementById('dashboard-counts');
-            const metaEl = document.getElementById('dashboard-meta');
+            const createdPillEl = document.getElementById('dashboard-created-pill');
+            const updatedPillEl = document.getElementById('dashboard-updated-pill');
             const stepsEl = document.getElementById('dashboard-steps');
             const accountsEl = document.getElementById('dashboard-accounts');
             const recentEl = document.getElementById('dashboard-recent-activity');
+            const serviceMetaEl = document.getElementById('dashboard-service-meta');
             const artifactsEl = document.getElementById('dashboard-artifacts');
             const jobsEl = document.getElementById('dashboard-jobs');
             const rawEventsEl = document.getElementById('dashboard-raw-events');
@@ -389,27 +504,29 @@
             }
             if (phaseLabelEl) phaseLabelEl.textContent = String(batch.phase_label || '—');
             if (phaseSubtitleEl) phaseSubtitleEl.textContent = String(batch.phase_subtitle || '');
-            if (progressText) progressText.textContent = progressPct + '%';
+            animateProgress('dashboard-overall', progressPct, progressText, progressFill);
             if (progressFill) {
-              progressFill.style.width = progressPct + '%';
               progressFill.setAttribute('aria-valuenow', String(progressPct));
+              progressFill.classList.toggle('publish-progress__fill--terminal', Boolean(batch.is_terminal));
             }
             if (countsEl) countsEl.innerHTML = renderCounts(batch.counts || {});
-            if (metaEl) {
-              metaEl.textContent = [
-                'Сценарий: ' + String(batch.workflow_key || 'default') + '.',
-                'Создан: ' + String(batch.created_at_label || '—') + '.',
-                'Обновлён: ' + String(batch.updated_at_label || '—') + '.',
-                'Папка staging: ' + String(batch.stage_dir || '—') + '.',
-                batch.stage_dir_exists ? 'Папка активна.' : 'Папка очищена.'
-              ].join(' ');
-            }
+            if (createdPillEl) createdPillEl.textContent = 'Создан: ' + String(batch.created_at_label || '—');
+            if (updatedPillEl) updatedPillEl.textContent = 'Данные: ' + String(batch.updated_at_relative_label || batch.updated_at_label || '—');
             if (stepsEl) stepsEl.innerHTML = renderSteps(batch.steps || []);
-            if (accountsEl) accountsEl.innerHTML = renderAccounts(snapshot.accounts || []);
+            if (accountsEl) {
+              accountsEl.innerHTML = renderAccounts(snapshot.accounts || []);
+              hydrateScopedProgress(accountsEl);
+            }
             if (recentEl) recentEl.innerHTML = renderActivity(snapshot.recent_activity || []);
+            if (serviceMetaEl) serviceMetaEl.innerHTML = renderServiceMeta(batch);
             if (artifactsEl) artifactsEl.innerHTML = renderArtifacts(snapshot.artifacts || []);
             if (jobsEl) jobsEl.innerHTML = renderJobs(snapshot.jobs || []);
             if (rawEventsEl) rawEventsEl.innerHTML = renderRawEvents(snapshot.events || []);
+            updateSyncPill();
+          };
+
+          const scheduleNextPoll = function (delaySeconds) {
+            window.setTimeout(pollOnce, Math.max(2, Number(delaySeconds || snapshot.poll_interval_seconds || 2)) * 1000);
           };
 
           const pollOnce = async function () {
@@ -428,19 +545,29 @@
                 throw new Error('progress polling failed');
               }
               const data = await response.json();
+              lastSyncAt = Date.now();
               renderSnapshot(data);
               if (data.batch && !data.batch.is_terminal) {
-                window.setTimeout(pollOnce, Number(data.poll_interval_seconds || 3) * 1000);
+                scheduleNextPoll(data.poll_interval_seconds || 2);
               }
             } catch (error) {
-              window.setTimeout(pollOnce, Number((snapshot && snapshot.poll_interval_seconds) || 3) * 1000);
+              updateSyncPill();
+              scheduleNextPoll((snapshot && snapshot.poll_interval_seconds) || 2);
             }
           };
 
           renderSnapshot(snapshot);
+          lastSyncAt = Date.now();
+          updateSyncPill();
+          syncTimer = window.setInterval(updateSyncPill, 1000);
           if (snapshot.batch && !snapshot.batch.is_terminal) {
-            window.setTimeout(pollOnce, Number(snapshot.poll_interval_seconds || 3) * 1000);
+            scheduleNextPoll(snapshot.poll_interval_seconds || 2);
           }
+          window.addEventListener('beforeunload', function () {
+            if (syncTimer) {
+              window.clearInterval(syncTimer);
+            }
+          });
         })();
       </script>
     {% endif %}

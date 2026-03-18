@@ -4,30 +4,16 @@
   <div class="grid cols-2">
     <section class="card">
       <header class="card__header">
-        <h2 class="card__title">Публикация Reels</h2>
+        <h2 class="card__title">Публикации</h2>
       </header>
       <div class="card__body">
         {% with extra_class='mb-sm' %}{% include "_flash.html" %}{% endwith %}
 
         <div class="detail-stats mb-sm">
-          <span class="pill">Готово к запуску: {{ ready_accounts_count }}</span>
+          <span class="pill">Готово: {{ ready_accounts_count }}</span>
           <span class="pill">Неполные: {{ blocked_accounts_count }}</span>
-          <span class="status-pill {% if n8n_webhook_configured %}on{% else %}off{% endif %}">
-            {% if n8n_webhook_configured %}Автозапуск готов{% else %}Автозапуск не настроен{% endif %}
-          </span>
+          <span class="pill">Пакетов: {{ batches|length }}</span>
         </div>
-
-        <div class="section-note mb-sm">Выбери аккаунты, запусти пакет публикации и следи за статусом на отдельной странице. Всё остальное сервис делает сам.</div>
-
-        <details class="service-details mb-sm">
-          <summary class="service-details__summary">Служебные детали</summary>
-          <div class="service-details__body">
-            <div class="detail-stats">
-              <span class="pill">Сценарий: {{ publish_workflow_key }}</span>
-              <span class="pill mono">Папка staging: {{ staging_root }}</span>
-            </div>
-          </div>
-        </details>
 
         <div class="row">
           <a class="btn primary" href="{{ urlp('/publishing/start') }}">Начать публикацию</a>
@@ -49,16 +35,8 @@
                   <div class="listitem__meta">
                     <span class="status-pill {{ batch.state_class }}">{{ batch.state_label }}</span>
                     <span class="pill">Аккаунтов: {{ batch.accounts_total }}</span>
-                    <span class="pill">Видео: {{ batch.artifacts_total }}</span>
-                    <span class="pill">Задач: {{ batch.jobs_total }}</span>
-                    <span class="pill">Готово: {{ batch.published_accounts }}</span>
-                    <span class="pill">В работе: {{ batch.active_accounts }}</span>
-                    <span class="pill">Ошибки: {{ batch.error_accounts }}</span>
                     <span class="hint">{{ batch.created_at|dt }}</span>
                   </div>
-                  {% if batch.detail %}
-                    <div class="hint mt-sm">{{ batch.detail }}</div>
-                  {% endif %}
                 </div>
                 <a class="btn primary sm" href="{{ urlp('/publishing/batches') }}/{{ batch.id }}">Открыть</a>
               </div>
@@ -69,6 +47,23 @@
         {% if batches|length == 0 %}
           <div class="hint">История публикаций пока пустая.</div>
         {% endif %}
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="card__body">
+        <details class="service-details">
+          <summary class="service-details__summary">Служебное</summary>
+          <div class="service-details__body">
+            <div class="detail-stats">
+              <span class="status-pill {% if n8n_webhook_configured %}on{% else %}off{% endif %}">
+                {% if n8n_webhook_configured %}Автозапуск готов{% else %}Автозапуск не настроен{% endif %}
+              </span>
+              <span class="pill">Сценарий: {{ publish_workflow_key }}</span>
+              <span class="pill mono">Staging: {{ staging_root }}</span>
+            </div>
+          </div>
+        </details>
       </div>
     </section>
   </div>

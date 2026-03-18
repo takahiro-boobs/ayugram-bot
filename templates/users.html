@@ -3,12 +3,28 @@
 {% block content %}
   {% set selected_step = step if step is defined else "" %}
   {% set options = step_options if step_options is defined else [] %}
+  {% set ns = namespace(selected_step_label="") %}
+  {% for s in options %}
+    {% if selected_step == s.key %}
+      {% set ns.selected_step_label = s.label %}
+    {% endif %}
+  {% endfor %}
   <div class="grid">
     <section class="card">
       <header class="card__header">
         <h2 class="card__title">Пользователи</h2>
       </header>
       <div class="card__body">
+        <div class="detail-stats mb-sm">
+          <span class="pill">Найдено: {{ users|length }}</span>
+          {% if ns.selected_step_label %}
+            <span class="pill">Шаг: {{ ns.selected_step_label }}</span>
+          {% endif %}
+          {% if q %}
+            <span class="pill mono">Поиск: {{ q }}</span>
+          {% endif %}
+        </div>
+
         <form method="get" action="{{ urlp('/users') }}" class="row filters-row">
           <input class="input input-sm" name="q" value="{{ q or '' }}" placeholder="Поиск по username или ID">
           <select class="input input-sm" name="step">
@@ -22,14 +38,17 @@
             <a class="btn ghost sm" href="{{ urlp('/users') }}">Сброс</a>
           {% endif %}
         </form>
-        <div class="hint mb-sm">Показаны последние пользователи с текущим шагом воронки.</div>
 
         <div class="list">
           {% for u in users %}
             <div class="listitem">
-              <div class="listitem__title mono">{% if u.username %}@{{ u.username }}{% else %}без username{% endif %}</div>
-              <div class="listitem__meta">
-                <span class="brand__tag">{{ u.funnel_step_label or "Не начал" }}</span>
+              <div class="row row-between row-start">
+                <div>
+                  <div class="listitem__title mono">{% if u.username %}@{{ u.username }}{% else %}без username{% endif %}</div>
+                  <div class="listitem__meta">
+                    <span class="brand__tag">{{ u.funnel_step_label or "Не начал" }}</span>
+                  </div>
+                </div>
                 <span class="hint">Последняя активность: {{ u.last_seen|dt }}</span>
               </div>
             </div>

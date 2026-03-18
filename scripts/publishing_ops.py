@@ -10,11 +10,15 @@ import sqlite3
 import sys
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Optional
 
 import requests
 from dotenv import load_dotenv
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+import http_utils
 
 DEFAULT_TIMEOUT = 25
 
@@ -99,9 +103,16 @@ def _try_request(
     session: Optional[requests.Session] = None,
     **kwargs: Any,
 ) -> dict[str, Any]:
-    client = session or requests
     try:
-        response = client.request(method, url, timeout=timeout, **kwargs)
+        response = http_utils.request_with_retry(
+            method,
+            url,
+            session=session,
+            timeout=timeout,
+            allow_retry=True,
+            log_context="publishing_ops",
+            **kwargs,
+        )
     except Exception as exc:
         return {"ok": False, "error": str(exc)}
     return {
@@ -205,6 +216,8 @@ def _event_payload(args: argparse.Namespace) -> dict[str, Any]:
         "event": args.event,
         "batch_id": int(args.batch_id),
     }
+    if args.account_id is not None:
+        payload["account_id"] = int(args.account_id)
     if args.detail:
         payload["detail"] = args.detail
     if args.event == "artifact_ready":
@@ -219,6 +232,23 @@ def _event_payload(args: argparse.Namespace) -> dict[str, Any]:
             payload["size_bytes"] = int(args.size_bytes)
         if args.duration_seconds is not None:
             payload["duration_seconds"] = float(args.duration_seconds)
+    if args.event == "generation_progress":
+        if args.account_id is None:
+            raise ValueError("--account-id is required for generation_progress")
+        if not args.stage_key:
+            raise ValueError("--stage-key is required for generation_progress")
+        if not args.stage_label:
+            raise ValueError("--stage-label is required for generation_progress")
+        if args.progress_pct is None:
+            raise ValueError("--progress-pct is required for generation_progress")
+        payload["stage_key"] = args.stage_key
+        payload["stage_label"] = args.stage_label
+        payload["progress_pct"] = float(args.progress_pct)
+        if args.meta_json:
+            try:
+                payload["meta"] = json.loads(args.meta_json)
+            except Exception as exc:
+                raise ValueError(f"--meta-json must be valid JSON: {exc}") from exc
     return payload
 
 
@@ -236,11 +266,14 @@ def cmd_send_event(args: argparse.Namespace) -> int:
         "X-Publish-Signature": signature,
     }
     timeout = int(args.timeout or DEFAULT_TIMEOUT)
-    response = requests.post(
+    response = http_utils.request_with_retry(
+        "POST",
         _join_url(cfg.base_url, "/api/internal/publishing/n8n"),
         data=body,
         headers=headers,
         timeout=timeout,
+        allow_retry=False,
+        log_context="publishing_ops_send_event",
     )
     report = {
         "url": _join_url(cfg.base_url, "/api/internal/publishing/n8n"),
@@ -259,11 +292,14 @@ def cmd_lease(args: argparse.Namespace) -> int:
     if not cfg.runner_api_key:
         raise ValueError("Runner API key is missing. Provide --runner-api-key or set PUBLISH_RUNNER_API_KEY/HELPER_API_KEY.")
     timeout = int(args.timeout or DEFAULT_TIMEOUT)
-    response = requests.post(
+    response = http_utils.request_with_retry(
+        "POST",
         _join_url(cfg.base_url, "/api/internal/publishing/jobs/lease"),
         headers={"X-Runner-Api-Key": cfg.runner_api_key},
         json={"runner_name": args.runner_name},
         timeout=timeout,
+        allow_retry=False,
+        log_context="publishing_ops_lease",
     )
     response_json: Any = None
     try:
@@ -292,11 +328,14 @@ def cmd_status(args: argparse.Namespace) -> int:
         "source_path": args.source_path or "",
         "emulator_serial": args.emulator_serial or "",
     }
-    response = requests.post(
+    response = http_utils.request_with_retry(
+        "POST",
         _join_url(cfg.base_url, f"/api/internal/publishing/jobs/{int(args.job_id)}/status"),
         headers={"X-Runner-Api-Key": cfg.runner_api_key},
         json=body,
         timeout=timeout,
+        allow_retry=False,
+        log_context="publishing_ops_status",
     )
     response_json: Any = None
     try:
@@ -344,6 +383,52 @@ def cmd_snapshot(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_progress(args: argparse.Namespace) -> int:
+    cfg = _env_config(args)
+    timeout = int(args.timeout or DEFAULT_TIMEOUT)
+    session = requests.Session()
+    login = http_utils.request_with_retry(
+        "POST",
+        _join_url(cfg.base_url, "/login"),
+        data={"username": cfg.admin_user, "password": cfg.admin_pass},
+        allow_redirects=False,
+        timeout=timeout,
+        session=session,
+        allow_retry=False,
+        log_context="publishing_ops_login",
+    )
+    if login.status_code not in {302, 303}:
+        report = {
+            "status_code": int(login.status_code),
+            "detail": "login failed",
+            "response_text": (login.text or "")[:400],
+        }
+        _print_json(report)
+        return 1
+
+    response = http_utils.request_with_retry(
+        "GET",
+        _join_url(cfg.base_url, f"/api/publishing/batches/{int(args.batch_id)}/progress"),
+        headers={"Accept": "application/json"},
+        timeout=timeout,
+        session=session,
+        allow_retry=True,
+        log_context="publishing_ops_progress",
+    )
+    response_json: Any = None
+    try:
+        response_json = response.json()
+    except Exception:
+        response_json = None
+    report = {
+        "status_code": int(response.status_code),
+        "response_json": response_json,
+        "response_text": (response.text or "")[:500],
+    }
+    _print_json(report)
+    return 0 if response.status_code < 400 else 1
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Operational helper for publishing rollout checks and signed callbacks.",
@@ -364,14 +449,23 @@ def _build_parser() -> argparse.ArgumentParser:
     p_baseline.set_defaults(func=cmd_baseline)
 
     p_event = sub.add_parser("send-event", help="Send signed n8n callback event")
-    p_event.add_argument("--event", required=True, choices=["generation_started", "artifact_ready", "generation_completed", "generation_failed"])
+    p_event.add_argument(
+        "--event",
+        required=True,
+        choices=["generation_started", "artifact_ready", "generation_completed", "generation_failed", "generation_progress"],
+    )
     p_event.add_argument("--batch-id", required=True, type=int)
+    p_event.add_argument("--account-id", type=int, default=None)
     p_event.add_argument("--detail", default="")
     p_event.add_argument("--path", default="")
     p_event.add_argument("--filename", default="")
     p_event.add_argument("--checksum", default="")
     p_event.add_argument("--size-bytes", type=int, default=None)
     p_event.add_argument("--duration-seconds", type=float, default=None)
+    p_event.add_argument("--stage-key", default="")
+    p_event.add_argument("--stage-label", default="")
+    p_event.add_argument("--progress-pct", type=float, default=None)
+    p_event.add_argument("--meta-json", default="")
     p_event.set_defaults(func=cmd_send_event)
 
     p_lease = sub.add_parser("lease", help="Lease next publish job as runner")
@@ -392,6 +486,10 @@ def _build_parser() -> argparse.ArgumentParser:
     p_snapshot.add_argument("--db-path", default=None)
     p_snapshot.add_argument("--limit", type=int, default=10)
     p_snapshot.set_defaults(func=cmd_snapshot)
+
+    p_progress = sub.add_parser("progress", help="Fetch authenticated batch progress snapshot from admin API")
+    p_progress.add_argument("--batch-id", required=True, type=int)
+    p_progress.set_defaults(func=cmd_progress)
 
     return parser
 

@@ -1,10 +1,14 @@
 __pycache__/
 *.pyc
 *.pyo
+.pytest_cache/
 *.log
+*.pid
 .env
 .DS_Store
 admin.db
+.venv/
+.venv311/
 
 # data / queues
 training_data/
@@ -12,6 +16,15 @@ training_queue/
 training_processed/
 review_queue/
 review_decisions/
+
+# generated reports / scratch
+reports/
+tmp_*/
+tmp_*.json
+AdminLTE/
+
+# emulator / helper state
+.android_*.pid
 
 # temp images
 temp_*.jpg

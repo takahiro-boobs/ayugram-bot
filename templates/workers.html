@@ -4,23 +4,45 @@
   <div class="grid">
     <section class="card">
       <header class="card__header">
-        <h2 class="card__title">Сводка работников</h2>
+        <h2 class="card__title">Работники</h2>
       </header>
       <div class="card__body">
-        <div class="grid cols-3">
-          <div class="kpi">
-            <div class="kpi__label">Всего работников</div>
-            <div class="kpi__value">{{ overview.workers_total or 0 }}</div>
-          </div>
-          <div class="kpi">
-            <div class="kpi__label">Аккаунты работников</div>
-            <div class="kpi__value">{{ overview.assigned_accounts_total or 0 }}</div>
-          </div>
-          <div class="kpi">
-            <div class="kpi__label">Уникальные старты (работники)</div>
-            <div class="kpi__value">{{ overview.worker_starts_unique_total or 0 }}</div>
-          </div>
+        {% with extra_class='mb-sm' %}{% include "_flash.html" %}{% endwith %}
+        <div class="detail-stats mb-sm">
+          <span class="pill">Всего: {{ overview.workers_total or 0 }}</span>
+          <span class="pill">Аккаунты: {{ overview.assigned_accounts_total or 0 }}</span>
+          <span class="pill">Переходов: {{ overview.worker_starts_unique_total or 0 }}</span>
         </div>
+
+        <form method="get" action="{{ urlp('/workers') }}" class="row filters-row">
+          <input class="input input-sm" name="q" value="{{ q or '' }}" placeholder="Поиск">
+          <button class="btn primary sm" type="submit">Применить</button>
+          {% if q %}
+            <a class="btn ghost sm" href="{{ urlp('/workers') }}">Сброс</a>
+          {% endif %}
+        </form>
+
+        <div class="workers-grid">
+          {% for w in workers %}
+            <article class="worker-card">
+              <div class="worker-card__head">
+                <div>
+                  <div class="listitem__title">{{ w.name }}</div>
+                  <div class="hint mono">@{{ w.username }}</div>
+                </div>
+                <a class="btn primary sm" href="{{ urlp('/workers') }}/{{ w.id }}">Открыть</a>
+              </div>
+              <div class="worker-meta">
+                <span class="pill">Аккаунтов: {{ w.accounts_total }}</span>
+                <span class="pill">Переходов: {{ w.starts_unique_total }}</span>
+              </div>
+            </article>
+          {% endfor %}
+        </div>
+
+        {% if workers|length == 0 %}
+          <div class="hint mt-sm">Работников пока нет.</div>
+        {% endif %}
       </div>
     </section>
 
@@ -29,7 +51,6 @@
         <h2 class="card__title">Добавить работника</h2>
       </header>
       <div class="card__body">
-        {% with extra_class='mb-sm' %}{% include "_flash.html" %}{% endwith %}
         <form method="post" action="{{ urlp('/workers') }}" class="grid accounts-grid">
           <input type="hidden" name="q" value="{{ q or '' }}">
           <div class="field">
@@ -48,54 +69,6 @@
             <button class="btn primary" type="submit">Создать работника</button>
           </div>
         </form>
-      </div>
-    </section>
-
-    <section class="card">
-      <header class="card__header">
-        <h2 class="card__title">Список работников</h2>
-      </header>
-      <div class="card__body">
-        <form method="get" action="{{ urlp('/workers') }}" class="row filters-row">
-          <input class="input input-sm" name="q" value="{{ q or '' }}" placeholder="Поиск по имени или логину">
-          <button class="btn primary sm" type="submit">Применить</button>
-          {% if q %}
-            <a class="btn ghost sm" href="{{ urlp('/workers') }}">Сброс</a>
-          {% endif %}
-        </form>
-
-        <div class="workers-grid mt-sm">
-          {% for w in workers %}
-            <article class="worker-card">
-              <div class="worker-card__head">
-                <div class="listitem__title">{{ w.name }} · @{{ w.username }}</div>
-                <a class="btn primary sm" href="{{ urlp('/workers') }}/{{ w.id }}">Открыть</a>
-              </div>
-              <div class="worker-meta">
-                <span class="pill">Аккаунтов: {{ w.accounts_total }}</span>
-                <span class="pill">Переходов: {{ w.starts_unique_total }}</span>
-                <span class="hint">Обновлено: {{ w.updated_at|dt }}</span>
-              </div>
-              <details class="service-details">
-                <summary class="service-details__summary">Доступ</summary>
-                <div class="service-details__body">
-                  <div class="secret-row">
-                    <span class="secret-row__value mono">Логин: {{ w.username }}</span>
-                    <button class="btn action copy" type="button" onclick='copyToClipboard({{ w.username|tojson }})'>Копировать логин</button>
-                  </div>
-                  <div class="secret-row mt-sm">
-                    <span class="secret-row__value mono">Пароль: {{ w.plain_password }}</span>
-                    <button class="btn action copy" type="button" onclick='copyToClipboard({{ w.plain_password|tojson }})'>Копировать пароль</button>
-                  </div>
-                </div>
-              </details>
-            </article>
-          {% endfor %}
-        </div>
-
-        {% if workers|length == 0 %}
-          <div class="hint mt-sm">Работников пока нет.</div>
-        {% endif %}
       </div>
     </section>
   </div>

@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import quote
 
-import requests
+import http_utils
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -108,10 +108,13 @@ def _render_status_page(title: str, message: str, detail: str = "") -> HTMLRespo
 def _fetch_ticket_payload(ticket: str) -> dict:
     if not HELPER_API_KEY:
         raise RuntimeError("HELPER_API_KEY is not configured")
-    response = requests.get(
+    response = http_utils.request_with_retry(
+        "GET",
         _build_ticket_url(ticket),
         headers={"X-Helper-Api-Key": HELPER_API_KEY},
         timeout=25,
+        allow_retry=True,
+        log_context="helper_ticket_fetch",
     )
     if response.status_code == 410:
         raise RuntimeError("Ticket expired")

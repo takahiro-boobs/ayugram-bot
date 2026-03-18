@@ -10,8 +10,7 @@
     <div class="worker-shell">
       <header class="worker-topbar">
         <div>
-          <h1 class="topbar__title">Кабинет работника</h1>
-          <p class="topbar__sub">Рабочее место</p>
+          <h1 class="topbar__title">{{ self.title() }}</h1>
         </div>
         <div class="row topbar__right">
           <a class="btn ghost sm" href="{{ urlp('/worker/accounts') }}">Мои аккаунты</a>

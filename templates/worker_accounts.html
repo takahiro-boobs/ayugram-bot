@@ -4,27 +4,14 @@
   <div class="grid">
     <section class="card">
       <header class="card__header">
-        <h2 class="card__title">{{ worker_name }}</h2>
-      </header>
-      <div class="card__body">
-        {% with extra_class='mb-sm' %}{% include "_flash.html" %}{% endwith %}
-        <div class="detail-stats">
-          <span class="pill">Аккаунтов: {{ stats.accounts_total }}</span>
-          <span class="pill">Старты: {{ stats.starts_total }}</span>
-          <span class="pill">Переходов: {{ stats.starts_unique_total }}</span>
-          <span class="pill">Первый контакт: {{ stats.first_touch_total }}</span>
-        </div>
-      </div>
-    </section>
-
-    <section class="card">
-      <header class="card__header">
         <h2 class="card__title">Добавить аккаунт</h2>
       </header>
       <div class="card__body">
+        {% with extra_class='mb-sm' %}{% include "_flash.html" %}{% endwith %}
         <form method="post" action="{{ urlp('/worker/accounts') }}" class="grid accounts-grid">
           <input type="hidden" name="q" value="{{ q or '' }}">
           <input type="hidden" name="filter_type" value="{{ type or '' }}">
+          <input type="hidden" name="filter_sort" value="{{ sort or 'recent' }}">
 
           <div class="field">
             <label class="label">Тип</label>
@@ -61,12 +48,12 @@
           </div>
 
           <div class="field accounts-grid-wide">
-            <label class="label">2FA</label>
-            <input class="input mono" name="twofa" placeholder="Код или секрет 2FA">
+            <label class="label">2FA (опционально)</label>
+            <input class="input mono" name="twofa" placeholder="Base32 secret или otpauth:// URI из Authenticator">
           </div>
 
           <div class="field accounts-grid-wide">
-            <label class="label">Proxy (одной строкой)</label>
+            <label class="label">Proxy</label>
             <input class="input mono" name="proxy" placeholder="user:pass@host:port">
           </div>
 
@@ -83,20 +70,25 @@
       </header>
       <div class="card__body">
         <form method="get" action="{{ urlp('/worker/accounts') }}" class="row filters-row">
-          <input class="input input-sm" name="q" value="{{ q or '' }}" placeholder="Поиск по логину / username / почте / proxy">
+          <input class="input input-sm" name="q" value="{{ q or '' }}" placeholder="Поиск">
           <select class="input input-sm" name="type">
             <option value="">Все типы</option>
             {% for t in type_options %}
               <option value="{{ t.key }}" {% if type == t.key %}selected{% endif %}>{{ t.label }}</option>
             {% endfor %}
           </select>
+          <select class="input input-sm" name="sort">
+            {% for item in sort_options %}
+              <option value="{{ item.key }}" {% if sort == item.key %}selected{% endif %}>{{ item.label }}</option>
+            {% endfor %}
+          </select>
           <button class="btn primary sm" type="submit">Применить</button>
-          {% if q or type %}
+          {% if q or type or (sort and sort != 'recent') %}
             <a class="btn ghost sm" href="{{ urlp('/worker/accounts') }}">Сброс</a>
           {% endif %}
         </form>
 
-        <div class="accounts-cards mt-sm">
+        <div class="accounts-cards">
           {% for a in accounts %}
             <article class="account-card" id="{{ a.card_id }}">
               <div class="account-card__head">
@@ -104,30 +96,15 @@
                   <div class="listitem__title">Аккаунт {{ a.type_label }}</div>
                   <div class="hint mono">@{{ a.username }}</div>
                 </div>
-                <div class="row">
-                  <a class="btn primary sm" href="{{ urlp(a.detail_url) }}">Открыть</a>
-                </div>
+                <a class="btn primary sm" href="{{ urlp(a.detail_url) }}">Открыть</a>
               </div>
               <div class="account-card__meta">
                 <span class="pill">Переходов: {{ a.starts_unique_total }}</span>
-                <span class="status-pill {% if a.rotation_state == 'working' %}working{% else %}not_working{% endif %}">
-                  {% if a.rotation_state == 'working' %}Рабочий{% else %}Нерабочий{% endif %}
-                </span>
+                <span class="status-pill {{ a.rotation_state_class }}">{{ a.rotation_state_label }}</span>
               </div>
-              <details class="service-details mt-sm">
-                <summary class="service-details__summary">Детали</summary>
-                <div class="service-details__body">
-                  <div class="detail-stats">
-                    <span class="hint">Обновлено: {{ a.updated_at|dt }}</span>
-                  </div>
-                  {% if a.primary_bot_url %}
-                    <div class="account-card__actions mt-sm">
-                      <span class="hint mono">{{ a.primary_bot_url }}</span>
-                      <button class="btn action copy" type="button" onclick='copyToClipboard({{ a.primary_bot_url|tojson }})'>Копировать ссылку</button>
-                    </div>
-                  {% endif %}
-                </div>
-              </details>
+              {% if a.rotation_state_reason %}
+                <div class="hint mt-sm">{{ a.rotation_state_reason }}</div>
+              {% endif %}
             </article>
           {% endfor %}
         </div>
@@ -139,97 +116,112 @@
     </section>
 
     <section class="card">
-      <header class="card__header">
-        <h2 class="card__title">Импорт аккаунтов</h2>
-      </header>
       <div class="card__body">
-        <form method="post" action="{{ urlp('/worker/accounts/import') }}" class="grid accounts-grid" enctype="multipart/form-data">
-          <input type="hidden" name="q" value="{{ q or '' }}">
-          <input type="hidden" name="filter_type" value="{{ type or '' }}">
-
-          <div class="field">
-            <label class="label">Тип для всех строк</label>
-            <select class="input" name="import_type" required>
-              {% for t in type_options %}
-                <option value="{{ t.key }}">{{ t.label }}</option>
-              {% endfor %}
-            </select>
-          </div>
-
-          <div class="field accounts-grid-wide">
-            <label class="label">Файл `csv` или `txt`</label>
-            <input class="input" type="file" name="import_file" accept=".csv,.txt,text/plain,text/csv" required>
-          </div>
-
-          <div class="field accounts-grid-wide">
+        <details class="service-details">
+          <summary class="service-details__summary">Служебное</summary>
+          <div class="service-details__body service-stack">
             <details class="service-details">
-              <summary class="service-details__summary">Требования к файлу</summary>
-              <div class="service-details__body hint">
-                Формат строки: <span class="mono">login;password;email;email_password;2fa</span>.<br>
-                Обязательные поля: <span class="mono">login</span>, <span class="mono">password</span>, <span class="mono">email</span>, <span class="mono">email_password</span>.<br>
-                Если аккаунт уже есть в системе, дубль не создаётся: вместо этого уходит заявка администратору.
+              <summary class="service-details__summary">Сводка</summary>
+              <div class="service-details__body">
+                <div class="detail-stats">
+                  <span class="pill">Работник: {{ worker_name }}</span>
+                  <span class="pill">Аккаунтов: {{ stats.accounts_total }}</span>
+                  <span class="pill">Старты: {{ stats.starts_total }}</span>
+                  <span class="pill">Переходов: {{ stats.starts_unique_total }}</span>
+                  <span class="pill">Первый контакт: {{ stats.first_touch_total }}</span>
+                </div>
+              </div>
+            </details>
+
+            <details class="service-details">
+              <summary class="service-details__summary">Импорт аккаунтов</summary>
+              <div class="service-details__body">
+                <form method="post" action="{{ urlp('/worker/accounts/import') }}" class="grid accounts-grid" enctype="multipart/form-data">
+                  <input type="hidden" name="q" value="{{ q or '' }}">
+                  <input type="hidden" name="filter_type" value="{{ type or '' }}">
+                  <input type="hidden" name="filter_sort" value="{{ sort or 'recent' }}">
+
+                  <div class="field">
+                    <label class="label">Тип для всех строк</label>
+                    <select class="input" name="import_type" required>
+                      {% for t in type_options %}
+                        <option value="{{ t.key }}">{{ t.label }}</option>
+                      {% endfor %}
+                    </select>
+                  </div>
+
+                  <div class="field accounts-grid-wide">
+                    <label class="label">Файл `csv` или `txt`</label>
+                    <input class="input" type="file" name="import_file" accept=".csv,.txt,text/plain,text/csv" required>
+                  </div>
+
+                  <div class="field accounts-grid-wide">
+                    <details class="service-details">
+                      <summary class="service-details__summary">Требования к файлу</summary>
+                      <div class="service-details__body hint">
+                        Формат строки: <span class="mono">login;password;email;email_password;2fa</span>.<br>
+                        Обязательные поля: <span class="mono">login</span>, <span class="mono">password</span>, <span class="mono">email</span>, <span class="mono">email_password</span>.<br>
+                        Если аккаунт уже есть в системе, дубль не создаётся: вместо этого уходит заявка администратору.
+                      </div>
+                    </details>
+                  </div>
+
+                  <div class="accounts-grid-wide row">
+                    <button class="btn primary" type="submit">Импортировать файл</button>
+                  </div>
+                </form>
+
+                {% if import_summary %}
+                  <div class="mt-sm">
+                    <div class="detail-stats">
+                      <span class="pill">Файл: {{ import_summary.filename or '—' }}</span>
+                      <span class="pill">Импортировано: {{ import_summary.imported }}</span>
+                      <span class="pill">Заявок: {{ import_summary.requested }}</span>
+                      <span class="pill">Уже в очереди: {{ import_summary.already_requested }}</span>
+                      <span class="pill">Ошибок: {{ import_summary.failed }}</span>
+                    </div>
+                  </div>
+                {% endif %}
+
+                {% if import_errors and import_errors|length > 0 %}
+                  <div class="list mt-sm">
+                    {% for item in import_errors[:20] %}
+                      <div class="listitem">
+                        <div class="hint">{{ item }}</div>
+                      </div>
+                    {% endfor %}
+                  </div>
+                  {% if import_errors|length > 20 %}
+                    <div class="hint mt-sm">Показаны первые 20 ошибок из {{ import_errors|length }}.</div>
+                  {% endif %}
+                {% endif %}
+              </div>
+            </details>
+
+            <details class="service-details">
+              <summary class="service-details__summary">Мои заявки</summary>
+              <div class="service-details__body">
+                {% if claim_requests and claim_requests|length > 0 %}
+                  <div class="list">
+                    {% for item in claim_requests %}
+                      <div class="listitem">
+                        <div class="listitem__title">{{ item.type_label }} · {{ item.account_login }}</div>
+                        <div class="listitem__meta">
+                          <span class="status-pill {{ item.status_class }}">{{ item.status_label }}</span>
+                          <span class="brand__tag">Сейчас у: <strong>{{ item.owner_label }}</strong></span>
+                          <span class="hint">Создано: {{ item.created_at|dt }}</span>
+                          <span class="hint">Обновлено: {{ item.updated_at|dt }}</span>
+                        </div>
+                      </div>
+                    {% endfor %}
+                  </div>
+                {% else %}
+                  <div class="hint">Заявок пока нет.</div>
+                {% endif %}
               </div>
             </details>
           </div>
-
-          <div class="accounts-grid-wide row">
-            <button class="btn primary" type="submit">Импортировать файл</button>
-          </div>
-        </form>
-
-        {% if import_summary %}
-          <div class="mt-sm">
-            <div class="detail-stats">
-              <span class="pill">Файл: {{ import_summary.filename or '—' }}</span>
-              <span class="pill">Импортировано: {{ import_summary.imported }}</span>
-              <span class="pill">Заявок: {{ import_summary.requested }}</span>
-              <span class="pill">Уже в очереди: {{ import_summary.already_requested }}</span>
-              <span class="pill">Ошибок: {{ import_summary.failed }}</span>
-            </div>
-          </div>
-        {% endif %}
-
-        {% if import_errors and import_errors|length > 0 %}
-          <div class="list mt-sm">
-            {% for item in import_errors[:20] %}
-              <div class="listitem">
-                <div class="hint">{{ item }}</div>
-              </div>
-            {% endfor %}
-          </div>
-          {% if import_errors|length > 20 %}
-            <div class="hint mt-sm">Показаны первые 20 ошибок из {{ import_errors|length }}.</div>
-          {% endif %}
-        {% endif %}
-      </div>
-    </section>
-
-    <section class="card">
-      <header class="card__header">
-        <h2 class="card__title">Мои заявки</h2>
-      </header>
-      <div class="card__body">
-        {% if claim_requests and claim_requests|length > 0 %}
-          <div class="list">
-            {% for item in claim_requests %}
-              <div class="listitem">
-                <div class="row row-between row-start">
-                  <div>
-                    <div class="listitem__title">{{ item.type_label }} · {{ item.account_login }}</div>
-                    <div class="listitem__meta">
-                      <span class="status-pill {{ item.status_class }}">{{ item.status_label }}</span>
-                      <span class="brand__tag">Сейчас у: <strong>{{ item.owner_label }}</strong></span>
-                      <span class="hint">Создано: {{ item.created_at|dt }}</span>
-                      <span class="hint">Обновлено: {{ item.updated_at|dt }}</span>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            {% endfor %}
-          </div>
-        {% else %}
-          <div class="hint">Заявок пока нет.</div>
-        {% endif %}
+        </details>
       </div>
     </section>
   </div>

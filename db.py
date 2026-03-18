@@ -7,14 +7,19 @@ import re
 import secrets
 from typing import Any, Dict, List, Optional
 
+from twofa_utils import is_valid_twofa_secret, normalize_twofa_secret
+
 DB_PATH = os.getenv("ADMIN_DB_PATH", "admin.db")
 MODEL_COMMISSION_PCT = float(os.getenv("MODEL_COMMISSION_PCT", "25"))
 MANAGER_COMMISSION_PCT = float(os.getenv("MANAGER_COMMISSION_PCT", "25"))
 ACCOUNT_TYPE_KEYS = {"youtube", "tiktok", "instagram"}
 ACCOUNT_ROTATION_STATE_KEYS = {"working", "not_working", "review"}
+ACCOUNT_ROTATION_SOURCE_KEYS = {"manual", "auto"}
 ACCOUNT_VIEWS_STATE_KEYS = {"low", "good", "unknown"}
-ACCOUNT_MAIL_PROVIDER_KEYS = {"auto", "imap"}
+ACCOUNT_MAIL_PROVIDER_KEYS = {"auto", "imap", "gmail_api", "microsoft_graph"}
 ACCOUNT_MAIL_STATUS_KEYS = {"never_checked", "ok", "auth_error", "connect_error", "empty", "unsupported"}
+ACCOUNT_MAIL_CHALLENGE_STATUS_KEYS = {"idle", "resolved", "not_found", "ambiguous", "mailbox_unavailable", "unsupported"}
+ACCOUNT_TEXT_PLACEHOLDER_KEYS = {"NO_EMAIL", "NO MAIL", "NO_MAIL", "NONE", "NULL", "N/A", "NA", "-", "—"}
 HELPER_TICKET_TARGET_KEYS = {"instagram_login", "instagram_app_login", "instagram_audit_login", "instagram_publish_latest_reel"}
 INSTAGRAM_LAUNCH_STATUS_KEYS = {
     "idle",
@@ -29,6 +34,7 @@ INSTAGRAM_PUBLISH_STATUS_KEYS = {
     "preparing",
     "login_required",
     "manual_2fa_required",
+    "email_code_required",
     "challenge_required",
     "invalid_password",
     "importing_media",
@@ -36,6 +42,7 @@ INSTAGRAM_PUBLISH_STATUS_KEYS = {
     "selecting_media",
     "publishing",
     "published",
+    "needs_review",
     "no_source_video",
     "publish_error",
 }
@@ -80,10 +87,12 @@ RUNTIME_TASK_TYPE_KEYS = {
     "instagram_audit_batch_run",
     "publish_reconcile",
     "instagram_audit_reconcile",
+    "mail_account_sync",
 }
 RUNTIME_TASK_ENTITY_TYPE_KEYS = {
     "publish_batch",
     "instagram_audit_batch",
+    "account",
     "system",
 }
 RUNTIME_TASK_STATE_KEYS = {
@@ -100,6 +109,7 @@ PUBLISH_BATCH_STATE_KEYS = {
     "generating",
     "publishing",
     "completed",
+    "completed_needs_review",
     "completed_with_errors",
     "failed_generation",
     "canceled",
@@ -116,6 +126,7 @@ PUBLISH_BATCH_ACCOUNT_STATE_KEYS = {
     "selecting_media",
     "publishing",
     "published",
+    "needs_review",
     "failed",
     "canceled",
 }
@@ -128,6 +139,7 @@ PUBLISH_JOB_STATE_KEYS = {
     "selecting_media",
     "publishing",
     "published",
+    "needs_review",
     "failed",
     "canceled",
 }
@@ -140,6 +152,7 @@ PUBLISH_JOB_STATE_ORDER = {
     "selecting_media": 60,
     "publishing": 70,
     "published": 80,
+    "needs_review": 80,
     "failed": 80,
     "canceled": 80,
 }
@@ -164,6 +177,7 @@ ACTIVE_PUBLISH_BATCH_ACCOUNT_STATES = {
 TERMINAL_PUBLISH_BATCH_ACCOUNT_STATES = {
     "generation_failed",
     "published",
+    "needs_review",
     "failed",
     "canceled",
 }
@@ -373,9 +387,21 @@ def init_db() -> None:
             rotation_state TEXT NOT NULL DEFAULT 'review',
             views_state TEXT NOT NULL DEFAULT 'unknown',
             mail_provider TEXT NOT NULL DEFAULT 'auto',
+            mail_auth_json TEXT NOT NULL DEFAULT '',
             mail_status TEXT NOT NULL DEFAULT 'never_checked',
             mail_last_checked_at INTEGER,
+            mail_last_synced_at INTEGER,
             mail_last_error TEXT,
+            mail_watch_json TEXT NOT NULL DEFAULT '',
+            mail_challenge_status TEXT NOT NULL DEFAULT 'idle',
+            mail_challenge_kind TEXT NOT NULL DEFAULT '',
+            mail_challenge_reason_code TEXT NOT NULL DEFAULT '',
+            mail_challenge_reason_text TEXT NOT NULL DEFAULT '',
+            mail_challenge_message_uid TEXT NOT NULL DEFAULT '',
+            mail_challenge_received_at INTEGER,
+            mail_challenge_masked_code TEXT NOT NULL DEFAULT '',
+            mail_challenge_confidence REAL NOT NULL DEFAULT 0,
+            mail_challenge_updated_at INTEGER,
             instagram_emulator_serial TEXT,
             instagram_launch_status TEXT NOT NULL DEFAULT 'idle',
             instagram_launch_detail TEXT,
@@ -451,6 +477,7 @@ def init_db() -> None:
             subject TEXT NOT NULL,
             received_at INTEGER,
             snippet TEXT NOT NULL,
+            metadata_json TEXT NOT NULL DEFAULT '',
             created_at INTEGER NOT NULL
         )
         """
@@ -651,29 +678,71 @@ def init_db() -> None:
         cur.execute("ALTER TABLE accounts ADD COLUMN twofa TEXT")
     if "rotation_state" not in accounts_cols:
         cur.execute("ALTER TABLE accounts ADD COLUMN rotation_state TEXT NOT NULL DEFAULT 'review'")
+    if "rotation_state_source" not in accounts_cols:
+        cur.execute("ALTER TABLE accounts ADD COLUMN rotation_state_source TEXT NOT NULL DEFAULT 'manual'")
+    if "rotation_state_reason" not in accounts_cols:
+        cur.execute("ALTER TABLE accounts ADD COLUMN rotation_state_reason TEXT NOT NULL DEFAULT ''")
     if "views_state" not in accounts_cols:
         cur.execute("ALTER TABLE accounts ADD COLUMN views_state TEXT NOT NULL DEFAULT 'unknown'")
     if "mail_provider" not in accounts_cols:
         cur.execute("ALTER TABLE accounts ADD COLUMN mail_provider TEXT NOT NULL DEFAULT 'auto'")
+    if "mail_auth_json" not in accounts_cols:
+        cur.execute("ALTER TABLE accounts ADD COLUMN mail_auth_json TEXT NOT NULL DEFAULT ''")
     if "mail_status" not in accounts_cols:
         cur.execute("ALTER TABLE accounts ADD COLUMN mail_status TEXT NOT NULL DEFAULT 'never_checked'")
     if "mail_last_checked_at" not in accounts_cols:
         cur.execute("ALTER TABLE accounts ADD COLUMN mail_last_checked_at INTEGER")
+    if "mail_last_synced_at" not in accounts_cols:
+        cur.execute("ALTER TABLE accounts ADD COLUMN mail_last_synced_at INTEGER")
     if "mail_last_error" not in accounts_cols:
         cur.execute("ALTER TABLE accounts ADD COLUMN mail_last_error TEXT")
+    if "mail_watch_json" not in accounts_cols:
+        cur.execute("ALTER TABLE accounts ADD COLUMN mail_watch_json TEXT NOT NULL DEFAULT ''")
+    if "mail_challenge_status" not in accounts_cols:
+        cur.execute("ALTER TABLE accounts ADD COLUMN mail_challenge_status TEXT NOT NULL DEFAULT 'idle'")
+    if "mail_challenge_kind" not in accounts_cols:
+        cur.execute("ALTER TABLE accounts ADD COLUMN mail_challenge_kind TEXT NOT NULL DEFAULT ''")
+    if "mail_challenge_reason_code" not in accounts_cols:
+        cur.execute("ALTER TABLE accounts ADD COLUMN mail_challenge_reason_code TEXT NOT NULL DEFAULT ''")
+    if "mail_challenge_reason_text" not in accounts_cols:
+        cur.execute("ALTER TABLE accounts ADD COLUMN mail_challenge_reason_text TEXT NOT NULL DEFAULT ''")
+    if "mail_challenge_message_uid" not in accounts_cols:
+        cur.execute("ALTER TABLE accounts ADD COLUMN mail_challenge_message_uid TEXT NOT NULL DEFAULT ''")
+    if "mail_challenge_received_at" not in accounts_cols:
+        cur.execute("ALTER TABLE accounts ADD COLUMN mail_challenge_received_at INTEGER")
+    if "mail_challenge_masked_code" not in accounts_cols:
+        cur.execute("ALTER TABLE accounts ADD COLUMN mail_challenge_masked_code TEXT NOT NULL DEFAULT ''")
+    if "mail_challenge_confidence" not in accounts_cols:
+        cur.execute("ALTER TABLE accounts ADD COLUMN mail_challenge_confidence REAL NOT NULL DEFAULT 0")
+    if "mail_challenge_updated_at" not in accounts_cols:
+        cur.execute("ALTER TABLE accounts ADD COLUMN mail_challenge_updated_at INTEGER")
     if "instagram_emulator_serial" not in accounts_cols:
         cur.execute("ALTER TABLE accounts ADD COLUMN instagram_emulator_serial TEXT")
     if "owner_worker_id" not in accounts_cols:
         cur.execute("ALTER TABLE accounts ADD COLUMN owner_worker_id INTEGER")
     cur.execute("UPDATE accounts SET rotation_state = 'review' WHERE rotation_state IS NULL OR TRIM(rotation_state) = ''")
+    cur.execute("UPDATE accounts SET rotation_state_source = 'manual' WHERE rotation_state_source IS NULL OR TRIM(rotation_state_source) = ''")
+    cur.execute("UPDATE accounts SET rotation_state_reason = '' WHERE rotation_state_reason IS NULL")
     cur.execute("UPDATE accounts SET views_state = 'unknown' WHERE views_state IS NULL OR TRIM(views_state) = ''")
     cur.execute("UPDATE accounts SET mail_provider = 'auto' WHERE mail_provider IS NULL OR TRIM(mail_provider) = ''")
+    cur.execute("UPDATE accounts SET mail_auth_json = '' WHERE mail_auth_json IS NULL")
     cur.execute("UPDATE accounts SET mail_status = 'never_checked' WHERE mail_status IS NULL OR TRIM(mail_status) = ''")
+    cur.execute("UPDATE accounts SET mail_watch_json = '' WHERE mail_watch_json IS NULL")
+    cur.execute("UPDATE accounts SET mail_challenge_status = 'idle' WHERE mail_challenge_status IS NULL OR TRIM(mail_challenge_status) = ''")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_accounts_owner_worker_id ON accounts(owner_worker_id, updated_at)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_accounts_rotation_state ON accounts(rotation_state)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_accounts_rotation_state_source ON accounts(rotation_state_source)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_accounts_views_state ON accounts(views_state)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_accounts_mail_provider ON accounts(mail_provider)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_accounts_mail_status ON accounts(mail_status)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_accounts_mail_challenge_status ON accounts(mail_challenge_status)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_accounts_instagram_emulator_serial ON accounts(instagram_emulator_serial)")
+
+    cur.execute("PRAGMA table_info(account_mail_messages)")
+    account_mail_cols = [row["name"] for row in cur.fetchall()]
+    if "metadata_json" not in account_mail_cols:
+        cur.execute("ALTER TABLE account_mail_messages ADD COLUMN metadata_json TEXT NOT NULL DEFAULT ''")
+    cur.execute("UPDATE account_mail_messages SET metadata_json = '' WHERE metadata_json IS NULL")
 
     cur.execute(
         """
@@ -700,6 +769,7 @@ def init_db() -> None:
         CREATE TABLE IF NOT EXISTS publish_batch_accounts (
             batch_id INTEGER NOT NULL,
             account_id INTEGER NOT NULL,
+            queue_position INTEGER NOT NULL DEFAULT 0,
             state TEXT NOT NULL DEFAULT 'queued_for_generation',
             detail TEXT,
             artifact_id INTEGER,
@@ -778,6 +848,8 @@ def init_db() -> None:
     publish_batch_accounts_cols = [row["name"] for row in cur.fetchall()]
     if "state" not in publish_batch_accounts_cols:
         cur.execute("ALTER TABLE publish_batch_accounts ADD COLUMN state TEXT NOT NULL DEFAULT 'queued_for_generation'")
+    if "queue_position" not in publish_batch_accounts_cols:
+        cur.execute("ALTER TABLE publish_batch_accounts ADD COLUMN queue_position INTEGER")
     if "detail" not in publish_batch_accounts_cols:
         cur.execute("ALTER TABLE publish_batch_accounts ADD COLUMN detail TEXT")
     if "artifact_id" not in publish_batch_accounts_cols:
@@ -790,12 +862,28 @@ def init_db() -> None:
         """
         UPDATE publish_batch_accounts
         SET state = COALESCE(NULLIF(TRIM(state), ''), 'queued_for_generation'),
+            queue_position = COALESCE(
+                queue_position,
+                (
+                    SELECT COUNT(*)
+                    FROM publish_batch_accounts pba_prev
+                    WHERE pba_prev.batch_id = publish_batch_accounts.batch_id
+                      AND (
+                        COALESCE(pba_prev.created_at, 0) < COALESCE(publish_batch_accounts.created_at, 0)
+                        OR (
+                            COALESCE(pba_prev.created_at, 0) = COALESCE(publish_batch_accounts.created_at, 0)
+                            AND pba_prev.account_id <= publish_batch_accounts.account_id
+                        )
+                      )
+                ) - 1
+            ),
             updated_at = COALESCE(updated_at, created_at, ?)
         """,
         (int(time.time()),),
     )
     cur.execute("CREATE INDEX IF NOT EXISTS idx_publish_batch_accounts_account_id ON publish_batch_accounts(account_id)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_publish_batch_accounts_batch_state ON publish_batch_accounts(batch_id, state)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_publish_batch_accounts_batch_queue ON publish_batch_accounts(batch_id, queue_position, account_id)")
 
     cur.execute("PRAGMA table_info(publish_job_events)")
     publish_job_events_cols = [row["name"] for row in cur.fetchall()]
@@ -1777,6 +1865,13 @@ def normalize_account_rotation_state(raw: Optional[str]) -> str:
     return value
 
 
+def normalize_account_rotation_source(raw: Optional[str]) -> str:
+    value = (raw or "manual").strip().lower() or "manual"
+    if value not in ACCOUNT_ROTATION_SOURCE_KEYS:
+        raise ValueError("invalid rotation source")
+    return value
+
+
 def normalize_account_views_state(raw: Optional[str]) -> str:
     value = (raw or "unknown").strip().lower() or "unknown"
     if value not in ACCOUNT_VIEWS_STATE_KEYS:
@@ -1791,10 +1886,62 @@ def normalize_account_mail_provider(raw: Optional[str]) -> str:
     return value
 
 
+def normalize_account_text_field(raw: Any) -> str:
+    return re.sub(r"\s+", " ", str(raw or "").strip())
+
+
+def account_text_field_is_missing(raw: Any) -> bool:
+    value = normalize_account_text_field(raw)
+    if not value:
+        return True
+    return value.upper() in ACCOUNT_TEXT_PLACEHOLDER_KEYS
+
+
+def sanitize_account_text_field(raw: Any) -> str:
+    value = normalize_account_text_field(raw)
+    if account_text_field_is_missing(value):
+        return ""
+    return value
+
+
+def _normalize_json_text(raw: Any, *, error_message: str) -> str:
+    text = (raw or "").strip() if isinstance(raw, str) else ""
+    if raw in (None, ""):
+        return ""
+    if not text and not isinstance(raw, str):
+        try:
+            parsed = json.loads(json.dumps(raw))
+        except Exception as exc:
+            raise ValueError(error_message) from exc
+    else:
+        try:
+            parsed = json.loads(text)
+        except Exception as exc:
+            raise ValueError(error_message) from exc
+    if not isinstance(parsed, dict):
+        raise ValueError(error_message)
+    return json.dumps(parsed, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+
+
+def normalize_account_mail_auth_json(raw: Any) -> str:
+    return _normalize_json_text(raw, error_message="invalid mail auth json")
+
+
+def normalize_account_mail_watch_json(raw: Any) -> str:
+    return _normalize_json_text(raw, error_message="invalid mail watch json")
+
+
 def normalize_account_mail_status(raw: Optional[str]) -> str:
     value = (raw or "never_checked").strip().lower() or "never_checked"
     if value not in ACCOUNT_MAIL_STATUS_KEYS:
         raise ValueError("invalid mail status")
+    return value
+
+
+def normalize_account_mail_challenge_status(raw: Optional[str]) -> str:
+    value = (raw or "idle").strip().lower() or "idle"
+    if value not in ACCOUNT_MAIL_CHALLENGE_STATUS_KEYS:
+        raise ValueError("invalid mail challenge status")
     return value
 
 
@@ -1888,27 +2035,357 @@ def _publish_account_field(account: Any, key: str, default: Any = "") -> Any:
         return default
 
 
-def publish_account_readiness_issues(account: Any) -> List[str]:
+def normalize_instagram_emulator_serial(raw: Optional[str]) -> str:
+    value = (raw or "").strip()
+    if not value:
+        return ""
+    if value.lower() == "default":
+        return "default"
+    if value.isdigit():
+        raise ValueError("invalid emulator serial")
+    return value
+
+
+def is_valid_instagram_emulator_serial(raw: Optional[str]) -> bool:
+    try:
+        normalize_instagram_emulator_serial(raw)
+    except ValueError:
+        return False
+    return True
+
+
+def publish_account_readiness_issues(account: Any, *, include_rotation_state: bool = True) -> List[str]:
     issues: List[str] = []
     login = str(_publish_account_field(account, "account_login") or "").strip()
     password_present = bool(_publish_account_field(account, "has_account_password", 0))
     if not password_present:
         password_present = bool(str(_publish_account_field(account, "account_password") or "").strip())
     emulator_serial = str(_publish_account_field(account, "instagram_emulator_serial") or "").strip()
-    twofa_secret = str(_publish_account_field(account, "twofa") or "").strip()
+    rotation_state = normalize_account_rotation_state(_publish_account_field(account, "rotation_state", "review"))
     if not login:
         issues.append("Не заполнен account login.")
     if not password_present:
         issues.append("Не заполнен account password.")
     if not emulator_serial:
         issues.append("Не заполнен Instagram emulator serial.")
-    if not twofa_secret:
-        issues.append("Не заполнен TOTP 2FA secret.")
+    elif not is_valid_instagram_emulator_serial(emulator_serial):
+        issues.append("Instagram emulator serial заполнен неверно.")
+    if include_rotation_state and rotation_state == "not_working":
+        issues.append("Аккаунт помечен как нерабочий и исключён из автопубликации.")
     return issues
 
 
+def account_mail_automation_ready(account: Any) -> bool:
+    address = sanitize_account_text_field(_publish_account_field(account, "email"))
+    if not address:
+        return False
+    try:
+        provider = normalize_account_mail_provider(_publish_account_field(account, "mail_provider", "auto"))
+    except ValueError:
+        return False
+    if provider in {"gmail_api", "microsoft_graph"}:
+        try:
+            auth_json = normalize_account_mail_auth_json(_publish_account_field(account, "mail_auth_json"))
+        except ValueError:
+            return False
+        return bool(auth_json)
+    return bool(sanitize_account_text_field(_publish_account_field(account, "email_password")))
+
+
+def normalize_account_twofa_secret(raw_value: Optional[str]) -> str:
+    value = (raw_value or "").strip()
+    if not value:
+        return ""
+    normalized = normalize_twofa_secret(value)
+    if not normalized or not is_valid_twofa_secret(value):
+        raise ValueError("invalid twofa secret")
+    return normalized
+
+
+def account_twofa_automation_ready(account: Any) -> bool:
+    raw_value = _publish_account_field(account, "twofa")
+    return is_valid_twofa_secret(raw_value)
+
+
 def publish_account_automation_warnings(account: Any) -> List[str]:
-    return []
+    warnings: List[str] = []
+    twofa_secret = str(_publish_account_field(account, "twofa") or "").strip()
+    if not twofa_secret:
+        warnings.append("2FA не заполнен. Если Instagram запросит код, публикация остановится со статусом «Требует 2FA».")
+    elif not account_twofa_automation_ready(account):
+        warnings.append(
+            "2FA заполнен в неподдерживаемом формате. Вставь base32 secret или otpauth:// URI, иначе автологин остановится со статусом «Требует 2FA»."
+        )
+    try:
+        provider = normalize_account_mail_provider(_publish_account_field(account, "mail_provider", "auto"))
+    except ValueError:
+        provider = "auto"
+    mail_status = str(_publish_account_field(account, "mail_status") or "never_checked").strip().lower()
+    if not account_mail_automation_ready(account):
+        if provider in {"gmail_api", "microsoft_graph"}:
+            warnings.append(
+                "Почта не авторизована для auto-code. Если Instagram запросит код из письма, авто-подтверждение не сработает."
+            )
+        else:
+            warnings.append(
+                "Почта не готова для auto-code. Если Instagram запросит код из письма, публикация потребует ручного шага."
+            )
+    elif mail_status == "never_checked":
+        warnings.append("Почта ещё не проверялась. Перед canary лучше сделать Mail check для этого аккаунта.")
+    elif mail_status == "auth_error":
+        warnings.append("Почта не проходит авторизацию. Если Instagram запросит код, auto-code может не сработать.")
+    elif mail_status == "connect_error":
+        warnings.append("Почта сейчас недоступна. Если Instagram запросит код, auto-code может не сработать.")
+    elif mail_status == "unsupported":
+        warnings.append("Провайдер почты пока не подтверждён для auto-code. При mail challenge может понадобиться ручной шаг.")
+    return warnings
+
+
+def _account_auto_rotation_failure_reason(account: Any, status: str, detail: str) -> str:
+    status_value = (status or "").strip().lower()
+    detail_value = (detail or "").strip()
+    mail_reason = str(_publish_account_field(account, "mail_challenge_reason_text") or "").strip()
+    mail_status = str(_publish_account_field(account, "mail_status") or "never_checked").strip().lower()
+
+    if status_value == "invalid_password":
+        return detail_value or "Instagram отклонил пароль. Проверь account_password."
+    if status_value == "manual_2fa_required":
+        if not account_twofa_automation_ready(account):
+            return detail_value or "Instagram запросил 2FA, но для аккаунта не настроен валидный 2FA secret."
+        return detail_value or "Instagram запросил 2FA, и helper не смог пройти этот шаг автоматически."
+    if status_value == "email_code_required":
+        if mail_reason:
+            return mail_reason
+        if not account_mail_automation_ready(account):
+            return detail_value or "Instagram запросил код с почты, но почта не настроена для auto-code."
+        if mail_status == "auth_error":
+            return detail_value or "Instagram запросил код с почты, но почта не проходит авторизацию."
+        if mail_status == "connect_error":
+            return detail_value or "Instagram запросил код с почты, но почта сейчас недоступна."
+        if mail_status == "unsupported":
+            return detail_value or "Instagram запросил код с почты, но провайдер почты не поддержан для auto-code."
+        return detail_value or "Instagram запросил код с почты, но получить его автоматически не удалось."
+    if status_value == "challenge_required":
+        return mail_reason or detail_value or "Instagram запросил challenge или подтверждение входа."
+    return detail_value
+
+
+def _account_auto_rotation_publish_candidate(account: Any) -> Optional[Dict[str, Any]]:
+    updated_at = int(_publish_account_field(account, "instagram_publish_updated_at") or 0)
+    if updated_at <= 0:
+        return None
+    status = normalize_instagram_publish_status(_publish_account_field(account, "instagram_publish_status", "idle"))
+    detail = str(_publish_account_field(account, "instagram_publish_detail") or "").strip()
+
+    if status in {"published", "needs_review"}:
+        return {"state": "working", "reason": "", "updated_at": updated_at, "source": "publish"}
+    if status in {"invalid_password", "manual_2fa_required", "email_code_required", "challenge_required"}:
+        return {
+            "state": "not_working",
+            "reason": _account_auto_rotation_failure_reason(account, status, detail),
+            "updated_at": updated_at,
+            "source": "publish",
+        }
+    return None
+
+
+def _account_auto_rotation_launch_candidate(account: Any) -> Optional[Dict[str, Any]]:
+    updated_at = int(_publish_account_field(account, "instagram_launch_updated_at") or 0)
+    if updated_at <= 0:
+        return None
+    status = normalize_instagram_launch_status(_publish_account_field(account, "instagram_launch_status", "idle"))
+    detail = str(_publish_account_field(account, "instagram_launch_detail") or "").strip()
+
+    if status == "login_submitted":
+        return {"state": "working", "reason": "", "updated_at": updated_at, "source": "launch"}
+    if status in {"invalid_password", "manual_2fa_required", "challenge_required"}:
+        return {
+            "state": "not_working",
+            "reason": _account_auto_rotation_failure_reason(account, status, detail),
+            "updated_at": updated_at,
+            "source": "launch",
+        }
+    return None
+
+
+def _account_auto_rotation_audit_candidate(account: Any) -> Optional[Dict[str, Any]]:
+    updated_at = int(_publish_account_field(account, "latest_audit_updated_at") or 0)
+    if updated_at <= 0:
+        return None
+    resolution = str(_publish_account_field(account, "latest_audit_resolution_state") or "").strip().lower()
+    if not resolution:
+        return None
+    detail = str(_publish_account_field(account, "latest_audit_resolution_detail") or "").strip()
+
+    if resolution == "login_ok":
+        return {"state": "working", "reason": "", "updated_at": updated_at, "source": "audit"}
+    if resolution in {"manual_2fa_required", "email_code_required", "challenge_required", "invalid_password"}:
+        return {
+            "state": "not_working",
+            "reason": detail or _account_auto_rotation_failure_reason(account, resolution, detail),
+            "updated_at": updated_at,
+            "source": "audit",
+        }
+    if resolution == "missing_credentials":
+        return {
+            "state": "not_working",
+            "reason": detail or "Не заполнены логин или пароль Instagram.",
+            "updated_at": updated_at,
+            "source": "audit",
+        }
+    if resolution == "missing_device":
+        return {
+            "state": "not_working",
+            "reason": detail or "Для аккаунта не удалось назначить emulator serial.",
+            "updated_at": updated_at,
+            "source": "audit",
+        }
+    return None
+
+
+def _account_auto_rotation_config_candidate(account: Any) -> Optional[Dict[str, Any]]:
+    issues = publish_account_readiness_issues(account, include_rotation_state=False)
+    if str(_publish_account_field(account, "twofa") or "").strip() and not account_twofa_automation_ready(account):
+        issues.append("2FA заполнен в неверном формате. Нужен валидный base32 secret или otpauth:// URI.")
+    updated_at = int(_publish_account_field(account, "updated_at") or 0)
+    if not issues:
+        return {"state": "working", "reason": "", "updated_at": updated_at, "source": "config"}
+    return {
+        "state": "not_working",
+        "reason": " ".join(item for item in issues if item).strip(),
+        "updated_at": updated_at,
+        "source": "config",
+    }
+
+
+def account_auto_rotation_candidate(account: Any) -> Optional[Dict[str, Any]]:
+    account_type = str(_publish_account_field(account, "type") or "").strip().lower()
+    if account_type and account_type != "instagram":
+        return None
+    candidates = [
+        candidate
+        for candidate in (
+            _account_auto_rotation_publish_candidate(account),
+            _account_auto_rotation_launch_candidate(account),
+            _account_auto_rotation_audit_candidate(account),
+            _account_auto_rotation_config_candidate(account),
+        )
+        if candidate is not None
+    ]
+    if not candidates:
+        return None
+    source_priority = {"config": 0, "launch": 1, "audit": 2, "publish": 3}
+    candidates.sort(key=lambda item: (int(item.get("updated_at") or 0), source_priority.get(str(item.get("source") or ""), 0)))
+    return candidates[-1]
+
+
+def account_rotation_display_reason(account: Any) -> str:
+    stored_reason = str(_publish_account_field(account, "rotation_state_reason") or "").strip()
+    if stored_reason:
+        return stored_reason
+    candidate = account_auto_rotation_candidate(account)
+    if candidate is not None and str(candidate.get("state") or "") == "not_working":
+        return str(candidate.get("reason") or "").strip()
+    current_state = normalize_account_rotation_state(_publish_account_field(account, "rotation_state", "review"))
+    current_source = normalize_account_rotation_source(_publish_account_field(account, "rotation_state_source", "manual"))
+    if current_state == "not_working" and current_source == "manual":
+        return "Статус аккаунта установлен вручную."
+    return ""
+
+
+def _get_account_rotation_fields_with_cursor(cur: sqlite3.Cursor, account_id: int) -> Optional[sqlite3.Row]:
+    cur.execute(
+        """
+        SELECT
+            id,
+            type,
+            account_login,
+            account_password,
+            COALESCE(twofa, '') AS twofa,
+            COALESCE(email, '') AS email,
+            email_password,
+            COALESCE(mail_provider, 'auto') AS mail_provider,
+            COALESCE(mail_auth_json, '') AS mail_auth_json,
+            COALESCE(mail_status, 'never_checked') AS mail_status,
+            COALESCE(mail_last_error, '') AS mail_last_error,
+            COALESCE(mail_challenge_reason_text, '') AS mail_challenge_reason_text,
+            COALESCE(instagram_emulator_serial, '') AS instagram_emulator_serial,
+            COALESCE(instagram_launch_status, 'idle') AS instagram_launch_status,
+            COALESCE(instagram_launch_detail, '') AS instagram_launch_detail,
+            instagram_launch_updated_at,
+            COALESCE(instagram_publish_status, 'idle') AS instagram_publish_status,
+            COALESCE(instagram_publish_detail, '') AS instagram_publish_detail,
+            instagram_publish_updated_at,
+            COALESCE((
+                SELECT ai.resolution_state
+                FROM instagram_audit_items ai
+                WHERE ai.account_id = accounts.id
+                ORDER BY ai.updated_at DESC, ai.id DESC
+                LIMIT 1
+            ), '') AS latest_audit_resolution_state,
+            COALESCE((
+                SELECT ai.resolution_detail
+                FROM instagram_audit_items ai
+                WHERE ai.account_id = accounts.id
+                ORDER BY ai.updated_at DESC, ai.id DESC
+                LIMIT 1
+            ), '') AS latest_audit_resolution_detail,
+            (
+                SELECT ai.updated_at
+                FROM instagram_audit_items ai
+                WHERE ai.account_id = accounts.id
+                ORDER BY ai.updated_at DESC, ai.id DESC
+                LIMIT 1
+            ) AS latest_audit_updated_at,
+            COALESCE(rotation_state, 'review') AS rotation_state,
+            COALESCE(rotation_state_source, 'manual') AS rotation_state_source,
+            COALESCE(rotation_state_reason, '') AS rotation_state_reason,
+            updated_at
+        FROM accounts
+        WHERE id = ?
+        LIMIT 1
+        """,
+        (int(account_id),),
+    )
+    return cur.fetchone()
+
+
+def _sync_account_auto_rotation_state_with_cursor(cur: sqlite3.Cursor, account_id: int, *, now: Optional[int] = None) -> bool:
+    row = _get_account_rotation_fields_with_cursor(cur, int(account_id))
+    if row is None:
+        return False
+    account = dict(row)
+    current_state = normalize_account_rotation_state(str(account.get("rotation_state") or "review"))
+    current_source = normalize_account_rotation_source(str(account.get("rotation_state_source") or "manual"))
+    candidate = account_auto_rotation_candidate(account)
+    if candidate is None:
+        return False
+    next_state = normalize_account_rotation_state(str(candidate.get("state") or "review"))
+    if current_state == "not_working" and current_source == "manual":
+        return False
+    if next_state == "working" and current_state == "not_working" and current_source == "manual":
+        return False
+
+    reason_value = str(candidate.get("reason") or "").strip() if next_state == "not_working" else ""
+    timestamp = int(now or time.time())
+    if (
+        current_state == next_state
+        and current_source == "auto"
+        and str(account.get("rotation_state_reason") or "").strip() == reason_value
+    ):
+        return False
+    cur.execute(
+        """
+        UPDATE accounts
+        SET rotation_state = ?,
+            rotation_state_source = 'auto',
+            rotation_state_reason = ?,
+            updated_at = ?
+        WHERE id = ?
+        """,
+        (next_state, reason_value, timestamp, int(account_id)),
+    )
+    return cur.rowcount > 0
 
 
 def normalize_publish_batch_state(raw: Optional[str]) -> str:
@@ -2022,11 +2499,25 @@ def list_accounts(
             COALESCE(a.proxy, '') AS proxy,
             COALESCE(a.twofa, '') AS twofa,
             COALESCE(a.rotation_state, 'review') AS rotation_state,
+            COALESCE(a.rotation_state_source, 'manual') AS rotation_state_source,
+            COALESCE(a.rotation_state_reason, '') AS rotation_state_reason,
             COALESCE(a.views_state, 'unknown') AS views_state,
             COALESCE(a.mail_provider, 'auto') AS mail_provider,
+            COALESCE(a.mail_auth_json, '') AS mail_auth_json,
             COALESCE(a.mail_status, 'never_checked') AS mail_status,
             a.mail_last_checked_at,
+            a.mail_last_synced_at,
             COALESCE(a.mail_last_error, '') AS mail_last_error,
+            COALESCE(a.mail_watch_json, '') AS mail_watch_json,
+            COALESCE(a.mail_challenge_status, 'idle') AS mail_challenge_status,
+            COALESCE(a.mail_challenge_kind, '') AS mail_challenge_kind,
+            COALESCE(a.mail_challenge_reason_code, '') AS mail_challenge_reason_code,
+            COALESCE(a.mail_challenge_reason_text, '') AS mail_challenge_reason_text,
+            COALESCE(a.mail_challenge_message_uid, '') AS mail_challenge_message_uid,
+            a.mail_challenge_received_at,
+            COALESCE(a.mail_challenge_masked_code, '') AS mail_challenge_masked_code,
+            COALESCE(a.mail_challenge_confidence, 0) AS mail_challenge_confidence,
+            a.mail_challenge_updated_at,
             COALESCE(a.instagram_emulator_serial, '') AS instagram_emulator_serial,
             COALESCE(a.instagram_launch_status, 'idle') AS instagram_launch_status,
             COALESCE(a.instagram_launch_detail, '') AS instagram_launch_detail,
@@ -2059,6 +2550,7 @@ def list_accounts_compact(
     owner_worker_id: Optional[int] = None,
     rotation_state: Optional[str] = None,
     views_state: Optional[str] = None,
+    sort_by: Optional[str] = None,
     limit: int = 500,
 ) -> List[sqlite3.Row]:
     where: List[str] = []
@@ -2090,6 +2582,13 @@ def list_accounts_compact(
         args.append(normalize_account_views_state(views_state))
 
     clause = ("WHERE " + " AND ".join(where)) if where else ""
+    sort_value = (sort_by or "recent").strip().lower() or "recent"
+    if sort_value == "transitions_desc":
+        order_clause = "ORDER BY starts_unique_total DESC, a.updated_at DESC, a.id DESC"
+    elif sort_value == "transitions_asc":
+        order_clause = "ORDER BY starts_unique_total ASC, a.updated_at DESC, a.id DESC"
+    else:
+        order_clause = "ORDER BY a.updated_at DESC, a.id DESC"
     conn = _connect()
     cur = conn.cursor()
     cur.execute(
@@ -2101,11 +2600,23 @@ def list_accounts_compact(
             a.username,
             COALESCE(a.twofa, '') AS twofa,
             COALESCE(a.rotation_state, 'review') AS rotation_state,
+            COALESCE(a.rotation_state_source, 'manual') AS rotation_state_source,
+            COALESCE(a.rotation_state_reason, '') AS rotation_state_reason,
             COALESCE(a.views_state, 'unknown') AS views_state,
             COALESCE(a.mail_provider, 'auto') AS mail_provider,
             COALESCE(a.mail_status, 'never_checked') AS mail_status,
             a.mail_last_checked_at,
+            a.mail_last_synced_at,
             COALESCE(a.mail_last_error, '') AS mail_last_error,
+            COALESCE(a.mail_challenge_status, 'idle') AS mail_challenge_status,
+            COALESCE(a.mail_challenge_kind, '') AS mail_challenge_kind,
+            COALESCE(a.mail_challenge_reason_code, '') AS mail_challenge_reason_code,
+            COALESCE(a.mail_challenge_reason_text, '') AS mail_challenge_reason_text,
+            COALESCE(a.mail_challenge_message_uid, '') AS mail_challenge_message_uid,
+            a.mail_challenge_received_at,
+            COALESCE(a.mail_challenge_masked_code, '') AS mail_challenge_masked_code,
+            COALESCE(a.mail_challenge_confidence, 0) AS mail_challenge_confidence,
+            a.mail_challenge_updated_at,
             COALESCE(a.instagram_emulator_serial, '') AS instagram_emulator_serial,
             COALESCE(a.instagram_launch_status, 'idle') AS instagram_launch_status,
             COALESCE(a.instagram_launch_detail, '') AS instagram_launch_detail,
@@ -2150,7 +2661,7 @@ def list_accounts_compact(
         FROM accounts a
         LEFT JOIN workers w ON w.id = a.owner_worker_id
         {clause}
-        ORDER BY a.updated_at DESC, a.id DESC
+        {order_clause}
         LIMIT ?
         """,
         (*args, int(limit)),
@@ -2177,11 +2688,25 @@ def get_account(account_id: int, owner_worker_id: Optional[int] = None) -> Optio
                 COALESCE(a.proxy, '') AS proxy,
                 COALESCE(a.twofa, '') AS twofa,
                 COALESCE(a.rotation_state, 'review') AS rotation_state,
+                COALESCE(a.rotation_state_source, 'manual') AS rotation_state_source,
+                COALESCE(a.rotation_state_reason, '') AS rotation_state_reason,
                 COALESCE(a.views_state, 'unknown') AS views_state,
                 COALESCE(a.mail_provider, 'auto') AS mail_provider,
+                COALESCE(a.mail_auth_json, '') AS mail_auth_json,
                 COALESCE(a.mail_status, 'never_checked') AS mail_status,
                 a.mail_last_checked_at,
+                a.mail_last_synced_at,
                 COALESCE(a.mail_last_error, '') AS mail_last_error,
+                COALESCE(a.mail_watch_json, '') AS mail_watch_json,
+                COALESCE(a.mail_challenge_status, 'idle') AS mail_challenge_status,
+                COALESCE(a.mail_challenge_kind, '') AS mail_challenge_kind,
+                COALESCE(a.mail_challenge_reason_code, '') AS mail_challenge_reason_code,
+                COALESCE(a.mail_challenge_reason_text, '') AS mail_challenge_reason_text,
+                COALESCE(a.mail_challenge_message_uid, '') AS mail_challenge_message_uid,
+                a.mail_challenge_received_at,
+                COALESCE(a.mail_challenge_masked_code, '') AS mail_challenge_masked_code,
+                COALESCE(a.mail_challenge_confidence, 0) AS mail_challenge_confidence,
+                a.mail_challenge_updated_at,
                 COALESCE(a.instagram_emulator_serial, '') AS instagram_emulator_serial,
                 COALESCE(a.instagram_launch_status, 'idle') AS instagram_launch_status,
                 COALESCE(a.instagram_launch_detail, '') AS instagram_launch_detail,
@@ -2215,11 +2740,25 @@ def get_account(account_id: int, owner_worker_id: Optional[int] = None) -> Optio
                 COALESCE(a.proxy, '') AS proxy,
                 COALESCE(a.twofa, '') AS twofa,
                 COALESCE(a.rotation_state, 'review') AS rotation_state,
+                COALESCE(a.rotation_state_source, 'manual') AS rotation_state_source,
+                COALESCE(a.rotation_state_reason, '') AS rotation_state_reason,
                 COALESCE(a.views_state, 'unknown') AS views_state,
                 COALESCE(a.mail_provider, 'auto') AS mail_provider,
+                COALESCE(a.mail_auth_json, '') AS mail_auth_json,
                 COALESCE(a.mail_status, 'never_checked') AS mail_status,
                 a.mail_last_checked_at,
+                a.mail_last_synced_at,
                 COALESCE(a.mail_last_error, '') AS mail_last_error,
+                COALESCE(a.mail_watch_json, '') AS mail_watch_json,
+                COALESCE(a.mail_challenge_status, 'idle') AS mail_challenge_status,
+                COALESCE(a.mail_challenge_kind, '') AS mail_challenge_kind,
+                COALESCE(a.mail_challenge_reason_code, '') AS mail_challenge_reason_code,
+                COALESCE(a.mail_challenge_reason_text, '') AS mail_challenge_reason_text,
+                COALESCE(a.mail_challenge_message_uid, '') AS mail_challenge_message_uid,
+                a.mail_challenge_received_at,
+                COALESCE(a.mail_challenge_masked_code, '') AS mail_challenge_masked_code,
+                COALESCE(a.mail_challenge_confidence, 0) AS mail_challenge_confidence,
+                a.mail_challenge_updated_at,
                 COALESCE(a.instagram_emulator_serial, '') AS instagram_emulator_serial,
                 COALESCE(a.instagram_launch_status, 'idle') AS instagram_launch_status,
                 COALESCE(a.instagram_launch_detail, '') AS instagram_launch_detail,
@@ -2321,6 +2860,7 @@ def list_account_mail_messages(account_id: int, limit: int = 10) -> List[sqlite3
             subject,
             received_at,
             snippet,
+            COALESCE(metadata_json, '') AS metadata_json,
             created_at
         FROM account_mail_messages
         WHERE account_id = ?
@@ -2340,27 +2880,39 @@ def update_account_mail_state(
     mail_provider: Optional[str] = None,
     mail_status: Optional[str] = None,
     mail_last_checked_at: Optional[int] = None,
+    mail_last_synced_at: Optional[int] = None,
     mail_last_error: Optional[str] = None,
+    mail_auth_json: Optional[str] = None,
+    mail_watch_json: Optional[str] = None,
 ) -> bool:
     now = int(mail_last_checked_at or time.time())
-    provider_value = normalize_account_mail_provider(mail_provider)
-    status_value = normalize_account_mail_status(mail_status)
+    sync_at = int(mail_last_synced_at) if mail_last_synced_at not in (None, "") else None
+    provider_value = normalize_account_mail_provider(mail_provider) if mail_provider is not None else None
+    status_value = normalize_account_mail_status(mail_status) if mail_status is not None else None
+    auth_json_value = normalize_account_mail_auth_json(mail_auth_json) if mail_auth_json is not None else None
+    watch_json_value = normalize_account_mail_watch_json(mail_watch_json) if mail_watch_json is not None else None
     conn = _connect()
     cur = conn.cursor()
     cur.execute(
         """
         UPDATE accounts
-        SET mail_provider = ?,
-            mail_status = ?,
+        SET mail_provider = COALESCE(?, mail_provider),
+            mail_auth_json = COALESCE(?, mail_auth_json),
+            mail_status = COALESCE(?, mail_status),
             mail_last_checked_at = ?,
-            mail_last_error = ?
+            mail_last_synced_at = COALESCE(?, mail_last_synced_at),
+            mail_last_error = ?,
+            mail_watch_json = COALESCE(?, mail_watch_json)
         WHERE id = ?
         """,
         (
             provider_value,
+            auth_json_value,
             status_value,
             now,
+            sync_at,
             (mail_last_error or "").strip(),
+            watch_json_value,
             int(account_id),
         ),
     )
@@ -2368,6 +2920,117 @@ def update_account_mail_state(
     conn.commit()
     conn.close()
     return changed
+
+
+def update_account_mail_challenge_state(
+    account_id: int,
+    *,
+    status: Optional[str] = None,
+    kind: Optional[str] = None,
+    reason_code: Optional[str] = None,
+    reason_text: Optional[str] = None,
+    message_uid: Optional[str] = None,
+    received_at: Optional[int] = None,
+    masked_code: Optional[str] = None,
+    confidence: Optional[float] = None,
+    updated_at: Optional[int] = None,
+) -> bool:
+    now = int(updated_at or time.time())
+    status_value = normalize_account_mail_challenge_status(status)
+    confidence_value = 0.0
+    if confidence not in (None, ""):
+        try:
+            confidence_value = max(0.0, min(1.0, float(confidence)))
+        except Exception:
+            confidence_value = 0.0
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        UPDATE accounts
+        SET mail_challenge_status = ?,
+            mail_challenge_kind = ?,
+            mail_challenge_reason_code = ?,
+            mail_challenge_reason_text = ?,
+            mail_challenge_message_uid = ?,
+            mail_challenge_received_at = ?,
+            mail_challenge_masked_code = ?,
+            mail_challenge_confidence = ?,
+            mail_challenge_updated_at = ?,
+            updated_at = ?
+        WHERE id = ?
+        """,
+        (
+            status_value,
+            (kind or "").strip(),
+            (reason_code or "").strip(),
+            (reason_text or "").strip(),
+            (message_uid or "").strip(),
+            int(received_at) if received_at not in (None, "") else None,
+            (masked_code or "").strip(),
+            confidence_value,
+            now,
+            now,
+            int(account_id),
+        ),
+    )
+    changed = cur.rowcount > 0
+    conn.commit()
+    conn.close()
+    return changed
+
+
+def _update_account_mail_challenge_state_with_cursor(
+    cur: sqlite3.Cursor,
+    account_id: int,
+    *,
+    status: str,
+    kind: str = "",
+    reason_code: str = "",
+    reason_text: str = "",
+    message_uid: str = "",
+    received_at: Optional[Any] = None,
+    masked_code: str = "",
+    confidence: float = 0.0,
+    updated_at: Optional[int] = None,
+) -> None:
+    now = int(updated_at or time.time())
+    status_value = normalize_account_mail_challenge_status(status)
+    confidence_value = 0.0
+    if confidence not in (None, ""):
+        try:
+            confidence_value = max(0.0, min(1.0, float(confidence)))
+        except Exception:
+            confidence_value = 0.0
+    cur.execute(
+        """
+        UPDATE accounts
+        SET mail_challenge_status = ?,
+            mail_challenge_kind = ?,
+            mail_challenge_reason_code = ?,
+            mail_challenge_reason_text = ?,
+            mail_challenge_message_uid = ?,
+            mail_challenge_received_at = ?,
+            mail_challenge_masked_code = ?,
+            mail_challenge_confidence = ?,
+            mail_challenge_updated_at = ?,
+            updated_at = ?
+        WHERE id = ?
+        """,
+        (
+            status_value,
+            (kind or "").strip(),
+            (reason_code or "").strip(),
+            (reason_text or "").strip(),
+            (message_uid or "").strip(),
+            int(received_at) if received_at not in (None, "") else None,
+            (masked_code or "").strip(),
+            confidence_value,
+            now,
+            now,
+            int(account_id),
+        ),
+    )
 
 
 def replace_account_mail_messages(account_id: int, messages: List[Dict[str, Any]]) -> None:
@@ -2385,9 +3048,10 @@ def replace_account_mail_messages(account_id: int, messages: List[Dict[str, Any]
                 subject,
                 received_at,
                 snippet,
+                metadata_json,
                 created_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 int(account_id),
@@ -2396,6 +3060,24 @@ def replace_account_mail_messages(account_id: int, messages: List[Dict[str, Any]
                 str(item.get("subject") or ""),
                 int(item.get("received_at") or 0) if item.get("received_at") else None,
                 str(item.get("snippet") or ""),
+                json.dumps(
+                    {
+                        "provider_message_id": str(item.get("provider_message_id") or ""),
+                        "body_text": str(item.get("body_text") or ""),
+                        "body_html": str(item.get("body_html") or ""),
+                        "to_text": str(item.get("to_text") or ""),
+                        "cc_text": str(item.get("cc_text") or ""),
+                        "to_addresses": list(item.get("to_addresses") or []),
+                        "cc_addresses": list(item.get("cc_addresses") or []),
+                        "links": list(item.get("links") or []),
+                        "candidate_code": str(item.get("candidate_code") or ""),
+                        "candidate_link": str(item.get("candidate_link") or ""),
+                        "candidate_confidence": float(item.get("candidate_confidence") or 0.0),
+                    },
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                ),
                 now,
             ),
         )
@@ -2405,6 +3087,7 @@ def replace_account_mail_messages(account_id: int, messages: List[Dict[str, Any]
 
 def update_account_instagram_emulator_serial(account_id: int, instagram_emulator_serial: str) -> bool:
     now = int(time.time())
+    serial_value = normalize_instagram_emulator_serial(instagram_emulator_serial)
     conn = _connect()
     cur = conn.cursor()
     cur.execute(
@@ -2414,9 +3097,11 @@ def update_account_instagram_emulator_serial(account_id: int, instagram_emulator
             updated_at = ?
         WHERE id = ?
         """,
-        ((instagram_emulator_serial or "").strip(), now, int(account_id)),
+        (serial_value, now, int(account_id)),
     )
     changed = cur.rowcount > 0
+    if changed:
+        _sync_account_auto_rotation_state_with_cursor(cur, int(account_id), now=now)
     conn.commit()
     conn.close()
     return changed
@@ -2600,6 +3285,7 @@ def create_instagram_audit_batch(
             },
             created_at=now,
         )
+        _sync_account_auto_rotation_state_with_cursor(cur, int(item["account_id"]), now=now)
     conn.commit()
     conn.close()
     refresh_instagram_audit_batch_state(batch_id)
@@ -2888,13 +3574,20 @@ def update_instagram_audit_item(
         args.append(int(completed_at))
     if not updates:
         return False
+    timestamp = int(time.time())
     updates.append("updated_at = ?")
-    args.append(int(time.time()))
+    args.append(timestamp)
     args.append(int(item_id))
     conn = _connect()
     cur = conn.cursor()
     cur.execute(f"UPDATE instagram_audit_items SET {', '.join(updates)} WHERE id = ?", tuple(args))
     changed = cur.rowcount > 0
+    if changed:
+        cur.execute("SELECT account_id FROM instagram_audit_items WHERE id = ? LIMIT 1", (int(item_id),))
+        row = cur.fetchone()
+        account_id = int(row["account_id"] or 0) if row is not None and row["account_id"] is not None else 0
+        if account_id > 0:
+            _sync_account_auto_rotation_state_with_cursor(cur, account_id, now=timestamp)
     conn.commit()
     conn.close()
     return changed
@@ -3535,6 +4228,8 @@ def create_account(
     email_password: str,
     proxy: Optional[str],
     twofa: Optional[str],
+    mail_provider: Optional[str] = None,
+    mail_auth_json: Optional[str] = None,
     rotation_state: Optional[str] = None,
     views_state: Optional[str] = None,
     owner_worker_id: Optional[int] = None,
@@ -3543,7 +4238,11 @@ def create_account(
     t = _normalize_account_type(account_type)
     rotation_state_value = normalize_account_rotation_state(rotation_state)
     views_state_value = normalize_account_views_state(views_state)
+    mail_provider_value = normalize_account_mail_provider(mail_provider)
+    mail_auth_json_value = normalize_account_mail_auth_json(mail_auth_json)
+    twofa_value = normalize_account_twofa_secret(twofa)
     login_clean = (account_login or "").strip()
+    emulator_serial_clean = normalize_instagram_emulator_serial(instagram_emulator_serial)
     duplicate = find_duplicate_account(t, login_clean)
     if duplicate is not None:
         raise ValueError("duplicate account")
@@ -3564,26 +4263,34 @@ def create_account(
             email_password,
             proxy,
             twofa,
+            mail_provider,
+            mail_auth_json,
             instagram_emulator_serial,
             rotation_state,
+            rotation_state_source,
+            rotation_state_reason,
             views_state,
             owner_worker_id,
             created_at,
             updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             t,
             login_clean,
             (account_password or "").strip(),
             (username or "").strip(),
-            (email or "").strip(),
-            (email_password or "").strip(),
+            sanitize_account_text_field(email),
+            sanitize_account_text_field(email_password),
             (proxy or "").strip(),
-            (twofa or "").strip(),
-            (instagram_emulator_serial or "").strip(),
+            twofa_value,
+            mail_provider_value,
+            mail_auth_json_value,
+            emulator_serial_clean,
             rotation_state_value,
+            "manual",
+            "",
             views_state_value,
             owner_id,
             now,
@@ -3591,6 +4298,7 @@ def create_account(
         ),
     )
     new_id = int(cur.lastrowid)
+    _sync_account_auto_rotation_state_with_cursor(cur, new_id, now=now)
     conn.commit()
     conn.close()
     return new_id
@@ -3605,6 +4313,8 @@ def create_account_with_default_link(
     email_password: str,
     proxy: Optional[str],
     twofa: Optional[str],
+    mail_provider: Optional[str] = None,
+    mail_auth_json: Optional[str] = None,
     rotation_state: Optional[str] = None,
     views_state: Optional[str] = None,
     owner_worker_id: Optional[int] = None,
@@ -3615,6 +4325,8 @@ def create_account_with_default_link(
     t = _normalize_account_type(account_type)
     rotation_state_value = normalize_account_rotation_state(rotation_state)
     views_state_value = normalize_account_views_state(views_state)
+    mail_provider_value = normalize_account_mail_provider(mail_provider)
+    mail_auth_json_value = normalize_account_mail_auth_json(mail_auth_json)
     now = int(time.time())
     owner_id = int(owner_worker_id) if owner_worker_id is not None else None
     if owner_id is not None and get_worker(owner_id) is None:
@@ -3625,11 +4337,11 @@ def create_account_with_default_link(
         raise ValueError("duplicate account")
     account_pass_clean = (account_password or "").strip()
     username_clean = (username or "").strip()
-    email_clean = (email or "").strip()
-    email_pass_clean = (email_password or "").strip()
+    email_clean = sanitize_account_text_field(email)
+    email_pass_clean = sanitize_account_text_field(email_password)
     proxy_clean = (proxy or "").strip()
-    twofa_clean = (twofa or "").strip()
-    emulator_serial_clean = (instagram_emulator_serial or "").strip()
+    twofa_clean = normalize_account_twofa_secret(twofa)
+    emulator_serial_clean = normalize_instagram_emulator_serial(instagram_emulator_serial)
     link_name = (default_link_name or "").strip() or f"{t} @{username_clean or 'account'}"
     target_template = (target_url or "").strip() or "https://t.me/checkayugrambot?start={code}"
 
@@ -3648,14 +4360,18 @@ def create_account_with_default_link(
                 email_password,
                 proxy,
                 twofa,
+                mail_provider,
+                mail_auth_json,
                 instagram_emulator_serial,
                 rotation_state,
+                rotation_state_source,
+                rotation_state_reason,
                 views_state,
                 owner_worker_id,
                 created_at,
                 updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 t,
@@ -3666,8 +4382,12 @@ def create_account_with_default_link(
                 email_pass_clean,
                 proxy_clean,
                 twofa_clean,
+                mail_provider_value,
+                mail_auth_json_value,
                 emulator_serial_clean,
                 rotation_state_value,
+                "manual",
+                "",
                 views_state_value,
                 owner_id,
                 now,
@@ -3675,6 +4395,7 @@ def create_account_with_default_link(
             ),
         )
         account_id = int(cur.lastrowid)
+        _sync_account_auto_rotation_state_with_cursor(cur, account_id, now=now)
         code = _generate_unique_link_code_with_cursor(cur, length=6)
         cur.execute(
             """
@@ -3704,6 +4425,8 @@ def update_account(
     email_password: str,
     proxy: Optional[str],
     twofa: Optional[str],
+    mail_provider: Optional[str] = None,
+    mail_auth_json: Optional[str] = None,
     rotation_state: Optional[str] = None,
     views_state: Optional[str] = None,
     owner_worker_id: Optional[int] = None,
@@ -3712,7 +4435,11 @@ def update_account(
     t = _normalize_account_type(account_type)
     rotation_state_value = normalize_account_rotation_state(rotation_state)
     views_state_value = normalize_account_views_state(views_state)
+    mail_provider_value = normalize_account_mail_provider(mail_provider)
+    mail_auth_json_value = normalize_account_mail_auth_json(mail_auth_json)
+    twofa_value = normalize_account_twofa_secret(twofa)
     login_clean = (account_login or "").strip()
+    emulator_serial_clean = normalize_instagram_emulator_serial(instagram_emulator_serial)
     duplicate = find_duplicate_account(t, login_clean, exclude_account_id=int(account_id))
     if duplicate is not None:
         raise ValueError("duplicate account")
@@ -3733,8 +4460,12 @@ def update_account(
             email_password = ?,
             proxy = ?,
             twofa = ?,
+            mail_provider = ?,
+            mail_auth_json = ?,
             instagram_emulator_serial = ?,
             rotation_state = ?,
+            rotation_state_source = 'manual',
+            rotation_state_reason = '',
             views_state = ?,
             owner_worker_id = ?,
             updated_at = ?
@@ -3745,11 +4476,13 @@ def update_account(
             login_clean,
             (account_password or "").strip(),
             (username or "").strip(),
-            (email or "").strip(),
-            (email_password or "").strip(),
+            sanitize_account_text_field(email),
+            sanitize_account_text_field(email_password),
             (proxy or "").strip(),
-            (twofa or "").strip(),
-            (instagram_emulator_serial or "").strip(),
+            twofa_value,
+            mail_provider_value,
+            mail_auth_json_value,
+            emulator_serial_clean,
             rotation_state_value,
             views_state_value,
             owner_id,
@@ -3758,6 +4491,8 @@ def update_account(
         ),
     )
     changed = cur.rowcount > 0
+    if changed:
+        _sync_account_auto_rotation_state_with_cursor(cur, int(account_id), now=now)
     conn.commit()
     conn.close()
     return changed
@@ -3797,26 +4532,60 @@ def delete_account(account_id: int, owner_worker_id: Optional[int] = None) -> bo
     return changed
 
 
-def update_account_instagram_launch_state(account_id: int, status: str, detail: Optional[str] = None) -> bool:
-    status_value = normalize_instagram_launch_status(status)
+def update_account_rotation_state(account_id: int, rotation_state: Optional[str] = None, *, reason: Optional[str] = None) -> bool:
+    rotation_state_value = normalize_account_rotation_state(rotation_state)
     now = int(time.time())
     conn = _connect()
     cur = conn.cursor()
     cur.execute(
         """
         UPDATE accounts
-        SET instagram_launch_status = ?,
-            instagram_launch_detail = ?,
-            instagram_launch_updated_at = ?,
+        SET rotation_state = ?,
+            rotation_state_source = 'manual',
+            rotation_state_reason = ?,
             updated_at = ?
         WHERE id = ?
         """,
-        (status_value, (detail or "").strip(), now, now, int(account_id)),
+        (
+            rotation_state_value,
+            (reason or "").strip(),
+            now,
+            int(account_id),
+        ),
     )
     changed = cur.rowcount > 0
     conn.commit()
     conn.close()
     return changed
+
+
+def update_account_instagram_launch_state(account_id: int, status: str, detail: Optional[str] = None) -> bool:
+    status_value = normalize_instagram_launch_status(status)
+    now = int(time.time())
+    conn = _connect()
+    cur = conn.cursor()
+    try:
+        cur.execute("BEGIN IMMEDIATE")
+        cur.execute(
+            """
+            UPDATE accounts
+            SET instagram_launch_status = ?,
+                instagram_launch_detail = ?,
+                instagram_launch_updated_at = ?,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (status_value, (detail or "").strip(), now, now, int(account_id)),
+        )
+        changed = cur.rowcount > 0
+        _sync_account_auto_rotation_state_with_cursor(cur, int(account_id), now=now)
+        conn.commit()
+        return changed
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def update_account_instagram_publish_state(
@@ -3830,29 +4599,36 @@ def update_account_instagram_publish_state(
     now = int(time.time())
     conn = _connect()
     cur = conn.cursor()
-    cur.execute(
-        """
-        UPDATE accounts
-        SET instagram_publish_status = ?,
-            instagram_publish_detail = ?,
-            instagram_publish_updated_at = ?,
-            instagram_publish_last_file = ?,
-            updated_at = ?
-        WHERE id = ?
-        """,
-        (
-            status_value,
-            (detail or "").strip(),
-            now,
-            (last_file or "").strip(),
-            now,
-            int(account_id),
-        ),
-    )
-    changed = cur.rowcount > 0
-    conn.commit()
-    conn.close()
-    return changed
+    try:
+        cur.execute("BEGIN IMMEDIATE")
+        cur.execute(
+            """
+            UPDATE accounts
+            SET instagram_publish_status = ?,
+                instagram_publish_detail = ?,
+                instagram_publish_updated_at = ?,
+                instagram_publish_last_file = ?,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                status_value,
+                (detail or "").strip(),
+                now,
+                (last_file or "").strip(),
+                now,
+                int(account_id),
+            ),
+        )
+        changed = cur.rowcount > 0
+        _sync_account_auto_rotation_state_with_cursor(cur, int(account_id), now=now)
+        conn.commit()
+        return changed
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def _publish_job_state_to_account_publish_state(job_state: str, payload: Optional[Dict[str, Any]] = None) -> str:
@@ -3986,10 +4762,11 @@ def _publish_batch_account_metrics_with_cursor(cur: sqlite3.Cursor, batch_id: in
             COALESCE(SUM(CASE WHEN state = 'queued_for_publish' THEN 1 ELSE 0 END), 0) AS queued_publish_accounts,
             COALESCE(SUM(CASE WHEN state IN ('leased', 'preparing', 'importing_media', 'opening_reel_flow', 'selecting_media', 'publishing') THEN 1 ELSE 0 END), 0) AS active_publish_accounts,
             COALESCE(SUM(CASE WHEN state = 'published' THEN 1 ELSE 0 END), 0) AS published_accounts,
+            COALESCE(SUM(CASE WHEN state = 'needs_review' THEN 1 ELSE 0 END), 0) AS needs_review_accounts,
             COALESCE(SUM(CASE WHEN state = 'generation_failed' THEN 1 ELSE 0 END), 0) AS generation_failed_accounts,
             COALESCE(SUM(CASE WHEN state = 'failed' THEN 1 ELSE 0 END), 0) AS failed_accounts,
             COALESCE(SUM(CASE WHEN state = 'canceled' THEN 1 ELSE 0 END), 0) AS canceled_accounts,
-            COALESCE(SUM(CASE WHEN state IN ('generation_failed', 'published', 'failed', 'canceled') THEN 1 ELSE 0 END), 0) AS terminal_accounts
+            COALESCE(SUM(CASE WHEN state IN ('generation_failed', 'published', 'needs_review', 'failed', 'canceled') THEN 1 ELSE 0 END), 0) AS terminal_accounts
         FROM publish_batch_accounts
         WHERE batch_id = ?
         """,
@@ -4004,6 +4781,7 @@ def _publish_batch_account_metrics_with_cursor(cur: sqlite3.Cursor, batch_id: in
             "queued_publish_accounts": 0,
             "active_publish_accounts": 0,
             "published_accounts": 0,
+            "needs_review_accounts": 0,
             "generation_failed_accounts": 0,
             "failed_accounts": 0,
             "canceled_accounts": 0,
@@ -4021,11 +4799,12 @@ def _publish_batch_metrics_with_cursor(cur: sqlite3.Cursor, batch_id: int) -> Di
             COALESCE((SELECT COUNT(*) FROM publish_jobs WHERE batch_id = ? AND state = 'queued'), 0) AS queued_jobs,
             COALESCE((SELECT COUNT(*) FROM publish_jobs WHERE batch_id = ? AND state = 'leased'), 0) AS leased_jobs,
             COALESCE((SELECT COUNT(*) FROM publish_jobs WHERE batch_id = ? AND state = 'published'), 0) AS published_jobs,
+            COALESCE((SELECT COUNT(*) FROM publish_jobs WHERE batch_id = ? AND state = 'needs_review'), 0) AS needs_review_jobs,
             COALESCE((SELECT COUNT(*) FROM publish_jobs WHERE batch_id = ? AND state = 'failed'), 0) AS failed_jobs,
             COALESCE((SELECT COUNT(*) FROM publish_jobs WHERE batch_id = ? AND state = 'canceled'), 0) AS canceled_jobs,
             COALESCE((SELECT COUNT(*) FROM publish_jobs WHERE batch_id = ? AND state IN ('preparing', 'importing_media', 'opening_reel_flow', 'selecting_media', 'publishing')), 0) AS running_jobs
         """,
-        (int(batch_id),) * 8,
+        (int(batch_id),) * 9,
     )
     row = cur.fetchone()
     account_metrics = _publish_batch_account_metrics_with_cursor(cur, int(batch_id))
@@ -4036,6 +4815,7 @@ def _publish_batch_metrics_with_cursor(cur: sqlite3.Cursor, batch_id: int) -> Di
             "queued_jobs": 0,
             "leased_jobs": 0,
             "published_jobs": 0,
+            "needs_review_jobs": 0,
             "failed_jobs": 0,
             "canceled_jobs": 0,
             "running_jobs": 0,
@@ -4048,6 +4828,7 @@ def _publish_batch_metrics_with_cursor(cur: sqlite3.Cursor, batch_id: int) -> Di
         + int(metrics.get("failed_accounts", 0))
         + int(metrics.get("canceled_accounts", 0))
     )
+    metrics["review_accounts"] = int(metrics.get("needs_review_accounts", 0))
     return metrics
 
 
@@ -4073,7 +4854,7 @@ def _refresh_publish_batch_state_with_cursor(cur: sqlite3.Cursor, batch_id: int,
         raise ValueError("batch not found")
 
     current_state = normalize_publish_batch_state(str(batch["state"] or "queued_to_worker"))
-    if current_state in {"failed_generation", "completed", "completed_with_errors", "canceled"}:
+    if current_state in {"failed_generation", "completed", "completed_needs_review", "completed_with_errors", "canceled"}:
         metrics = _publish_batch_metrics_with_cursor(cur, int(batch_id))
         return {"state": current_state, **metrics}
 
@@ -4084,7 +4865,10 @@ def _refresh_publish_batch_state_with_cursor(cur: sqlite3.Cursor, batch_id: int,
     accounts_total = int(metrics.get("accounts_total", 0))
     terminal_accounts = int(metrics.get("terminal_accounts", 0))
     published_accounts = int(metrics.get("published_accounts", 0))
+    needs_review_accounts = int(metrics.get("needs_review_accounts", 0))
     generation_failed_accounts = int(metrics.get("generation_failed_accounts", 0))
+    failed_accounts = int(metrics.get("failed_accounts", 0))
+    canceled_accounts = int(metrics.get("canceled_accounts", 0))
     jobs_total = int(metrics.get("jobs_total", 0))
 
     all_accounts_terminal = accounts_total > 0 and terminal_accounts >= accounts_total
@@ -4093,13 +4877,22 @@ def _refresh_publish_batch_state_with_cursor(cur: sqlite3.Cursor, batch_id: int,
         or int(metrics.get("queued_publish_accounts", 0)) > 0
         or int(metrics.get("active_publish_accounts", 0)) > 0
         or published_accounts > 0
-        or int(metrics.get("failed_accounts", 0)) > 0
-        or int(metrics.get("canceled_accounts", 0)) > 0
+        or needs_review_accounts > 0
+        or failed_accounts > 0
+        or canceled_accounts > 0
     )
 
     if all_accounts_terminal:
         if published_accounts == accounts_total:
             next_state = "completed"
+            completed_at = timestamp
+        elif (
+            needs_review_accounts > 0
+            and generation_failed_accounts == 0
+            and failed_accounts == 0
+            and canceled_accounts == 0
+        ):
+            next_state = "completed_needs_review"
             completed_at = timestamp
         elif published_accounts > 0 or jobs_total > 0:
             next_state = "completed_with_errors"
@@ -4145,22 +4938,33 @@ def list_publish_ready_accounts(limit: int = 500) -> List[sqlite3.Row]:
             a.type,
             a.account_login,
             a.username,
+            COALESCE(a.email, '') AS email,
+            a.email_password,
+            COALESCE(a.mail_provider, 'auto') AS mail_provider,
+            COALESCE(a.mail_auth_json, '') AS mail_auth_json,
+            COALESCE(a.mail_status, 'never_checked') AS mail_status,
+            COALESCE(a.mail_last_error, '') AS mail_last_error,
+            COALESCE(a.mail_challenge_status, 'idle') AS mail_challenge_status,
+            COALESCE(a.mail_challenge_kind, '') AS mail_challenge_kind,
+            COALESCE(a.mail_challenge_reason_code, '') AS mail_challenge_reason_code,
+            COALESCE(a.mail_challenge_reason_text, '') AS mail_challenge_reason_text,
+            COALESCE(a.mail_challenge_masked_code, '') AS mail_challenge_masked_code,
+            COALESCE(a.mail_challenge_confidence, 0) AS mail_challenge_confidence,
+            a.mail_challenge_updated_at,
             COALESCE(a.twofa, '') AS twofa,
             COALESCE(a.instagram_emulator_serial, '') AS instagram_emulator_serial,
             COALESCE(a.instagram_publish_status, 'idle') AS instagram_publish_status,
             COALESCE(a.instagram_publish_detail, '') AS instagram_publish_detail,
             a.instagram_publish_updated_at,
+            COALESCE(a.rotation_state, 'review') AS rotation_state,
             a.owner_worker_id,
             COALESCE(w.name, '') AS owner_worker_name,
             COALESCE(w.username, '') AS owner_worker_username,
+            CASE WHEN TRIM(COALESCE(a.account_password, '')) <> '' THEN 1 ELSE 0 END AS has_account_password,
             a.updated_at
         FROM accounts a
         LEFT JOIN workers w ON w.id = a.owner_worker_id
         WHERE a.type = 'instagram'
-          AND TRIM(COALESCE(a.account_login, '')) <> ''
-          AND TRIM(COALESCE(a.account_password, '')) <> ''
-          AND TRIM(COALESCE(a.instagram_emulator_serial, '')) <> ''
-          AND TRIM(COALESCE(a.twofa, '')) <> ''
         ORDER BY a.updated_at DESC, a.id DESC
         LIMIT ?
         """,
@@ -4168,7 +4972,7 @@ def list_publish_ready_accounts(limit: int = 500) -> List[sqlite3.Row]:
     )
     rows = cur.fetchall()
     conn.close()
-    return rows
+    return [row for row in rows if not publish_account_readiness_issues(row)]
 
 
 def list_publish_blocked_accounts(limit: int = 500) -> List[sqlite3.Row]:
@@ -4181,11 +4985,25 @@ def list_publish_blocked_accounts(limit: int = 500) -> List[sqlite3.Row]:
             a.type,
             a.account_login,
             a.username,
+            COALESCE(a.email, '') AS email,
+            a.email_password,
+            COALESCE(a.mail_provider, 'auto') AS mail_provider,
+            COALESCE(a.mail_auth_json, '') AS mail_auth_json,
+            COALESCE(a.mail_status, 'never_checked') AS mail_status,
+            COALESCE(a.mail_last_error, '') AS mail_last_error,
+            COALESCE(a.mail_challenge_status, 'idle') AS mail_challenge_status,
+            COALESCE(a.mail_challenge_kind, '') AS mail_challenge_kind,
+            COALESCE(a.mail_challenge_reason_code, '') AS mail_challenge_reason_code,
+            COALESCE(a.mail_challenge_reason_text, '') AS mail_challenge_reason_text,
+            COALESCE(a.mail_challenge_masked_code, '') AS mail_challenge_masked_code,
+            COALESCE(a.mail_challenge_confidence, 0) AS mail_challenge_confidence,
+            a.mail_challenge_updated_at,
             COALESCE(a.twofa, '') AS twofa,
             COALESCE(a.instagram_emulator_serial, '') AS instagram_emulator_serial,
             COALESCE(a.instagram_publish_status, 'idle') AS instagram_publish_status,
             COALESCE(a.instagram_publish_detail, '') AS instagram_publish_detail,
             a.instagram_publish_updated_at,
+            COALESCE(a.rotation_state, 'review') AS rotation_state,
             a.owner_worker_id,
             COALESCE(w.name, '') AS owner_worker_name,
             COALESCE(w.username, '') AS owner_worker_username,
@@ -4194,12 +5012,6 @@ def list_publish_blocked_accounts(limit: int = 500) -> List[sqlite3.Row]:
         FROM accounts a
         LEFT JOIN workers w ON w.id = a.owner_worker_id
         WHERE a.type = 'instagram'
-          AND (
-            TRIM(COALESCE(a.account_login, '')) = ''
-            OR TRIM(COALESCE(a.account_password, '')) = ''
-            OR TRIM(COALESCE(a.instagram_emulator_serial, '')) = ''
-            OR TRIM(COALESCE(a.twofa, '')) = ''
-          )
         ORDER BY a.updated_at DESC, a.id DESC
         LIMIT ?
         """,
@@ -4207,7 +5019,7 @@ def list_publish_blocked_accounts(limit: int = 500) -> List[sqlite3.Row]:
     )
     rows = cur.fetchall()
     conn.close()
-    return rows
+    return [row for row in rows if publish_account_readiness_issues(row)]
 
 
 def create_publish_batch(
@@ -4216,7 +5028,14 @@ def create_publish_batch(
     created_by_admin: Optional[str],
     workflow_key: str = "default",
 ) -> Dict[str, Any]:
-    unique_ids = sorted({int(account_id) for account_id in account_ids if int(account_id) > 0})
+    unique_ids: List[int] = []
+    seen_ids: set[int] = set()
+    for raw_account_id in account_ids:
+        account_id = int(raw_account_id)
+        if account_id <= 0 or account_id in seen_ids:
+            continue
+        seen_ids.add(account_id)
+        unique_ids.append(account_id)
     if not unique_ids:
         raise ValueError("no accounts selected")
 
@@ -4231,6 +5050,7 @@ def create_publish_batch(
             account_login,
             account_password,
             username,
+            COALESCE(rotation_state, 'review') AS rotation_state,
             COALESCE(instagram_emulator_serial, '') AS instagram_emulator_serial,
             COALESCE(twofa, '') AS twofa
         FROM accounts
@@ -4264,13 +5084,15 @@ def create_publish_batch(
             ((workflow_key or "default").strip() or "default", (created_by_admin or "").strip(), now, now),
         )
         batch_id = int(cur.lastrowid)
-        for account_id in unique_ids:
+        for queue_position, account_id in enumerate(unique_ids):
             cur.execute(
                 """
-                INSERT INTO publish_batch_accounts (batch_id, account_id, state, detail, created_at, updated_at)
-                VALUES (?, ?, 'queued_for_generation', 'Ожидает очереди генерации.', ?, ?)
+                INSERT INTO publish_batch_accounts (
+                    batch_id, account_id, queue_position, state, detail, created_at, updated_at
+                )
+                VALUES (?, ?, ?, 'queued_for_generation', 'Ожидает очереди генерации.', ?, ?)
                 """,
-                (batch_id, int(account_id), now, now),
+                (batch_id, int(account_id), int(queue_position), now, now),
             )
         _append_publish_job_event_with_cursor(
             cur,
@@ -4309,6 +5131,7 @@ def get_publish_batch(batch_id: int) -> Optional[sqlite3.Row]:
             COALESCE((SELECT COUNT(*) FROM publish_batch_accounts pba WHERE pba.batch_id = b.id AND pba.state = 'queued_for_publish'), 0) AS queued_publish_accounts,
             COALESCE((SELECT COUNT(*) FROM publish_batch_accounts pba WHERE pba.batch_id = b.id AND pba.state IN ('leased', 'preparing', 'importing_media', 'opening_reel_flow', 'selecting_media', 'publishing')), 0) AS active_publish_accounts,
             COALESCE((SELECT COUNT(*) FROM publish_batch_accounts pba WHERE pba.batch_id = b.id AND pba.state = 'published'), 0) AS published_accounts,
+            COALESCE((SELECT COUNT(*) FROM publish_batch_accounts pba WHERE pba.batch_id = b.id AND pba.state = 'needs_review'), 0) AS needs_review_accounts,
             COALESCE((SELECT COUNT(*) FROM publish_batch_accounts pba WHERE pba.batch_id = b.id AND pba.state = 'generation_failed'), 0) AS generation_failed_accounts,
             COALESCE((SELECT COUNT(*) FROM publish_batch_accounts pba WHERE pba.batch_id = b.id AND pba.state = 'failed'), 0) AS failed_accounts,
             COALESCE((SELECT COUNT(*) FROM publish_batch_accounts pba WHERE pba.batch_id = b.id AND pba.state = 'canceled'), 0) AS canceled_accounts,
@@ -4318,6 +5141,7 @@ def get_publish_batch(batch_id: int) -> Optional[sqlite3.Row]:
             COALESCE((SELECT COUNT(*) FROM publish_jobs pj WHERE pj.batch_id = b.id AND pj.state = 'leased'), 0) AS leased_jobs,
             COALESCE((SELECT COUNT(*) FROM publish_jobs pj WHERE pj.batch_id = b.id AND pj.state IN ('preparing', 'importing_media', 'opening_reel_flow', 'selecting_media', 'publishing')), 0) AS running_jobs,
             COALESCE((SELECT COUNT(*) FROM publish_jobs pj WHERE pj.batch_id = b.id AND pj.state = 'published'), 0) AS published_jobs,
+            COALESCE((SELECT COUNT(*) FROM publish_jobs pj WHERE pj.batch_id = b.id AND pj.state = 'needs_review'), 0) AS needs_review_jobs,
             COALESCE((SELECT COUNT(*) FROM publish_jobs pj WHERE pj.batch_id = b.id AND pj.state = 'failed'), 0) AS failed_jobs,
             COALESCE((SELECT COUNT(*) FROM publish_jobs pj WHERE pj.batch_id = b.id AND pj.state = 'canceled'), 0) AS canceled_jobs
         FROM publish_batches b
@@ -4353,12 +5177,14 @@ def list_publish_batches(limit: int = 25) -> List[sqlite3.Row]:
             COALESCE((SELECT COUNT(*) FROM publish_batch_accounts pba WHERE pba.batch_id = b.id AND pba.state = 'queued_for_publish'), 0) AS queued_publish_accounts,
             COALESCE((SELECT COUNT(*) FROM publish_batch_accounts pba WHERE pba.batch_id = b.id AND pba.state IN ('leased', 'preparing', 'importing_media', 'opening_reel_flow', 'selecting_media', 'publishing')), 0) AS active_publish_accounts,
             COALESCE((SELECT COUNT(*) FROM publish_batch_accounts pba WHERE pba.batch_id = b.id AND pba.state = 'published'), 0) AS published_accounts,
+            COALESCE((SELECT COUNT(*) FROM publish_batch_accounts pba WHERE pba.batch_id = b.id AND pba.state = 'needs_review'), 0) AS needs_review_accounts,
             COALESCE((SELECT COUNT(*) FROM publish_batch_accounts pba WHERE pba.batch_id = b.id AND pba.state = 'generation_failed'), 0) AS generation_failed_accounts,
             COALESCE((SELECT COUNT(*) FROM publish_batch_accounts pba WHERE pba.batch_id = b.id AND pba.state = 'failed'), 0) AS failed_accounts,
             COALESCE((SELECT COUNT(*) FROM publish_batch_accounts pba WHERE pba.batch_id = b.id AND pba.state = 'canceled'), 0) AS canceled_accounts,
             COALESCE((SELECT COUNT(*) FROM publish_artifacts pa WHERE pa.batch_id = b.id), 0) AS artifacts_total,
             COALESCE((SELECT COUNT(*) FROM publish_jobs pj WHERE pj.batch_id = b.id), 0) AS jobs_total,
             COALESCE((SELECT COUNT(*) FROM publish_jobs pj WHERE pj.batch_id = b.id AND pj.state = 'published'), 0) AS published_jobs,
+            COALESCE((SELECT COUNT(*) FROM publish_jobs pj WHERE pj.batch_id = b.id AND pj.state = 'needs_review'), 0) AS needs_review_jobs,
             COALESCE((SELECT COUNT(*) FROM publish_jobs pj WHERE pj.batch_id = b.id AND pj.state = 'failed'), 0) AS failed_jobs,
             COALESCE((SELECT COUNT(*) FROM publish_jobs pj WHERE pj.batch_id = b.id AND pj.state = 'canceled'), 0) AS canceled_jobs
         FROM publish_batches b
@@ -4383,6 +5209,21 @@ def list_publish_batch_accounts(batch_id: int) -> List[sqlite3.Row]:
             a.type,
             a.account_login,
             a.username,
+            COALESCE(a.email, '') AS email,
+            a.email_password,
+            COALESCE(a.mail_provider, 'auto') AS mail_provider,
+            COALESCE(a.mail_auth_json, '') AS mail_auth_json,
+            COALESCE(a.mail_status, 'never_checked') AS mail_status,
+            COALESCE(a.mail_last_error, '') AS mail_last_error,
+            COALESCE(a.mail_challenge_status, 'idle') AS mail_challenge_status,
+            COALESCE(a.mail_challenge_kind, '') AS mail_challenge_kind,
+            COALESCE(a.mail_challenge_reason_code, '') AS mail_challenge_reason_code,
+            COALESCE(a.mail_challenge_reason_text, '') AS mail_challenge_reason_text,
+            COALESCE(a.mail_challenge_message_uid, '') AS mail_challenge_message_uid,
+            a.mail_challenge_received_at,
+            COALESCE(a.mail_challenge_masked_code, '') AS mail_challenge_masked_code,
+            COALESCE(a.mail_challenge_confidence, 0) AS mail_challenge_confidence,
+            a.mail_challenge_updated_at,
             COALESCE(a.twofa, '') AS twofa,
             COALESCE(a.instagram_emulator_serial, '') AS instagram_emulator_serial,
             COALESCE(a.instagram_publish_status, 'idle') AS instagram_publish_status,
@@ -4390,6 +5231,7 @@ def list_publish_batch_accounts(batch_id: int) -> List[sqlite3.Row]:
             a.instagram_publish_updated_at,
             COALESCE(w.name, '') AS owner_worker_name,
             COALESCE(w.username, '') AS owner_worker_username,
+            COALESCE(pba.queue_position, 0) AS queue_position,
             pba.state,
             COALESCE(pba.detail, '') AS detail,
             pba.artifact_id,
@@ -4406,13 +5248,40 @@ def list_publish_batch_accounts(batch_id: int) -> List[sqlite3.Row]:
         LEFT JOIN publish_artifacts pa ON pa.id = pba.artifact_id
         LEFT JOIN publish_jobs pj ON pj.id = pba.job_id
         WHERE pba.batch_id = ?
-        ORDER BY a.username COLLATE NOCASE ASC, a.id ASC
+        ORDER BY COALESCE(pba.queue_position, 2147483647) ASC, pba.created_at ASC, a.id ASC
         """,
         (int(batch_id),),
     )
     rows = cur.fetchall()
     conn.close()
     return rows
+
+
+def get_publish_next_generation_account(batch_id: int) -> Optional[sqlite3.Row]:
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT
+            pba.account_id,
+            COALESCE(pba.queue_position, 0) AS queue_position,
+            pba.state,
+            a.id,
+            a.username,
+            a.account_login,
+            COALESCE(a.instagram_emulator_serial, '') AS instagram_emulator_serial
+        FROM publish_batch_accounts pba
+        JOIN accounts a ON a.id = pba.account_id
+        WHERE pba.batch_id = ?
+          AND pba.state = 'queued_for_generation'
+        ORDER BY COALESCE(pba.queue_position, 2147483647) ASC, pba.created_at ASC, pba.account_id ASC
+        LIMIT 1
+        """,
+        (int(batch_id),),
+    )
+    row = cur.fetchone()
+    conn.close()
+    return row
 
 
 def get_publish_batch_account_state(batch_id: int, account_id: int) -> Optional[str]:
@@ -4626,9 +5495,9 @@ def update_publish_batch_state(batch_id: int, state: str, detail: Optional[str] 
     now = int(time.time())
     conn = _connect()
     cur = conn.cursor()
-    completed_at = now if state_value in {"completed", "completed_with_errors", "failed_generation", "canceled"} else None
+    completed_at = now if state_value in {"completed", "completed_needs_review", "completed_with_errors", "failed_generation", "canceled"} else None
     generation_started_at = now if state_value == "generating" else None
-    generation_completed_at = now if state_value in {"publishing", "completed", "completed_with_errors", "failed_generation"} else None
+    generation_completed_at = now if state_value in {"publishing", "completed", "completed_needs_review", "completed_with_errors", "failed_generation"} else None
     cur.execute(
         """
         UPDATE publish_batches
@@ -4876,6 +5745,7 @@ def mark_publish_generation_failed(
     detail: Optional[str],
     *,
     account_id: Optional[int] = None,
+    payload: Optional[Dict[str, Any]] = None,
     event_hash: Optional[str] = None,
 ) -> Dict[str, Any]:
     now = int(time.time())
@@ -4931,12 +5801,15 @@ def mark_publish_generation_failed(
                 (now, int(batch_id)),
             )
 
+        event_payload = dict(payload or {})
+        if account_id is not None:
+            event_payload["account_id"] = int(account_id)
         _append_publish_job_event_with_cursor(
             cur,
             batch_id=int(batch_id),
             state="generation_failed",
             detail=detail_value,
-            payload={"account_id": int(account_id)} if account_id is not None else None,
+            payload=event_payload or None,
             account_id=int(account_id) if account_id is not None else None,
             event_hash=event_hash,
             created_at=now,
@@ -5337,6 +6210,7 @@ def _expire_stale_publish_jobs_with_cursor(cur: sqlite3.Cursor, *, now: int) -> 
                 account_id,
             ),
         )
+        _sync_account_auto_rotation_state_with_cursor(cur, account_id, now=int(now))
         _set_publish_batch_account_state_with_cursor(
             cur,
             batch_id=batch_id,
@@ -5373,7 +6247,7 @@ def lease_next_publish_job(
     cur = conn.cursor()
     try:
         cur.execute("BEGIN IMMEDIATE")
-        _expire_stale_publish_jobs_with_cursor(cur, now=now)
+        expired_jobs = _expire_stale_publish_jobs_with_cursor(cur, now=now)
         cur.execute(
             """
             SELECT j.id
@@ -5399,7 +6273,10 @@ def lease_next_publish_job(
         )
         candidate = cur.fetchone()
         if candidate is None:
-            conn.rollback()
+            if expired_jobs > 0:
+                conn.commit()
+            else:
+                conn.rollback()
             return None
         job_id = int(candidate["id"])
         cur.execute(
@@ -5434,6 +6311,10 @@ def lease_next_publish_job(
                 a.account_password,
                 COALESCE(a.username, '') AS username,
                 COALESCE(a.twofa, '') AS twofa,
+                COALESCE(a.email, '') AS email,
+                a.email_password,
+                COALESCE(a.mail_provider, 'auto') AS mail_provider,
+                COALESCE(a.mail_auth_json, '') AS mail_auth_json,
                 pa.filename AS artifact_filename,
                 b.workflow_key
             FROM publish_jobs j
@@ -5449,6 +6330,12 @@ def lease_next_publish_job(
         if row is None:
             conn.rollback()
             return None
+        job_payload = dict(row)
+        job_payload["mail_enabled"] = account_mail_automation_ready(job_payload)
+        job_payload["mail_address"] = str(job_payload.pop("email", "") or "")
+        job_payload["mail_provider"] = str(job_payload.get("mail_provider") or "auto")
+        job_payload.pop("email_password", None)
+        job_payload.pop("mail_auth_json", None)
         _set_publish_batch_account_state_with_cursor(
             cur,
             batch_id=int(row["batch_id"]),
@@ -5471,7 +6358,7 @@ def lease_next_publish_job(
         )
         _refresh_publish_batch_state_with_cursor(cur, int(row["batch_id"]), now=now)
         conn.commit()
-        return dict(row)
+        return job_payload
     finally:
         conn.close()
 
@@ -5513,7 +6400,7 @@ def update_publish_job_state(
         if row is None:
             raise ValueError("job not found")
         current_state = normalize_publish_job_state(str(row["state"] or "queued"))
-        if current_state in {"published", "failed", "canceled"} and state_value != current_state:
+        if current_state in {"published", "needs_review", "failed", "canceled"} and state_value != current_state:
             raise ValueError("job already finished")
         if _is_publish_job_state_regression(current_state, state_value):
             metrics = _refresh_publish_batch_state_with_cursor(cur, int(row["batch_id"]), now=timestamp)
@@ -5529,7 +6416,7 @@ def update_publish_job_state(
         last_file_value = (last_file or "").strip() or str(row["last_file"] or "").strip() or str(row["source_name"] or "").strip()
         detail_value = (detail or "").strip()
         started_at = timestamp if state_value in ACTIVE_PUBLISH_JOB_STATES and current_state not in ACTIVE_PUBLISH_JOB_STATES else None
-        completed_at = timestamp if state_value in {"published", "failed", "canceled"} else None
+        completed_at = timestamp if state_value in {"published", "needs_review", "failed", "canceled"} else None
         lease_expires_at = timestamp + lease_ttl if state_value in ACTIVE_PUBLISH_JOB_STATES else None
         last_error = detail_value if state_value in {"failed", "canceled"} else ""
 
@@ -5581,6 +6468,25 @@ def update_publish_job_state(
                 int(row["account_id"]),
             ),
         )
+        mail_challenge_payload = payload.get("mail_challenge") if isinstance(payload, dict) else None
+        if isinstance(mail_challenge_payload, dict) and mail_challenge_payload:
+            try:
+                _update_account_mail_challenge_state_with_cursor(
+                    cur,
+                    int(row["account_id"]),
+                    status=str(mail_challenge_payload.get("status") or "idle"),
+                    kind=str(mail_challenge_payload.get("kind") or ""),
+                    reason_code=str(mail_challenge_payload.get("reason_code") or ""),
+                    reason_text=str(mail_challenge_payload.get("reason_text") or ""),
+                    message_uid=str(mail_challenge_payload.get("message_uid") or ""),
+                    received_at=mail_challenge_payload.get("received_at"),
+                    masked_code=str(mail_challenge_payload.get("masked_code") or ""),
+                    confidence=float(mail_challenge_payload.get("confidence") or 0.0),
+                    updated_at=timestamp,
+                )
+            except Exception:
+                pass
+        _sync_account_auto_rotation_state_with_cursor(cur, int(row["account_id"]), now=timestamp)
         _set_publish_batch_account_state_with_cursor(
             cur,
             batch_id=int(row["batch_id"]),
@@ -5753,6 +6659,9 @@ def consume_helper_launch_ticket(ticket: str, *, target: Optional[str] = None) -
             "username": str(account_dict.get("username") or ""),
             "account_login": str(account_dict.get("account_login") or ""),
             "account_password": str(account_dict.get("account_password") or ""),
+            "mail_enabled": account_mail_automation_ready(account_dict),
+            "email": str(account_dict.get("email") or ""),
+            "mail_provider": str(account_dict.get("mail_provider") or "auto"),
             "twofa": str(account_dict.get("twofa") or ""),
             "instagram_emulator_serial": str(account_dict.get("instagram_emulator_serial") or ""),
         },

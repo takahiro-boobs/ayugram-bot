@@ -11,21 +11,21 @@ import time
 from datetime import datetime
 
 from aiogram import Bot, Dispatcher, Router, F
+from aiogram.exceptions import TelegramNetworkError, TelegramBadRequest
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, Message
 from aiogram.filters import Command
 from aiogram.fsm.storage.memory import MemoryStorage
 from dotenv import load_dotenv
 
-load_dotenv()
+BASE_DIR = os.path.abspath(os.path.dirname(__file__))
+load_dotenv(os.path.join(BASE_DIR, ".env"))
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-REVIEW_BOT_TOKEN = os.getenv("REVIEW_BOT_TOKEN", "8323118509:AAGHOJHNoPgD3BdjaUoRDErsBn-SfxIE6QQ")
-REVIEW_ADMIN_IDS = {
-    int(os.getenv("REVIEW_ADMIN_ID", "481659934")),
-    8497496702,
-}
+REVIEW_BOT_TOKEN = os.getenv("REVIEW_BOT_TOKEN", "<REVIEW_BOT_TOKEN>")
+# Единственный модератор (менеджер)
+REVIEW_ADMIN_IDS = {8497496702}
 REVIEW_QUEUE_DIR = "review_queue"
 REVIEW_DECISIONS_DIR = "review_decisions"
 
@@ -76,34 +76,72 @@ async def cmd_start(message: Message):
 @router.callback_query(F.data.startswith("accept_"))
 async def on_accept(callback: CallbackQuery):
     if callback.from_user.id not in REVIEW_ADMIN_IDS:
-        await callback.answer("❌ Доступ запрещен")
+        try:
+            await callback.answer("❌ Доступ запрещен")
+        except TelegramBadRequest:
+            pass
         return
+    try:
+        await callback.answer()
+    except TelegramBadRequest:
+        pass
 
     request_id = callback.data.replace("accept_", "")
     if not write_decision(request_id, "accepted", callback.from_user.id):
-        await callback.answer("Решение уже принято")
+        try:
+            await callback.answer("Решение уже принято")
+        except TelegramBadRequest:
+            pass
         return
-    await callback.message.edit_caption(
-        f"✅ <b>ПРИНЯТО</b>\n\nID: <code>{request_id}</code>"
-    )
-    await callback.message.edit_reply_markup(reply_markup=None)
-    await callback.answer("✅ Принято")
+    try:
+        await callback.message.edit_caption(
+            f"✅ <b>ПРИНЯТО</b>\n\nID: <code>{request_id}</code>"
+        )
+    except TelegramBadRequest:
+        pass
+    try:
+        await callback.message.edit_reply_markup(reply_markup=None)
+    except TelegramBadRequest:
+        pass
+    try:
+        await callback.answer("✅ Принято")
+    except TelegramBadRequest:
+        pass
 
 @router.callback_query(F.data.startswith("reject_"))
 async def on_reject(callback: CallbackQuery):
     if callback.from_user.id not in REVIEW_ADMIN_IDS:
-        await callback.answer("❌ Доступ запрещен")
+        try:
+            await callback.answer("❌ Доступ запрещен")
+        except TelegramBadRequest:
+            pass
         return
+    try:
+        await callback.answer()
+    except TelegramBadRequest:
+        pass
 
     request_id = callback.data.replace("reject_", "")
     if not write_decision(request_id, "rejected", callback.from_user.id):
-        await callback.answer("Решение уже принято")
+        try:
+            await callback.answer("Решение уже принято")
+        except TelegramBadRequest:
+            pass
         return
-    await callback.message.edit_caption(
-        f"❌ <b>ОТКЛОНЕНО</b>\n\nID: <code>{request_id}</code>"
-    )
-    await callback.message.edit_reply_markup(reply_markup=None)
-    await callback.answer("❌ Отклонено")
+    try:
+        await callback.message.edit_caption(
+            f"❌ <b>ОТКЛОНЕНО</b>\n\nID: <code>{request_id}</code>"
+        )
+    except TelegramBadRequest:
+        pass
+    try:
+        await callback.message.edit_reply_markup(reply_markup=None)
+    except TelegramBadRequest:
+        pass
+    try:
+        await callback.answer("❌ Отклонено")
+    except TelegramBadRequest:
+        pass
 
 @router.message()
 async def handle_other(message: Message):
@@ -115,7 +153,17 @@ async def handle_other(message: Message):
 async def main():
     dp.include_router(router)
     logger.info("🛠 Бот ручной проверки запущен")
-    await dp.start_polling(bot, allowed_updates=["message", "callback_query"])
+    backoff_s = 2
+    while True:
+        try:
+            await dp.start_polling(bot, allowed_updates=["message", "callback_query"])
+        except TelegramNetworkError as e:
+            logger.error("❌ Telegram недоступен: %s. Повтор через %s сек.", e, backoff_s)
+        except Exception:
+            logger.exception("❌ Polling упал. Повтор через %s сек.", backoff_s)
+
+        await asyncio.sleep(backoff_s)
+        backoff_s = min(backoff_s * 2, 60)
 
 if __name__ == "__main__":
     import asyncio
