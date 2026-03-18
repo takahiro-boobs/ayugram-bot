@@ -3495,20 +3495,92 @@ def _normalize_twofa_secret(raw_value: str) -> str:
     return _normalize_twofa_secret_value(raw_value)
 
 
+def _twofa_prompt_visible(device: Any) -> bool:
+    return _find_first(
+        device,
+        [
+            {"textMatches": "(?i)(two-factor|two factor|security code|confirmation code|enter code|login code|authentication app)"},
+            {"textMatches": "(?i)(код безопасности|код подтверждения|двухфактор)"},
+        ],
+        timeout_seconds=1.0,
+    ) is not None
+
+
+def _human_check_visible(device: Any) -> bool:
+    return _ig_find_first(
+        device,
+        [
+            {"textMatches": "(?i)(confirm you'?re a human|confirm you are a human|i.?m not a robot|verify you'?re human|verify you are human|security check|captcha)"},
+            {"textMatches": "(?i)(подтверд.*что вы человек|подтверд.*что ты человек|проверка безопасности|капча|подтверд.*человек)"},
+        ],
+        timeout_seconds=1.5,
+    ) is not None
+
+
+def _generate_current_twofa_code(secret: str) -> str:
+    if pyotp is None:
+        raise RuntimeError("pyotp is unavailable")
+    totp = pyotp.TOTP(secret)
+    digits = max(6, int(getattr(totp, "digits", 6) or 6))
+    code = str(totp.now() or "").strip()
+    if code.isdigit():
+        code = code.zfill(digits)
+    if not code or not code.isdigit() or len(code) != digits:
+        raise RuntimeError(f"invalid TOTP code generated: {code!r}")
+    return code
+
+
+def _set_instagram_code_field_value(device: Any, serial: str, field: Any, value: str) -> bool:
+    try:
+        field.click()
+    except Exception:
+        pass
+    time.sleep(0.2)
+
+    try:
+        field.set_text("")
+        time.sleep(0.2)
+    except Exception:
+        try:
+            device.send_keys("", clear=True)
+            time.sleep(0.2)
+        except Exception:
+            pass
+
+    if value.isdigit():
+        for digit in value:
+            _adb_shell(serial, "input", "keyevent", str(7 + int(digit)), timeout=10, check=False)
+            time.sleep(0.05)
+        return True
+
+    try:
+        device.send_keys(value, clear=True)
+        return True
+    except Exception:
+        pass
+
+    try:
+        field.set_text(value)
+        return True
+    except Exception:
+        pass
+
+    if re.fullmatch(r"[A-Za-z0-9_.@\\-]+", value or ""):
+        _adb_input_text(serial, value)
+        return True
+    return False
+
+
 def _maybe_submit_twofa(device: Any, serial: str, twofa_secret: str) -> bool:
     secret = _normalize_twofa_secret(twofa_secret)
     if not secret or not _twofa_secret_is_valid(twofa_secret) or pyotp is None:
         return False
 
-    prompt_markers = [
-        {"textMatches": "(?i)(two-factor|two factor|security code|confirmation code|enter code|login code|authentication app)"},
-        {"textMatches": "(?i)(код безопасности|код подтверждения|двухфактор)"},
-    ]
-    if _find_first(device, prompt_markers, timeout_seconds=2.0) is None:
+    if not _twofa_prompt_visible(device):
         return False
 
     try:
-        code = pyotp.TOTP(secret).now()
+        code = _generate_current_twofa_code(secret)
     except Exception as exc:
         logger.warning("twofa_code_generation_failed: serial=%s error=%s", serial, exc)
         return False
@@ -3529,10 +3601,9 @@ def _maybe_submit_twofa(device: Any, serial: str, twofa_secret: str) -> bool:
         field.click()
     except Exception:
         pass
-    try:
-        field.set_text(code)
-    except Exception:
-        _adb_shell(serial, "input", "text", code, timeout=10, check=False)
+    if not _set_instagram_code_field_value(device, serial, field, code):
+        logger.warning("twofa_field_input_failed: serial=%s", serial)
+        return False
     try:
         device.press("back")
     except Exception:
@@ -3546,7 +3617,7 @@ def _maybe_submit_twofa(device: Any, serial: str, twofa_secret: str) -> bool:
     ]
     if not _click_first(device, confirm_selectors, timeout_seconds=3.0):
         _adb_shell(serial, "input", "keyevent", "66", timeout=10, check=False)
-    logger.info("twofa_submitted: serial=%s", serial)
+    logger.info("twofa_submitted: serial=%s digits=%s", serial, len(code))
     time.sleep(3.0)
     return True
 
@@ -3580,9 +3651,7 @@ def _submit_instagram_email_code(device: Any, serial: str, code: str) -> bool:
         field.click()
     except Exception:
         pass
-    try:
-        field.set_text(value)
-    except Exception:
+    if not _set_instagram_code_field_value(device, serial, field, value):
         return False
     try:
         device.press("back")
@@ -4226,6 +4295,9 @@ def _detect_post_login_state(device: Any, serial: str, twofa_secret: str = "") -
 
     if _mail_code_challenge_visible(device):
         return ("challenge_required", "Instagram запросил код из письма. Попробую получить его автоматически.")
+
+    if _human_check_visible(device):
+        return ("challenge_required", "Instagram показал Confirm you're a human / CAPTCHA. Автоматический обход отключён, нужна ручная проверка аккаунта.")
 
     manual_2fa = _ig_find_first(
         device,

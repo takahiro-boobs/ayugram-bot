@@ -88,6 +88,40 @@ class InstagramAppHelperTests(unittest.TestCase):
         )
         self.assertEqual(value, "JBSWY3DPEHPK3PXP")
 
+    def test_generate_current_twofa_code_zero_pads_short_value(self) -> None:
+        totp = MagicMock()
+        totp.digits = 6
+        totp.now.return_value = "12345"
+        pyotp_mock = MagicMock()
+        pyotp_mock.TOTP.return_value = totp
+        with patch.object(self.helper, "pyotp", pyotp_mock):
+            value = self.helper._generate_current_twofa_code("JBSWY3DPEHPK3PXP")
+        self.assertEqual(value, "012345")
+
+    def test_maybe_submit_twofa_uses_digit_keyevents_and_keeps_leading_zero(self) -> None:
+        field = MagicMock()
+        totp = MagicMock()
+        totp.digits = 6
+        totp.now.return_value = "12345"
+        pyotp_mock = MagicMock()
+        pyotp_mock.TOTP.return_value = totp
+        with (
+            patch.object(self.helper, "pyotp", pyotp_mock),
+            patch.object(self.helper, "_twofa_secret_is_valid", return_value=True),
+            patch.object(self.helper, "_twofa_prompt_visible", return_value=True),
+            patch.object(self.helper, "_find_first", return_value=field),
+            patch.object(self.helper, "_click_first", return_value=True),
+            patch.object(self.helper, "_adb_shell") as adb_shell_mock,
+            patch.object(self.helper.time, "sleep", return_value=None),
+        ):
+            self.assertTrue(self.helper._maybe_submit_twofa(MagicMock(), "emulator-5554", "JBSWY3DPEHPK3PXP"))
+        digit_events = [
+            call.args[3]
+            for call in adb_shell_mock.call_args_list
+            if len(call.args) >= 4 and call.args[1:3] == ("input", "keyevent")
+        ]
+        self.assertEqual(digit_events[:6], ["7", "8", "9", "10", "11", "12"])
+
     def test_detect_post_login_state_invalid_password(self) -> None:
         with (
             patch.object(self.helper.time, "sleep", return_value=None),
@@ -104,6 +138,7 @@ class InstagramAppHelperTests(unittest.TestCase):
             patch.object(self.helper, "_dismiss_system_dialogs"),
             patch.object(self.helper, "_maybe_submit_twofa", return_value=False),
             patch.object(self.helper, "_mail_code_challenge_visible", return_value=False),
+            patch.object(self.helper, "_human_check_visible", return_value=False),
             patch.object(self.helper, "_ig_find_first", side_effect=[None, None, object()]),
         ):
             state, detail = self.helper._detect_post_login_state(object(), "emulator-5554")
@@ -121,6 +156,19 @@ class InstagramAppHelperTests(unittest.TestCase):
             state, detail = self.helper._detect_post_login_state(object(), "emulator-5554")
         self.assertEqual(state, "challenge_required")
         self.assertIn("код из письма", detail)
+
+    def test_detect_post_login_state_human_check_returns_manual_blocker(self) -> None:
+        with (
+            patch.object(self.helper.time, "sleep", return_value=None),
+            patch.object(self.helper, "_dismiss_system_dialogs"),
+            patch.object(self.helper, "_ig_find_first", return_value=None),
+            patch.object(self.helper, "_maybe_submit_twofa", return_value=False),
+            patch.object(self.helper, "_mail_code_challenge_visible", return_value=False),
+            patch.object(self.helper, "_human_check_visible", return_value=True),
+        ):
+            state, detail = self.helper._detect_post_login_state(object(), "emulator-5554")
+        self.assertEqual(state, "challenge_required")
+        self.assertIn("human", detail.lower())
 
     def test_classify_login_challenge_screen_detects_channel_choice(self) -> None:
         channel_choice_xml = """<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>
@@ -193,6 +241,7 @@ class InstagramAppHelperTests(unittest.TestCase):
             patch.object(self.helper, "_dismiss_system_dialogs"),
             patch.object(self.helper, "_maybe_submit_twofa", return_value=False),
             patch.object(self.helper, "_mail_code_challenge_visible", return_value=False),
+            patch.object(self.helper, "_human_check_visible", return_value=False),
             patch.object(self.helper, "_ig_find_first", side_effect=[None, None, None]),
             patch.object(self.helper, "_signed_out_surface_visible", return_value=True),
         ):
@@ -206,6 +255,7 @@ class InstagramAppHelperTests(unittest.TestCase):
             patch.object(self.helper, "_dismiss_system_dialogs"),
             patch.object(self.helper, "_maybe_submit_twofa", return_value=False),
             patch.object(self.helper, "_mail_code_challenge_visible", return_value=False),
+            patch.object(self.helper, "_human_check_visible", return_value=False),
             patch.object(self.helper, "_ig_find_first", side_effect=[None, None, None]),
             patch.object(self.helper, "_signed_out_surface_visible", return_value=False),
             patch.object(self.helper, "_handle_post_login_prompts", return_value=False),
