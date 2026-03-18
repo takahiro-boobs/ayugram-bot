@@ -3593,6 +3593,78 @@ def update_instagram_audit_item(
     return changed
 
 
+def finalize_unfinished_instagram_audit_items_as_helper_error(
+    batch_id: int,
+    detail: str,
+    *,
+    completed_at: Optional[int] = None,
+) -> int:
+    timestamp = int(completed_at or time.time())
+    detail_value = str(detail or "").strip() or "Проверка не завершилась из-за инфраструктурного сбоя."
+    mail_detail = "Проверка прервана из-за инфраструктурного сбоя."
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT id, account_id, assigned_serial
+        FROM instagram_audit_items
+        WHERE audit_batch_id = ?
+          AND item_state <> 'done'
+        ORDER BY queue_position ASC, id ASC
+        """,
+        (int(batch_id),),
+    )
+    rows = cur.fetchall()
+    for row in rows:
+        item_id = int(row["id"])
+        account_id = int(row["account_id"])
+        assigned_serial = str(row["assigned_serial"] or "").strip()
+        cur.execute(
+            """
+            UPDATE instagram_audit_items
+            SET item_state = 'done',
+                assigned_serial = ?,
+                login_state = 'helper_error',
+                login_detail = ?,
+                mail_probe_state = 'not_required',
+                mail_probe_detail = ?,
+                resolution_state = 'helper_error',
+                resolution_detail = ?,
+                completed_at = ?,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                assigned_serial,
+                detail_value,
+                mail_detail,
+                detail_value,
+                timestamp,
+                timestamp,
+                item_id,
+            ),
+        )
+        _append_instagram_audit_event_with_cursor(
+            cur,
+            audit_batch_id=int(batch_id),
+            audit_item_id=item_id,
+            account_id=account_id,
+            state="done",
+            detail=detail_value,
+            payload={
+                "assigned_serial": assigned_serial,
+                "failure_kind": "infrastructure",
+                "finalized": True,
+                "resolution_state": "helper_error",
+            },
+            created_at=timestamp,
+        )
+        _sync_account_auto_rotation_state_with_cursor(cur, account_id, now=timestamp)
+    conn.commit()
+    conn.close()
+    return len(rows)
+
+
 def refresh_instagram_audit_batch_state(batch_id: int, *, detail: Optional[str] = None) -> Dict[str, Any]:
     now = int(time.time())
     conn = _connect()

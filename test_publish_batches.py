@@ -468,7 +468,126 @@ class PublishingBatchTests(unittest.TestCase):
         snapshot = response.json()
         self.assertEqual(snapshot["batch"]["state"], "failed")
         self.assertEqual(snapshot["batch"]["phase_label"], "Ошибка")
-        self.assertIn("helper crashed", snapshot["batch"]["phase_subtitle"])
+
+    def test_instagram_audit_infrastructure_error_retries_instead_of_finalizing_item(self) -> None:
+        account_id = self._create_audit_account("audit_retry", "audit_retry", serial="emulator-5554")
+        created = self.db.create_instagram_audit_batch(
+            [
+                {
+                    "account_id": account_id,
+                    "queue_position": 0,
+                    "assigned_serial": "emulator-5554",
+                    "item_state": "queued",
+                }
+            ],
+            created_by_admin="admin",
+        )
+        batch_id = int(created["batch_id"])
+        self.db.create_or_reactivate_runtime_task(
+            task_type="instagram_audit_batch_run",
+            entity_type="instagram_audit_batch",
+            entity_id=batch_id,
+            payload={"audit_batch_id": batch_id},
+            max_attempts=3,
+        )
+
+        with (
+            patch.object(self.app_module, "_wait_for_helper_idle", return_value={"ok": True, "state": {"flow_running": False}}),
+            patch.object(self.app_module.db, "create_helper_launch_ticket", return_value={"ticket": "ticket-1"}),
+            patch.object(self.app_module, "_launch_instagram_helper_ticket", side_effect=RuntimeError("helper unavailable")),
+        ):
+            processed = self.app_module._run_runtime_task_once(worker_name="test-runtime")
+
+        self.assertTrue(processed)
+        task = dict(self.db.get_runtime_task_for_entity("instagram_audit_batch_run", "instagram_audit_batch", batch_id))
+        self.assertEqual(task["state"], "retrying")
+        item = dict(self.db.get_instagram_audit_item(batch_id, account_id))
+        self.assertEqual(item["item_state"], "queued")
+        self.assertEqual(item["resolution_state"], "")
+        self.assertIn("helper unavailable", str(item["login_detail"]))
+        account = dict(self.db.get_account(account_id))
+        self.assertEqual(account["rotation_state"], "working")
+
+    def test_instagram_audit_retry_run_skips_already_completed_items(self) -> None:
+        first_id = self._create_audit_account("audit_done", "audit_done", serial="emulator-5554")
+        second_id = self._create_audit_account("audit_queue", "audit_queue", serial="emulator-5556")
+        now_ts = int(time.time())
+        created = self.db.create_instagram_audit_batch(
+            [
+                {
+                    "account_id": first_id,
+                    "queue_position": 0,
+                    "assigned_serial": "emulator-5554",
+                    "item_state": "done",
+                    "login_state": "login_submitted",
+                    "login_detail": "Вход выполнен.",
+                    "mail_probe_state": "not_required",
+                    "mail_probe_detail": "Проверка почты не нужна.",
+                    "resolution_state": "login_ok",
+                    "resolution_detail": "Вход выполнен.",
+                    "started_at": now_ts,
+                    "completed_at": now_ts,
+                },
+                {
+                    "account_id": second_id,
+                    "queue_position": 1,
+                    "assigned_serial": "emulator-5556",
+                    "item_state": "queued",
+                },
+            ],
+            created_by_admin="admin",
+        )
+        batch_id = int(created["batch_id"])
+        seen_ids: list[int] = []
+
+        def _fake_run(batch: int, item: dict[str, object], *, heartbeat=None) -> None:
+            self.assertEqual(batch, batch_id)
+            seen_ids.append(int(item["account_id"]))
+
+        with patch.object(self.app_module, "_run_instagram_audit_item", side_effect=_fake_run):
+            self.app_module._run_instagram_audit_batch(batch_id)
+
+        self.assertEqual(seen_ids, [second_id])
+
+    def test_instagram_audit_exhausted_retry_finalizes_helper_error_without_not_working(self) -> None:
+        account_id = self._create_audit_account("audit_helper_fail", "audit_helper_fail", serial="emulator-5554")
+        created = self.db.create_instagram_audit_batch(
+            [
+                {
+                    "account_id": account_id,
+                    "queue_position": 0,
+                    "assigned_serial": "emulator-5554",
+                    "item_state": "queued",
+                }
+            ],
+            created_by_admin="admin",
+        )
+        batch_id = int(created["batch_id"])
+        self.db.create_or_reactivate_runtime_task(
+            task_type="instagram_audit_batch_run",
+            entity_type="instagram_audit_batch",
+            entity_id=batch_id,
+            payload={"audit_batch_id": batch_id},
+            max_attempts=1,
+        )
+
+        with (
+            patch.object(self.app_module, "_wait_for_helper_idle", return_value={"ok": True, "state": {"flow_running": False}}),
+            patch.object(self.app_module.db, "create_helper_launch_ticket", return_value={"ticket": "ticket-1"}),
+            patch.object(self.app_module, "_launch_instagram_helper_ticket", side_effect=RuntimeError("helper unavailable forever")),
+        ):
+            processed = self.app_module._run_runtime_task_once(worker_name="test-runtime")
+
+        self.assertTrue(processed)
+        task = dict(self.db.get_runtime_task_for_entity("instagram_audit_batch_run", "instagram_audit_batch", batch_id))
+        self.assertEqual(task["state"], "failed")
+        batch = dict(self.db.get_instagram_audit_batch(batch_id))
+        self.assertEqual(batch["state"], "completed_with_errors")
+        item = dict(self.db.get_instagram_audit_item(batch_id, account_id))
+        self.assertEqual(item["item_state"], "done")
+        self.assertEqual(item["resolution_state"], "helper_error")
+        account = dict(self.db.get_account(account_id))
+        self.assertEqual(account["rotation_state"], "working")
 
     def test_artifact_ready_without_account_id_targets_only_current_generating_account(self) -> None:
         acc1 = self._create_instagram_account("same1", "same_user1", "emulator-5554")

@@ -327,6 +327,11 @@ class RuntimeTaskError(RuntimeError):
         super().__init__(message)
         self.retryable = bool(retryable)
 
+
+class InstagramAuditInfrastructureError(RuntimeTaskError):
+    def __init__(self, message: str) -> None:
+        super().__init__(message, retryable=True)
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     _validate_runtime_config()
@@ -2180,6 +2185,44 @@ def _run_instagram_audit_batch(batch_id: int, *, heartbeat: Optional[RuntimeHear
         db.update_instagram_audit_batch_state(batch_id, final_state, detail="Проверка входов завершена. Есть аккаунты, требующие ручных шагов.")
 
 
+def _schedule_instagram_audit_item_retry(
+    batch_id: int,
+    *,
+    item_id: int,
+    account_id: int,
+    assigned_serial: str,
+    detail: str,
+) -> None:
+    detail_value = str(detail or "").strip() or "Helper недоступен во время проверки Instagram."
+    retry_detail = f"Инфраструктурный сбой. Повторю автоматически: {detail_value}"
+    db.update_instagram_audit_item(
+        item_id,
+        item_state="queued",
+        assigned_serial=assigned_serial,
+        login_state="",
+        login_detail=detail_value,
+        mail_probe_state="pending",
+        mail_probe_detail="",
+        resolution_state="",
+        resolution_detail="",
+        diagnostic_path="",
+    )
+    db.append_instagram_audit_event(
+        batch_id,
+        audit_item_id=item_id,
+        account_id=account_id,
+        state="queued",
+        detail=retry_detail,
+        payload={
+            "assigned_serial": assigned_serial,
+            "failure_kind": "infrastructure",
+            "retryable": True,
+        },
+    )
+    db.refresh_instagram_audit_batch_state(batch_id, detail=retry_detail)
+    raise InstagramAuditInfrastructureError(detail_value)
+
+
 def _run_instagram_audit_item(
     batch_id: int,
     item: dict[str, Any],
@@ -2270,21 +2313,13 @@ def _run_instagram_audit_item(
             heartbeat=heartbeat,
         )
     except Exception as exc:
-        detail = str(exc)
-        db.update_instagram_audit_item(
-            item_id,
-            item_state="done",
+        _schedule_instagram_audit_item_retry(
+            batch_id,
+            item_id=item_id,
+            account_id=account_id,
             assigned_serial=assigned_serial,
-            login_state="helper_error",
-            login_detail=detail,
-            mail_probe_state="not_required",
-            resolution_state="helper_error",
-            resolution_detail=detail,
-            completed_at=int(time.time()),
+            detail=str(exc),
         )
-        db.append_instagram_audit_event(batch_id, audit_item_id=item_id, account_id=account_id, state="done", detail=detail, payload={"resolution_state": "helper_error"})
-        db.refresh_instagram_audit_batch_state(batch_id, detail=detail)
-        return
 
     login_state = str(login_result["login_state"] or "").strip().lower()
     login_detail = str(login_result.get("login_detail") or "").strip()
@@ -2314,7 +2349,16 @@ def _run_instagram_audit_item(
             payload={"login_state": login_state},
         )
         db.refresh_instagram_audit_batch_state(batch_id, detail="Для challenge-аккаунта проверяю почту.")
-        mail_probe = _run_instagram_mail_probe(account, heartbeat=heartbeat)
+        try:
+            mail_probe = _run_instagram_mail_probe(account, heartbeat=heartbeat)
+        except Exception as exc:
+            _schedule_instagram_audit_item_retry(
+                batch_id,
+                item_id=item_id,
+                account_id=account_id,
+                assigned_serial=assigned_serial,
+                detail=str(exc),
+            )
         mail_probe_state = str(mail_probe["mail_probe_state"])
         mail_probe_detail = str(mail_probe["mail_probe_detail"])
         if mail_probe.get("matched_email_code"):
@@ -2386,15 +2430,37 @@ def _finalize_failed_runtime_task(task: dict[str, Any], error_text: str) -> None
             logger.warning("runtime_publish_batch_finalize_failed: batch_id=%s error=%s", entity_id, exc)
     elif task_type == "instagram_audit_batch_run":
         try:
-            db.update_instagram_audit_batch_state(entity_id, "failed", detail=error_text, completed_at=int(time.time()))
-            db.append_instagram_audit_event(
+            timestamp = int(time.time())
+            final_detail = f"Проверка завершена с инфраструктурной ошибкой: {error_text}".strip()
+            finalized_total = db.finalize_unfinished_instagram_audit_items_as_helper_error(
                 entity_id,
-                audit_item_id=None,
-                account_id=None,
-                state="failed",
-                detail=error_text,
-                payload={},
+                final_detail,
+                completed_at=timestamp,
             )
+            summary = db.refresh_instagram_audit_batch_state(entity_id, detail=final_detail)
+            if finalized_total > 0 or str(summary.get("state") or "") in {"completed", "completed_with_errors"}:
+                db.append_instagram_audit_event(
+                    entity_id,
+                    audit_item_id=None,
+                    account_id=None,
+                    state="failed",
+                    detail=final_detail,
+                    payload={
+                        "failure_kind": "infrastructure",
+                        "finalized_unresolved": finalized_total,
+                        "resolution_state": "helper_error",
+                    },
+                )
+            else:
+                db.update_instagram_audit_batch_state(entity_id, "failed", detail=error_text, completed_at=timestamp)
+                db.append_instagram_audit_event(
+                    entity_id,
+                    audit_item_id=None,
+                    account_id=None,
+                    state="failed",
+                    detail=error_text,
+                    payload={},
+                )
         except Exception as exc:
             logger.warning("runtime_audit_batch_finalize_failed: batch_id=%s error=%s", entity_id, exc)
     elif task_type == "mail_account_sync":
