@@ -3,7 +3,7 @@ services:
     name: ayugram-admin
     runtime: python
     buildCommand: "pip install -r requirements.txt"
-    startCommand: "uvicorn app:app --host 0.0.0.0 --port $PORT"
+    startCommand: "uvicorn web_app:app --host 0.0.0.0 --port $PORT"
     envVars:
       - key: ADMIN_USER
         sync: false
@@ -33,9 +33,58 @@ services:
         sync: false
       - key: PUBLISH_WEBHOOK_MAX_AGE_SECONDS
         sync: false
+      - key: PUBLISH_FACTORY_TIMEOUT_SECONDS
+        sync: false
       - key: PUBLISH_RUNNER_LEASE_SECONDS
         sync: false
       - key: PUBLISH_DEFAULT_WORKFLOW
+        sync: false
+
+  - type: worker
+    name: ayugram-runtime-worker
+    runtime: python
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "python3 runtime_worker.py"
+    envVars:
+      - key: ADMIN_USER
+        sync: false
+      - key: ADMIN_PASS
+        sync: false
+      - key: SESSION_SECRET
+        sync: false
+      - key: ADMIN_DB_PATH
+        sync: false
+      - key: HELPER_API_KEY
+        sync: false
+      - key: PUBLISH_N8N_WEBHOOK_URL
+        sync: false
+      - key: PUBLISH_BASE_URL
+        sync: false
+      - key: PUBLISH_SHARED_SECRET
+        sync: false
+      - key: PUBLISH_RUNNER_API_KEY
+        sync: false
+      - key: PUBLISH_STAGING_DIR
+        sync: false
+      - key: PUBLISH_WEBHOOK_MAX_AGE_SECONDS
+        sync: false
+      - key: PUBLISH_FACTORY_TIMEOUT_SECONDS
+        sync: false
+      - key: PUBLISH_RUNNER_LEASE_SECONDS
+        sync: false
+      - key: PUBLISH_DEFAULT_WORKFLOW
+        sync: false
+      - key: MAIL_COLLECTOR_ENABLED
+        sync: false
+      - key: MAIL_COLLECTOR_RECONCILE_SECONDS
+        sync: false
+      - key: MAIL_COLLECTOR_STALE_SYNC_SECONDS
+        sync: false
+      - key: MAIL_COLLECTOR_WATCH_RENEW_MARGIN_SECONDS
+        sync: false
+      - key: MAIL_WEBHOOK_SECRET
+        sync: false
+      - key: RUNTIME_WORKER_NAME
         sync: false
 
   - type: worker

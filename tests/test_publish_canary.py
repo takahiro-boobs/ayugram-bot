@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 import requests
 
-from scripts.publish_canary import (
+from scripts.publishing.publish_canary import (
     AdminClient,
     _build_parser,
     _classify_failure,
@@ -176,8 +176,8 @@ class PublishCanaryHelpersTests(unittest.TestCase):
                 return ""
 
             with (
-                patch("scripts.publish_canary._ssh_run", side_effect=_fake_ssh_run),
-                patch("scripts.publish_canary.subprocess.run") as subprocess_run,
+                patch("scripts.publishing.publish_canary._ssh_run", side_effect=_fake_ssh_run),
+                patch("scripts.publishing.publish_canary.subprocess.run") as subprocess_run,
             ):
                 _scp_to_remote(
                     local_path,
@@ -211,7 +211,7 @@ class PublishCanaryHelpersTests(unittest.TestCase):
 
         with (
             patch.object(client.session, "request", side_effect=[requests.ConnectionError("boom"), DummyResponse()]) as request_mock,
-            patch("scripts.publish_canary.time.sleep") as sleep_mock,
+            patch("scripts.publishing.publish_canary.time.sleep") as sleep_mock,
         ):
             payload = client.batch_progress(44)
 

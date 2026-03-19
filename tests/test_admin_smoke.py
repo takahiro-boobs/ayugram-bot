@@ -236,6 +236,37 @@ class AdminSmokeTests(unittest.TestCase):
         self.assertEqual(dict(self.db.get_account(account_id))["username"], "admin_account_2")
         self.assertEqual(dict(self.db.get_account(account_id))["twofa"], "JBSWY3DPEHPK3PXP")
 
+    def test_account_detail_renders_latest_reel_summary(self) -> None:
+        account_id = self._create_account_via_admin(login="admin_login_reel", username="admin_reel")
+        reel = self.db.upsert_instagram_reel_post_for_standalone(
+            account_id=account_id,
+            helper_ticket="ticket-reel-1",
+            source_name="video.mp4",
+            source_path="/tmp/video.mp4",
+            payload={
+                "helper_ticket": "ticket-reel-1",
+                "reel_fingerprint": "finger-1",
+                "reel_signature_text": "reel text",
+                "published_at": 1710000000,
+            },
+        )
+        self.db.record_instagram_reel_metric_snapshot(
+            int(reel["id"]),
+            window_key="t30m",
+            status="partial",
+            plays_count=1200,
+            likes_count=45,
+            comments_count=6,
+            collected_at=1710001800,
+        )
+
+        page = self.client.get(f"/accounts/{account_id}")
+        self.assertEqual(page.status_code, 200)
+        self.assertIn("Последний Reel", page.text)
+        self.assertIn("Просмотры: 1.2K", page.text)
+        self.assertIn("Окно: 30м", page.text)
+        self.assertIn("Аналитика", page.text)
+
     def test_accounts_update_rejects_invalid_twofa(self) -> None:
         account_id = self._create_account_via_admin(login="admin_login_invalid_twofa", username="admin_invalid_twofa")
 
@@ -311,7 +342,7 @@ class AdminSmokeTests(unittest.TestCase):
 
         accounts_page = self.client.get("/accounts", params={"q": "admin_reason_user"})
         self.assertEqual(accounts_page.status_code, 200)
-        self.assertIn("Instagram отклонил пароль", accounts_page.text)
+        self.assertIn("Причина: Неверный пароль", accounts_page.text)
 
         detail_page = self.client.get(f"/accounts/{account_id}")
         self.assertEqual(detail_page.status_code, 200)

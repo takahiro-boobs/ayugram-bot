@@ -26,57 +26,55 @@ from starlette.status import HTTP_303_SEE_OTHER
 import db
 import http_utils
 import mail_service
+from domain_states import (
+    ACCOUNT_INSTAGRAM_LAUNCH_STATUS_LABELS,
+    ACCOUNT_INSTAGRAM_PUBLISH_STATUS_LABELS,
+    INSTAGRAM_AUDIT_BATCH_STATE_LABELS,
+    INSTAGRAM_AUDIT_ITEM_STATE_LABELS,
+    INSTAGRAM_AUDIT_MAIL_PROBE_STATE_LABELS,
+    INSTAGRAM_AUDIT_RESOLUTION_LABELS,
+    PUBLISH_BATCH_ACCOUNT_STATE_LABELS,
+    PUBLISH_BATCH_STATE_LABELS,
+    PUBLISH_GENERATION_STAGE_LABELS,
+    PUBLISH_JOB_STATE_LABELS,
+)
+from settings import load_web_settings
 
 load_dotenv()
 
 logger = logging.getLogger(__name__)
+SETTINGS = load_web_settings()
 
-ADMIN_USER = os.getenv("ADMIN_USER", "admin")
-ADMIN_PASS = os.getenv("ADMIN_PASS", "admin")
-BOT_TOKEN = os.getenv("BOT_TOKEN", "")
-BOT_USERNAME = (os.getenv("BOT_USERNAME", "checkayugrambot") or "checkayugrambot").strip().lstrip("@")
-ADMIN_TEST_CHAT_ID = os.getenv("ADMIN_TEST_CHAT_ID", "").strip()
-SESSION_SECRET = os.getenv("SESSION_SECRET", "change-me")
-SESSION_MAX_AGE_SECONDS = int(os.getenv("SESSION_MAX_AGE_SECONDS", str(60 * 60 * 24 * 30)))
-MAX_BROADCAST_MEDIA_BYTES = int(os.getenv("MAX_BROADCAST_MEDIA_BYTES", str(45 * 1024 * 1024)))
-ADMIN_BASE_PATH_RAW = os.getenv("ADMIN_BASE_PATH", "")
-HELPER_API_KEY = os.getenv("HELPER_API_KEY", "").strip()
-HELPER_TICKET_TTL_SECONDS = int(os.getenv("HELPER_TICKET_TTL_SECONDS", "120"))
-INSTAGRAM_APP_HELPER_OPEN_URL = (
-    os.getenv(
-        "INSTAGRAM_APP_HELPER_OPEN_URL",
-        os.getenv("INSTAGRAM_HELPER_OPEN_URL", "http://127.0.0.1:17374/open"),
-    )
-    or "http://127.0.0.1:17374/open"
-).strip()
-DEFAULT_INSTAGRAM_PUBLISH_SOURCE_DIR = str(Path.home() / "SlezhkaPublishSource")
-INSTAGRAM_PUBLISH_SOURCE_DIR = (
-    os.getenv("INSTAGRAM_PUBLISH_SOURCE_DIR", DEFAULT_INSTAGRAM_PUBLISH_SOURCE_DIR)
-    or DEFAULT_INSTAGRAM_PUBLISH_SOURCE_DIR
-)
+ADMIN_USER = SETTINGS.admin_user
+ADMIN_PASS = SETTINGS.admin_pass
+BOT_TOKEN = SETTINGS.bot_token
+BOT_USERNAME = SETTINGS.bot_username
+ADMIN_TEST_CHAT_ID = SETTINGS.admin_test_chat_id
+SESSION_SECRET = SETTINGS.session_secret
+SESSION_MAX_AGE_SECONDS = SETTINGS.session_max_age_seconds
+MAX_BROADCAST_MEDIA_BYTES = SETTINGS.max_broadcast_media_bytes
+ADMIN_BASE_PATH_RAW = SETTINGS.admin_base_path_raw
+HELPER_API_KEY = SETTINGS.helper_api_key
+HELPER_TICKET_TTL_SECONDS = SETTINGS.helper_ticket_ttl_seconds
+INSTAGRAM_APP_HELPER_OPEN_URL = SETTINGS.instagram_app_helper_open_url
+INSTAGRAM_PUBLISH_SOURCE_DIR = SETTINGS.instagram_publish_source_dir
 PUBLISH_VIDEO_EXTENSIONS = {".mp4", ".mov"}
-PUBLISH_N8N_WEBHOOK_URL = (os.getenv("PUBLISH_N8N_WEBHOOK_URL", "") or "").strip()
-PUBLISH_STAGING_DIR = (
-    os.getenv("PUBLISH_STAGING_DIR", str(Path.home() / "SlezhkaPublishStaging"))
-    or str(Path.home() / "SlezhkaPublishStaging")
-).strip()
-PUBLISH_BASE_URL = (os.getenv("PUBLISH_BASE_URL", "") or "").strip().rstrip("/")
-PUBLISH_SHARED_SECRET = (
-    os.getenv("PUBLISH_SHARED_SECRET", HELPER_API_KEY or SESSION_SECRET)
-    or HELPER_API_KEY
-    or SESSION_SECRET
-).strip()
-PUBLISH_WEBHOOK_MAX_AGE_SECONDS = int(os.getenv("PUBLISH_WEBHOOK_MAX_AGE_SECONDS", "300"))
-PUBLISH_FACTORY_TIMEOUT_SECONDS = int(os.getenv("PUBLISH_FACTORY_TIMEOUT_SECONDS", "900"))
-PUBLISH_RUNNER_API_KEY = (os.getenv("PUBLISH_RUNNER_API_KEY", HELPER_API_KEY) or HELPER_API_KEY).strip()
-PUBLISH_RUNNER_LEASE_SECONDS = int(os.getenv("PUBLISH_RUNNER_LEASE_SECONDS", "900"))
-PUBLISH_DEFAULT_WORKFLOW = (os.getenv("PUBLISH_DEFAULT_WORKFLOW", "default") or "default").strip()
-MAIL_COLLECTOR_ENABLED = (os.getenv("MAIL_COLLECTOR_ENABLED", "1") or "1").strip().lower() in {"1", "true", "yes", "on"}
-MAIL_COLLECTOR_RECONCILE_SECONDS = max(15, int(os.getenv("MAIL_COLLECTOR_RECONCILE_SECONDS", "60")))
-MAIL_COLLECTOR_STALE_SYNC_SECONDS = max(30, int(os.getenv("MAIL_COLLECTOR_STALE_SYNC_SECONDS", str(10 * 60))))
-MAIL_COLLECTOR_WATCH_RENEW_MARGIN_SECONDS = max(60, int(os.getenv("MAIL_COLLECTOR_WATCH_RENEW_MARGIN_SECONDS", str(15 * 60))))
-MAIL_WEBHOOK_SECRET = (os.getenv("MAIL_WEBHOOK_SECRET", PUBLISH_SHARED_SECRET or HELPER_API_KEY or SESSION_SECRET) or "").strip()
-STRICT_CONFIG = (os.getenv("STRICT_CONFIG", "0") or "0").strip().lower() in {"1", "true", "yes", "on"}
+PUBLISH_N8N_WEBHOOK_URL = SETTINGS.publish_n8n_webhook_url
+PUBLISH_STAGING_DIR = SETTINGS.publish_staging_dir
+PUBLISH_BASE_URL = SETTINGS.publish_base_url
+PUBLISH_SHARED_SECRET = SETTINGS.publish_shared_secret
+PUBLISH_WEBHOOK_MAX_AGE_SECONDS = SETTINGS.publish_webhook_max_age_seconds
+PUBLISH_FACTORY_TIMEOUT_SECONDS = SETTINGS.publish_factory_timeout_seconds
+PUBLISH_RUNNER_API_KEY = SETTINGS.publish_runner_api_key
+PUBLISH_RUNNER_LEASE_SECONDS = SETTINGS.publish_runner_lease_seconds
+PUBLISH_DEFAULT_WORKFLOW = SETTINGS.publish_default_workflow
+MAIL_COLLECTOR_ENABLED = SETTINGS.mail_collector_enabled
+MAIL_COLLECTOR_RECONCILE_SECONDS = SETTINGS.mail_collector_reconcile_seconds
+MAIL_COLLECTOR_STALE_SYNC_SECONDS = SETTINGS.mail_collector_stale_sync_seconds
+MAIL_COLLECTOR_WATCH_RENEW_MARGIN_SECONDS = SETTINGS.mail_collector_watch_renew_margin_seconds
+MAIL_WEBHOOK_SECRET = SETTINGS.mail_webhook_secret
+STRICT_CONFIG = SETTINGS.strict_config
+EMBED_RUNTIME_WORKER = SETTINGS.embed_runtime_worker
 
 
 def _config_warnings() -> list[str]:
@@ -165,31 +163,6 @@ ACCOUNT_MAIL_CHALLENGE_KIND_LABELS = {
     "approval_link": "Ссылка подтверждения",
     "unsupported": "Неподдерживаемый сценарий",
 }
-ACCOUNT_INSTAGRAM_LAUNCH_STATUS_LABELS = {
-    "idle": "Не запускался",
-    "login_submitted": "Логин отправлен",
-    "manual_2fa_required": "Нужен 2FA",
-    "challenge_required": "Нужен challenge",
-    "invalid_password": "Неверный пароль",
-    "helper_error": "Ошибка helper",
-}
-ACCOUNT_INSTAGRAM_PUBLISH_STATUS_LABELS = {
-    "idle": "Не запускался",
-    "preparing": "Подготовка",
-    "login_required": "Нужен вход",
-    "manual_2fa_required": "Нужен 2FA",
-    "email_code_required": "Нужен код с почты",
-    "challenge_required": "Нужен challenge",
-    "invalid_password": "Неверный пароль",
-    "importing_media": "Импорт медиа",
-    "opening_reel_flow": "Открываю Reel",
-    "selecting_media": "Выбираю видео",
-    "publishing": "Публикую",
-    "published": "Опубликовано",
-    "needs_review": "Нужна проверка",
-    "no_source_video": "Нет видео",
-    "publish_error": "Ошибка публикации",
-}
 RUNTIME_TASK_STATE_LABELS = {
     "queued": "В очереди",
     "running": "Выполняется",
@@ -198,89 +171,6 @@ RUNTIME_TASK_STATE_LABELS = {
     "failed": "Ошибка",
     "canceled": "Отменена",
 }
-INSTAGRAM_AUDIT_BATCH_STATE_LABELS = {
-    "queued": "В очереди",
-    "running": "Выполняется",
-    "completed": "Завершён",
-    "completed_with_errors": "Завершён с проблемами",
-    "failed": "Ошибка",
-    "canceled": "Отменён",
-}
-INSTAGRAM_AUDIT_ITEM_STATE_LABELS = {
-    "queued": "В очереди",
-    "launching": "Запускаю helper",
-    "login_check": "Проверяю вход",
-    "mail_check_if_needed": "Проверяю почту",
-    "done": "Готово",
-}
-INSTAGRAM_AUDIT_RESOLUTION_LABELS = {
-    "login_ok": "Вход OK",
-    "manual_2fa_required": "Нужен 2FA",
-    "email_code_required": "Нужен код с почты",
-    "challenge_required": "Нужен challenge",
-    "invalid_password": "Неверный пароль",
-    "helper_error": "Ошибка helper",
-    "missing_credentials": "Нет данных входа",
-    "missing_device": "Нет устройства",
-}
-INSTAGRAM_AUDIT_MAIL_PROBE_LABELS = {
-    "pending": "Не проверялась",
-    "not_required": "Не требуется",
-    "checking": "Проверяю почту",
-    "ok": "Почта OK",
-    "empty": "Писем нет",
-    "auth_error": "Ошибка входа",
-    "connect_error": "Ошибка подключения",
-    "unsupported": "Неподдерживаемая почта",
-    "not_configured": "Почта не настроена",
-}
-PUBLISH_BATCH_STATE_LABELS = {
-    "queued_to_worker": "Ждёт запуск",
-    "worker_started": "Запускается",
-    "generating": "Генерация",
-    "publishing": "Публикация",
-    "completed": "Завершён",
-    "completed_needs_review": "Завершён, нужна проверка",
-    "completed_with_errors": "Завершён с ошибками",
-    "failed_generation": "Ошибка генерации",
-    "canceled": "Отменён",
-}
-PUBLISH_JOB_STATE_LABELS = {
-    "queued": "В очереди",
-    "leased": "Взята в работу",
-    "preparing": "Подготовка",
-    "importing_media": "Импорт медиа",
-    "opening_reel_flow": "Открываю Reel",
-    "selecting_media": "Выбор видео",
-    "publishing": "Публикация",
-    "published": "Опубликовано",
-    "needs_review": "Нужна проверка",
-    "failed": "Ошибка",
-    "canceled": "Отменено",
-}
-PUBLISH_BATCH_ACCOUNT_STATE_LABELS = {
-    "queued_for_generation": "Ждёт генерацию",
-    "generating": "Генерируется видео",
-    "generation_failed": "Генерация не удалась",
-    "queued_for_publish": "Ждёт публикацию",
-    "leased": "Взята в работу",
-    "preparing": "Подготовка",
-    "importing_media": "Импорт медиа",
-    "opening_reel_flow": "Открываю Reel",
-    "selecting_media": "Выбор видео",
-    "publishing": "Публикация",
-    "published": "Опубликовано",
-    "needs_review": "Нужна проверка",
-    "failed": "Ошибка публикации",
-    "canceled": "Отменено",
-}
-PUBLISH_GENERATION_STAGE_LABELS = {
-    "workflow_started": "Запуск workflow",
-    "script_generation": "Генерация сценария",
-    "image_generation": "Генерация изображений",
-    "video_render": "Рендер видео",
-    "artifact_packaging": "Подготовка файла",
-}
 PUBLISH_PROGRESS_STEPS = [
     {"key": "workflow_started", "label": "Запуск"},
     {"key": "video_production", "label": "Генерация видео"},
@@ -288,30 +178,26 @@ PUBLISH_PROGRESS_STEPS = [
     {"key": "instagram_publish", "label": "Публикация в Instagram"},
     {"key": "done", "label": "Готово"},
 ]
-ACCOUNTS_IMPORT_MAX_BYTES = int(os.getenv("ACCOUNTS_IMPORT_MAX_BYTES", str(2 * 1024 * 1024)))
-INSTAGRAM_AUDIT_POLL_INTERVAL_SECONDS = max(2, int(os.getenv("INSTAGRAM_AUDIT_POLL_INTERVAL_SECONDS", "2")))
-INSTAGRAM_AUDIT_HELPER_POLL_SECONDS = max(2, int(os.getenv("INSTAGRAM_AUDIT_HELPER_POLL_SECONDS", "4")))
-INSTAGRAM_AUDIT_HELPER_IDLE_TIMEOUT_SECONDS = max(30, int(os.getenv("INSTAGRAM_AUDIT_HELPER_IDLE_TIMEOUT_SECONDS", "180")))
-INSTAGRAM_AUDIT_LOGIN_TIMEOUT_SECONDS = max(30, int(os.getenv("INSTAGRAM_AUDIT_LOGIN_TIMEOUT_SECONDS", "240")))
-INSTAGRAM_AUDIT_MAIL_FRESHNESS_SECONDS = max(300, int(os.getenv("INSTAGRAM_AUDIT_MAIL_FRESHNESS_SECONDS", str(30 * 60))))
-INSTAGRAM_MAIL_CHALLENGE_TIMEOUT_SECONDS = max(15, int(os.getenv("INSTAGRAM_MAIL_CHALLENGE_TIMEOUT_SECONDS", "90")))
-INSTAGRAM_MAIL_CHALLENGE_POLL_SECONDS = max(5, int(os.getenv("INSTAGRAM_MAIL_CHALLENGE_POLL_SECONDS", "10")))
-INSTAGRAM_MAIL_CHALLENGE_LOOKBACK_SECONDS = max(120, int(os.getenv("INSTAGRAM_MAIL_CHALLENGE_LOOKBACK_SECONDS", "120")))
-INSTAGRAM_MAIL_CHALLENGE_FRESHNESS_SECONDS = max(300, int(os.getenv("INSTAGRAM_MAIL_CHALLENGE_FRESHNESS_SECONDS", "900")))
-INSTAGRAM_AUDIT_ITEM_RETRY_ATTEMPTS = max(1, int(os.getenv("INSTAGRAM_AUDIT_ITEM_RETRY_ATTEMPTS", "3")))
-INSTAGRAM_AUDIT_FORCE_CLEAN_LOGIN = (os.getenv("INSTAGRAM_AUDIT_FORCE_CLEAN_LOGIN", "0") or "0").strip().lower() in {
-    "1",
-    "true",
-    "yes",
-    "on",
-}
-RUNTIME_TASK_LEASE_SECONDS = max(60, int(os.getenv("RUNTIME_TASK_LEASE_SECONDS", "300")))
-RUNTIME_WORKER_HEARTBEAT_SECONDS = max(5, int(os.getenv("RUNTIME_WORKER_HEARTBEAT_SECONDS", "15")))
-RUNTIME_TASK_RETRY_DELAY_SECONDS = max(10, int(os.getenv("RUNTIME_TASK_RETRY_DELAY_SECONDS", "30")))
-RUNTIME_RECONCILE_INTERVAL_SECONDS = max(30, int(os.getenv("RUNTIME_RECONCILE_INTERVAL_SECONDS", "60")))
-RUNTIME_WORKER_LIVE_TIMEOUT_SECONDS = max(RUNTIME_WORKER_HEARTBEAT_SECONDS * 2, int(os.getenv("RUNTIME_WORKER_LIVE_TIMEOUT_SECONDS", "45")))
-RUNTIME_WORKER_NAME = (os.getenv("RUNTIME_WORKER_NAME", "runtime-local-worker") or "runtime-local-worker").strip()
-RUNTIME_WORKER_IDLE_POLL_SECONDS = max(0.1, float(os.getenv("RUNTIME_WORKER_IDLE_POLL_SECONDS", "0.5")))
+INSTAGRAM_AUDIT_MAIL_PROBE_LABELS = INSTAGRAM_AUDIT_MAIL_PROBE_STATE_LABELS
+ACCOUNTS_IMPORT_MAX_BYTES = SETTINGS.accounts_import_max_bytes
+INSTAGRAM_AUDIT_POLL_INTERVAL_SECONDS = SETTINGS.instagram_audit_poll_interval_seconds
+INSTAGRAM_AUDIT_HELPER_POLL_SECONDS = SETTINGS.instagram_audit_helper_poll_seconds
+INSTAGRAM_AUDIT_HELPER_IDLE_TIMEOUT_SECONDS = SETTINGS.instagram_audit_helper_idle_timeout_seconds
+INSTAGRAM_AUDIT_LOGIN_TIMEOUT_SECONDS = SETTINGS.instagram_audit_login_timeout_seconds
+INSTAGRAM_AUDIT_MAIL_FRESHNESS_SECONDS = SETTINGS.instagram_audit_mail_freshness_seconds
+INSTAGRAM_MAIL_CHALLENGE_TIMEOUT_SECONDS = SETTINGS.instagram_mail_challenge_timeout_seconds
+INSTAGRAM_MAIL_CHALLENGE_POLL_SECONDS = SETTINGS.instagram_mail_challenge_poll_seconds
+INSTAGRAM_MAIL_CHALLENGE_LOOKBACK_SECONDS = SETTINGS.instagram_mail_challenge_lookback_seconds
+INSTAGRAM_MAIL_CHALLENGE_FRESHNESS_SECONDS = SETTINGS.instagram_mail_challenge_freshness_seconds
+INSTAGRAM_AUDIT_ITEM_RETRY_ATTEMPTS = SETTINGS.instagram_audit_item_retry_attempts
+INSTAGRAM_AUDIT_FORCE_CLEAN_LOGIN = SETTINGS.instagram_audit_force_clean_login
+RUNTIME_TASK_LEASE_SECONDS = SETTINGS.runtime_task_lease_seconds
+RUNTIME_WORKER_HEARTBEAT_SECONDS = SETTINGS.runtime_worker_heartbeat_seconds
+RUNTIME_TASK_RETRY_DELAY_SECONDS = SETTINGS.runtime_task_retry_delay_seconds
+RUNTIME_RECONCILE_INTERVAL_SECONDS = SETTINGS.runtime_reconcile_interval_seconds
+RUNTIME_WORKER_LIVE_TIMEOUT_SECONDS = SETTINGS.runtime_worker_live_timeout_seconds
+RUNTIME_WORKER_NAME = SETTINGS.runtime_worker_name
+RUNTIME_WORKER_IDLE_POLL_SECONDS = SETTINGS.runtime_worker_idle_poll_seconds
 
 RUNTIME_WORKER_LOCK = threading.RLock()
 RUNTIME_WORKER_STOP = threading.Event()
@@ -337,13 +223,13 @@ async def lifespan(_: FastAPI):
     _validate_runtime_config()
     db.init_db()
     Path(PUBLISH_STAGING_DIR).expanduser().mkdir(parents=True, exist_ok=True)
-    RUNTIME_WORKER_STOP.clear()
-    RUNTIME_WORKER_WAKEUP.clear()
-    _ensure_runtime_worker_thread()
+    if EMBED_RUNTIME_WORKER:
+        start_runtime_worker_service()
     try:
         yield
     finally:
-        _stop_runtime_worker_thread()
+        if EMBED_RUNTIME_WORKER:
+            stop_runtime_worker_service()
 
 
 app = FastAPI(lifespan=lifespan)
@@ -713,6 +599,56 @@ def _instagram_audit_joke(state: Optional[str]) -> tuple[str, str]:
         label = "нет проверки"
     _, status_class = _instagram_audit_resolution_meta(value)
     return label, status_class
+
+
+def _compact_account_block_reason(account: dict[str, Any]) -> str:
+    rotation_state = str(account.get("rotation_state") or "").strip().lower()
+    launch_status = str(account.get("instagram_launch_status") or "").strip().lower()
+    publish_status = str(account.get("instagram_publish_status") or "").strip().lower()
+    audit_status = str(account.get("latest_audit_resolution_state") or "").strip().lower()
+    reason = str(account.get("rotation_state_reason") or "").strip()
+    reason_lower = reason.lower()
+    issues = [item.lower() for item in db.publish_account_readiness_issues(account)]
+
+    if rotation_state == "working" and not reason and not issues:
+        return ""
+
+    if (
+        launch_status == "manual_2fa_required"
+        or publish_status == "manual_2fa_required"
+        or audit_status == "manual_2fa_required"
+        or "2fa" in reason_lower
+    ):
+        return "Нужен 2FA"
+    if (
+        launch_status == "invalid_password"
+        or publish_status == "invalid_password"
+        or audit_status == "invalid_password"
+        or "неверн" in reason_lower and "парол" in reason_lower
+        or "invalid password" in reason_lower
+    ):
+        return "Неверный пароль"
+    if "trusted" in reason_lower or "another device" in reason_lower or "довер" in reason_lower:
+        return "Доверенное устройство"
+    if (
+        publish_status == "email_code_required"
+        or audit_status == "email_code_required"
+        or any(token in reason_lower for token in ("почт", "email", "mail", "imap", "письм"))
+    ):
+        return "Проблема с почтой"
+    if any(token in reason_lower for token in ("эмулятор", "emulator", "serial")):
+        return "Нет эмулятора"
+    if any("account login" in item or "account password" in item for item in issues):
+        return "Нет логина/пароля"
+    if any("emulator serial" in item for item in issues):
+        return "Нет эмулятора"
+    if "нет подтверждённой проверки входа" in reason_lower or "проверки входа" in reason_lower:
+        return "Нет проверки"
+    if launch_status == "challenge_required" or publish_status == "challenge_required" or audit_status == "challenge_required":
+        return "Challenge"
+    if rotation_state == "not_working":
+        return "Нерабочий"
+    return ""
 
 
 def _instagram_audit_mail_probe_meta(state: Optional[str]) -> tuple[str, str]:
@@ -2613,6 +2549,32 @@ def _stop_runtime_worker_thread() -> None:
         thread.join(timeout=1.0)
 
 
+def start_runtime_worker_service() -> None:
+    RUNTIME_WORKER_STOP.clear()
+    RUNTIME_WORKER_WAKEUP.clear()
+    _ensure_runtime_worker_thread()
+
+
+def stop_runtime_worker_service() -> None:
+    _stop_runtime_worker_thread()
+
+
+def run_runtime_worker_forever() -> int:
+    _validate_runtime_config()
+    db.init_db()
+    Path(PUBLISH_STAGING_DIR).expanduser().mkdir(parents=True, exist_ok=True)
+    RUNTIME_WORKER_STOP.clear()
+    RUNTIME_WORKER_WAKEUP.clear()
+    try:
+        _runtime_worker_main()
+    except KeyboardInterrupt:
+        return 130
+    finally:
+        RUNTIME_WORKER_STOP.set()
+        RUNTIME_WORKER_WAKEUP.set()
+    return 0
+
+
 def _enqueue_publish_batch_start(batch_id: int) -> None:
     db.create_or_reactivate_runtime_task(
         task_type="publish_batch_start",
@@ -3057,6 +3019,7 @@ def _accounts_page_response(
     import_errors: Optional[list[str]] = None,
     status_code: int = 200,
 ) -> HTMLResponse:
+    db.sync_instagram_auto_rotation_states(limit=1000)
     try:
         worker_filter_value, worker_filter_id, unassigned_only = _worker_filter_meta(worker_filter)
     except ValueError:
@@ -3110,6 +3073,7 @@ def _accounts_page_response(
         account["rotation_state_label"] = rotation_label
         account["rotation_state_class"] = rotation_class
         account["rotation_state_reason"] = db.account_rotation_display_reason(account)
+        account["compact_block_reason"] = _compact_account_block_reason(account)
         account["rotation_state_source"] = str(account.get("rotation_state_source") or "manual").strip().lower() or "manual"
         account["views_state_label"] = views_label
         account["views_state_class"] = views_class
@@ -3275,6 +3239,13 @@ def _account_detail_page_response(
     owner_name = str(account.get("owner_worker_name") or "").strip()
     owner_username = str(account.get("owner_worker_username") or "").strip()
     account["owner_label"] = f"{owner_name} (@{owner_username})" if owner_username else (owner_name or "Без работника")
+    latest_reel_row = db.get_latest_instagram_reel_post_for_account(int(account["id"]))
+    latest_reel = None
+    if latest_reel_row is not None:
+        latest_reel = _decorate_instagram_reel_post(
+            dict(latest_reel_row),
+            snapshots=[dict(item) for item in db.list_instagram_reel_metric_snapshots(int(latest_reel_row["id"]))],
+        )
     latest_audit = db.get_latest_instagram_audit_for_account(int(account["id"]))
     latest_audit_data = dict(latest_audit) if latest_audit else None
     if latest_audit_data:
@@ -3315,6 +3286,7 @@ def _account_detail_page_response(
             "detail_self_url": detail_self_url,
             "return_to": return_to_clean,
             "latest_audit": latest_audit_data,
+            "latest_reel": latest_reel,
             "instagram_publish_source_dir": INSTAGRAM_PUBLISH_SOURCE_DIR,
             "instagram_publish_source_info_url": _build_instagram_helper_local_url("/publish-source/latest"),
             "error": error,
@@ -3772,6 +3744,139 @@ def _format_clock_label(ts: Any) -> str:
     return datetime.fromtimestamp(value).strftime("%H:%M:%S")
 
 
+def _instagram_reel_collection_stage_label(stage: Any) -> str:
+    value = str(stage or "").strip().lower()
+    return {
+        "t30m": "30м",
+        "t6h": "6ч",
+        "t24h": "24ч",
+        "t72h": "72ч",
+        "done": "Готово",
+    }.get(value, "—")
+
+
+def _instagram_reel_collection_state_meta(state: Any) -> tuple[str, str]:
+    value = str(state or "").strip().lower()
+    mapping = {
+        "scheduled": ("Ожидает сбор", "wait"),
+        "leased": ("Собирается", "wait"),
+        "collected": ("Собрано", "on"),
+        "partial": ("Частично", "review"),
+        "unavailable": ("Недоступно", "review"),
+        "not_found": ("Reel не найден", "review"),
+        "failed": ("Ошибка", "off"),
+    }
+    return mapping.get(value, ("—", "unknown"))
+
+
+def _instagram_reel_snapshot_status_meta(status: Any) -> tuple[str, str]:
+    value = str(status or "").strip().lower()
+    mapping = {
+        "ok": ("Полный", "on"),
+        "partial": ("Частичный", "review"),
+        "unavailable": ("Недоступно", "review"),
+        "not_found": ("Не найден", "review"),
+        "failed": ("Ошибка", "off"),
+    }
+    return mapping.get(value, ("—", "unknown"))
+
+
+def _format_metric_compact_value(value: Any) -> str:
+    try:
+        number = int(value)
+    except Exception:
+        return "—"
+    if number < 1000:
+        return str(number)
+    if number < 1_000_000:
+        compact = round(number / 1000.0, 1)
+        return f"{compact:.1f}K".replace(".0K", "K")
+    compact = round(number / 1_000_000.0, 1)
+    return f"{compact:.1f}M".replace(".0M", "M")
+
+
+def _format_metric_seconds_value(value: Any) -> str:
+    try:
+        seconds = float(value)
+    except Exception:
+        return "—"
+    if seconds < 0:
+        return "—"
+    rounded = int(round(seconds))
+    if rounded < 60:
+        return f"{rounded}с"
+    minutes, secs = divmod(rounded, 60)
+    if minutes < 60:
+        return f"{minutes}м {secs}с" if secs else f"{minutes}м"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}ч {minutes}м" if minutes else f"{hours}ч"
+
+
+def _format_metric_percent_value(value: Any) -> str:
+    try:
+        pct = float(value)
+    except Exception:
+        return "—"
+    return f"{pct:.1f}%".replace(".0%", "%")
+
+
+def _decorate_instagram_reel_snapshot(raw: dict[str, Any]) -> dict[str, Any]:
+    row = dict(raw)
+    status_label, status_class = _instagram_reel_snapshot_status_meta(row.get("status"))
+    row["status_label"] = status_label
+    row["status_class"] = status_class
+    row["window_label"] = _instagram_reel_collection_stage_label(row.get("window_key"))
+    row["collected_at_label"] = _format_timestamp_label(row.get("collected_at"))
+    row["plays_label"] = _format_metric_compact_value(row.get("plays_count"))
+    row["likes_label"] = _format_metric_compact_value(row.get("likes_count"))
+    row["comments_label"] = _format_metric_compact_value(row.get("comments_count"))
+    row["shares_label"] = _format_metric_compact_value(row.get("shares_count"))
+    row["saves_label"] = _format_metric_compact_value(row.get("saves_count"))
+    row["accounts_reached_label"] = _format_metric_compact_value(row.get("accounts_reached_count"))
+    row["watch_time_label"] = _format_metric_seconds_value(row.get("watch_time_seconds"))
+    row["avg_watch_time_label"] = _format_metric_seconds_value(row.get("avg_watch_time_seconds"))
+    row["three_second_views_label"] = _format_metric_compact_value(row.get("three_second_views_count"))
+    row["completion_rate_label"] = _format_metric_percent_value(row.get("completion_rate_pct"))
+    return row
+
+
+def _decorate_instagram_reel_post(raw: dict[str, Any], *, snapshots: Optional[list[dict[str, Any]]] = None) -> dict[str, Any]:
+    row = dict(raw)
+    state_label, state_class = _instagram_reel_collection_state_meta(row.get("collection_state"))
+    latest_status_label, latest_status_class = _instagram_reel_snapshot_status_meta(row.get("latest_snapshot_status"))
+    row["collection_stage_label"] = _instagram_reel_collection_stage_label(row.get("collection_stage"))
+    row["collection_state_label"] = state_label
+    row["collection_state_class"] = state_class
+    row["latest_snapshot_status_label"] = latest_status_label
+    row["latest_snapshot_status_class"] = latest_status_class
+    row["published_at_label"] = _format_timestamp_label(row.get("published_at"))
+    row["next_collect_at_label"] = _format_timestamp_label(row.get("next_collect_at"))
+    row["last_collected_at_label"] = _format_timestamp_label(row.get("last_collected_at") or row.get("latest_snapshot_collected_at"))
+    row["latest_snapshot_window_label"] = _instagram_reel_collection_stage_label(row.get("latest_snapshot_window_key"))
+    row["plays_label"] = _format_metric_compact_value(row.get("latest_snapshot_plays_count"))
+    row["likes_label"] = _format_metric_compact_value(row.get("latest_snapshot_likes_count"))
+    row["comments_label"] = _format_metric_compact_value(row.get("latest_snapshot_comments_count"))
+    row["shares_label"] = _format_metric_compact_value(row.get("latest_snapshot_shares_count"))
+    row["saves_label"] = _format_metric_compact_value(row.get("latest_snapshot_saves_count"))
+    row["accounts_reached_label"] = _format_metric_compact_value(row.get("latest_snapshot_accounts_reached_count"))
+    row["watch_time_label"] = _format_metric_seconds_value(row.get("latest_snapshot_watch_time_seconds"))
+    row["avg_watch_time_label"] = _format_metric_seconds_value(row.get("latest_snapshot_avg_watch_time_seconds"))
+    row["three_second_views_label"] = _format_metric_compact_value(row.get("latest_snapshot_three_second_views_count"))
+    row["completion_rate_label"] = _format_metric_percent_value(row.get("latest_snapshot_completion_rate_pct"))
+    row["compact_summary"] = " · ".join(
+        item
+        for item in (
+            f"Просмотры {row['plays_label']}" if row["plays_label"] != "—" else "",
+            f"Лайки {row['likes_label']}" if row["likes_label"] != "—" else "",
+            f"Комменты {row['comments_label']}" if row["comments_label"] != "—" else "",
+            row["last_collected_at_label"] if row["last_collected_at_label"] else "",
+        )
+        if item
+    )
+    row["history"] = [_decorate_instagram_reel_snapshot(dict(item)) for item in (snapshots or [])]
+    return row
+
+
 def _publish_payload_mail_challenge(payload: dict[str, Any]) -> dict[str, Any]:
     value = payload.get("mail_challenge") if isinstance(payload, dict) else None
     return dict(value) if isinstance(value, dict) else {}
@@ -3991,6 +4096,16 @@ def _build_publish_dashboard_snapshot(batch_id: int) -> Optional[dict[str, Any]]
     batch["completed_at_label"] = _format_timestamp_label(batch.get("completed_at"))
 
     accounts_raw = [_decorate_publish_account(dict(raw)) for raw in db.list_publish_batch_accounts(int(batch_id))]
+    reel_posts_by_job_id: dict[int, dict[str, Any]] = {}
+    for raw in db.list_instagram_reel_posts_for_batch(int(batch_id)):
+        post = dict(raw)
+        decorated_post = _decorate_instagram_reel_post(
+            post,
+            snapshots=[dict(item) for item in db.list_instagram_reel_metric_snapshots(int(post["id"]))],
+        )
+        publish_job_id = int(decorated_post.get("publish_job_id") or 0)
+        if publish_job_id > 0:
+            reel_posts_by_job_id[publish_job_id] = decorated_post
     artifacts_raw: list[dict[str, Any]] = []
     for raw in db.list_publish_artifacts(int(batch_id)):
         row = dict(raw)
@@ -4205,6 +4320,15 @@ def _build_publish_dashboard_snapshot(batch_id: int) -> Optional[dict[str, Any]]
             if account.get("artifact_id")
             else ""
         )
+        reel_post = reel_posts_by_job_id.get(int(account.get("job_id") or 0))
+        if reel_post is not None:
+            account["latest_reel"] = reel_post
+            account["reel_metrics_summary"] = str(reel_post.get("compact_summary") or "").strip()
+            account["reel_metrics_history"] = list(reel_post.get("history") or [])
+        else:
+            account["latest_reel"] = None
+            account["reel_metrics_summary"] = ""
+            account["reel_metrics_history"] = []
         account["queue_position"] = int(account.get("queue_position") or 0)
         account["open_url"] = with_base(f"/accounts/{account_id}")
         account["updated_at_label"] = _format_timestamp_label(account.get("updated_at"))
@@ -4393,10 +4517,18 @@ def _build_publish_dashboard_snapshot(batch_id: int) -> Optional[dict[str, Any]]
 
 def _decorate_publish_account(raw: dict[str, Any]) -> dict[str, Any]:
     row = dict(raw)
+    rotation_label, rotation_class = _account_rotation_state_meta(row.get("rotation_state"))
+    launch_label, launch_class = _account_instagram_launch_status_meta(row.get("instagram_launch_status"))
     publish_label, publish_class = _account_instagram_publish_status_meta(row.get("instagram_publish_status"))
     mail_label, mail_class = _account_mail_status_meta(row.get("mail_status"))
     mail_ready_label, mail_ready_class, mail_ready_detail = _account_mail_ready_meta(row)
     mail_challenge_label, mail_challenge_class = _account_mail_challenge_meta(row.get("mail_challenge_status"))
+    row["rotation_state_label"] = rotation_label
+    row["rotation_state_class"] = rotation_class
+    row["rotation_state_reason"] = db.account_rotation_display_reason(row)
+    row["compact_block_reason"] = _compact_account_block_reason(row)
+    row["instagram_launch_status_label"] = launch_label
+    row["instagram_launch_status_class"] = launch_class
     row["instagram_publish_status_label"] = publish_label
     row["instagram_publish_status_class"] = publish_class
     row["mail_enabled"] = db.account_mail_automation_ready(row)
@@ -4441,15 +4573,43 @@ def _decorate_publish_account(raw: dict[str, Any]) -> dict[str, Any]:
     return row
 
 
+def _publish_account_selection_blockers(account: dict[str, Any]) -> list[str]:
+    blockers = list(db.publish_account_readiness_issues(account))
+    rotation_reason = str(account.get("rotation_state_reason") or "").strip()
+    if rotation_reason and rotation_reason not in blockers:
+        blockers.append(rotation_reason)
+    if blockers:
+        return blockers
+
+    launch_status = str(account.get("instagram_launch_status") or "idle").strip().lower()
+    publish_status = str(account.get("instagram_publish_status") or "idle").strip().lower()
+    audit_status = str(account.get("latest_audit_resolution_state") or "").strip().lower()
+    if launch_status == "login_submitted" or audit_status == "login_ok" or publish_status in {"published", "needs_review"}:
+        return []
+    return ["Нет подтверждённой проверки входа Instagram. Сначала запусти Instagram audit или live-login."]
+
+
 def _publish_account_selection_context(limit: int = 500) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     _ensure_publish_account_serials(limit=limit)
-    accounts = [_decorate_publish_account(dict(raw)) for raw in db.list_publish_ready_accounts(limit=limit)]
-    blocked_accounts = []
-    for raw in db.list_publish_blocked_accounts(limit=limit):
-        row = _decorate_publish_account(dict(raw))
-        row["publish_blockers"] = db.publish_account_readiness_issues(row)
-        blocked_accounts.append(row)
-    return accounts, blocked_accounts
+    db.sync_instagram_auto_rotation_states(limit=max(limit, 1000))
+    ready_accounts: list[dict[str, Any]] = []
+    blocked_accounts: list[dict[str, Any]] = []
+    rows = [_decorate_publish_account(dict(raw)) for raw in db.list_publish_ready_accounts(limit=limit)]
+    rows.extend(_decorate_publish_account(dict(raw)) for raw in db.list_publish_blocked_accounts(limit=limit))
+    for row in rows:
+        blockers = _publish_account_selection_blockers(row)
+        if blockers:
+            row["publish_blockers"] = blockers
+            compact_reason = str(row.get("compact_block_reason") or "").strip()
+            if not compact_reason:
+                compact_source = dict(row)
+                compact_source["rotation_state_reason"] = " ".join(str(item) for item in blockers if item).strip()
+                compact_reason = _compact_account_block_reason(compact_source)
+            row["compact_block_reason"] = compact_reason or "Нерабочий"
+            blocked_accounts.append(row)
+        else:
+            ready_accounts.append(row)
+    return ready_accounts, blocked_accounts
 
 
 def _selected_publish_accounts(account_ids: list[int], *, limit: int = 500) -> tuple[list[dict[str, Any]], list[int]]:
@@ -5793,6 +5953,23 @@ def helper_account_instagram_publish_status_update(
     detail = str(payload.get("detail") or "").strip()
     last_file = str(payload.get("last_file") or "").strip()
     db.update_account_instagram_publish_state(int(account_id), status_value, detail, last_file=last_file)
+    if status_value == "published":
+        helper_ticket = str(payload.get("helper_ticket") or "").strip()
+        if helper_ticket:
+            db.upsert_instagram_reel_post_for_standalone(
+                account_id=int(account_id),
+                helper_ticket=helper_ticket,
+                source_name=last_file,
+                source_path=str(payload.get("source_path") or "").strip(),
+                payload={
+                    "helper_ticket": helper_ticket,
+                    "reel_fingerprint": str(payload.get("reel_fingerprint") or "").strip(),
+                    "reel_signature_text": str(payload.get("reel_signature_text") or "").strip(),
+                    "matched_slot": payload.get("matched_slot"),
+                    "matched_age_seconds": payload.get("matched_age_seconds"),
+                    "published_at": payload.get("published_at"),
+                },
+            )
     return JSONResponse(
         {
             "ok": True,
@@ -6062,6 +6239,10 @@ def publishing_job_status_update(
         "checked_slots",
         "matched_slot",
         "matched_age_seconds",
+        "reel_fingerprint",
+        "reel_signature_text",
+        "published_at",
+        "helper_ticket",
         "baseline_available",
         "seconds_until_profile_check",
         "share_clicked_at",
@@ -6107,6 +6288,99 @@ def publishing_job_status_update(
     if cleanup is not None:
         response_payload["cleanup"] = cleanup
     return JSONResponse(response_payload)
+
+
+@app.post("/api/internal/reel-metrics/lease")
+def instagram_reel_metrics_lease(
+    payload: Optional[dict] = Body(None),
+    _: None = Depends(require_publish_runner_api_key),
+):
+    runner_name = str((payload or {}).get("runner_name") or "publish-runner").strip() or "publish-runner"
+    post = db.lease_next_instagram_reel_post(runner_name=runner_name, lease_seconds=PUBLISH_RUNNER_LEASE_SECONDS)
+    if post is None:
+        return Response(status_code=204)
+
+    account_row = db.get_account(int(post["account_id"]))
+    if account_row is None:
+        db.record_instagram_reel_metric_snapshot(
+            int(post["id"]),
+            window_key=str(post["collection_stage"] or "t30m"),
+            status="failed",
+            retryable=True,
+            error_detail="Account not found for reel metrics collection.",
+        )
+        return Response(status_code=204)
+
+    account = dict(account_row)
+    return JSONResponse(
+        {
+            "ok": True,
+            "post": {
+                "id": int(post["id"]),
+                "origin_kind": str(post.get("origin_kind") or ""),
+                "account_id": int(post["account_id"]),
+                "publish_batch_id": int(post["publish_batch_id"]) if post.get("publish_batch_id") is not None else None,
+                "publish_job_id": int(post["publish_job_id"]) if post.get("publish_job_id") is not None else None,
+                "publish_artifact_id": int(post["publish_artifact_id"]) if post.get("publish_artifact_id") is not None else None,
+                "helper_ticket": str(post.get("helper_ticket") or ""),
+                "source_name": str(post.get("source_name") or ""),
+                "source_path": str(post.get("source_path") or ""),
+                "reel_fingerprint": str(post.get("reel_fingerprint") or ""),
+                "reel_signature_text": str(post.get("reel_signature_text") or ""),
+                "matched_slot": int(post["matched_slot"]) if post.get("matched_slot") is not None else None,
+                "matched_age_seconds": int(post["matched_age_seconds"]) if post.get("matched_age_seconds") is not None else None,
+                "published_at": int(post["published_at"]),
+                "window_key": str(post.get("collection_stage") or "t30m"),
+                "collection_state": str(post.get("collection_state") or ""),
+                "next_collect_at": int(post["next_collect_at"]) if post.get("next_collect_at") is not None else None,
+                "account_login": str(account.get("account_login") or ""),
+                "account_password": str(account.get("account_password") or ""),
+                "twofa": str(account.get("twofa") or ""),
+                "username": str(account.get("username") or ""),
+                "instagram_emulator_serial": str(account.get("instagram_emulator_serial") or ""),
+            },
+        }
+    )
+
+
+@app.post("/api/internal/reel-metrics/posts/{post_id}/snapshot")
+def instagram_reel_metrics_snapshot_update(
+    post_id: int,
+    payload: dict = Body(...),
+    _: None = Depends(require_publish_runner_api_key),
+):
+    window_key = str(payload.get("window_key") or "").strip()
+    if not window_key:
+        raise HTTPException(status_code=400, detail="window_key is required")
+    status_value = str(payload.get("status") or "").strip()
+    if not status_value:
+        raise HTTPException(status_code=400, detail="status is required")
+    try:
+        updated = db.record_instagram_reel_metric_snapshot(
+            int(post_id),
+            window_key=window_key,
+            status=status_value,
+            collected_at=payload.get("collected_at"),
+            plays_count=payload.get("plays_count"),
+            likes_count=payload.get("likes_count"),
+            comments_count=payload.get("comments_count"),
+            shares_count=payload.get("shares_count"),
+            saves_count=payload.get("saves_count"),
+            accounts_reached_count=payload.get("accounts_reached_count"),
+            watch_time_seconds=payload.get("watch_time_seconds"),
+            avg_watch_time_seconds=payload.get("avg_watch_time_seconds"),
+            three_second_views_count=payload.get("three_second_views_count"),
+            completion_rate_pct=payload.get("completion_rate_pct"),
+            raw_text_json=payload.get("raw_text_json"),
+            diagnostics_path=str(payload.get("diagnostics_path") or "").strip(),
+            retryable=bool(payload.get("retryable")),
+            error_detail=str(payload.get("error_detail") or "").strip(),
+        )
+    except ValueError as exc:
+        message = str(exc)
+        status_code = 404 if message == "instagram reel post not found" else 400
+        raise HTTPException(status_code=status_code, detail=message) from exc
+    return JSONResponse({"ok": True, "post": updated})
 
 
 @app.post("/accounts", response_class=HTMLResponse)

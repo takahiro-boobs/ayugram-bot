@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import threading
 import time
+import hashlib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -23,7 +24,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 
 import http_utils
-from twofa_utils import is_valid_twofa_secret as _twofa_secret_is_valid, normalize_twofa_secret as _normalize_twofa_secret_value
+from settings import load_helper_settings
+from twofa_utils import (
+    current_totp_code as _current_totp_code,
+    extract_twofa_profile as _extract_twofa_profile,
+    is_valid_twofa_secret as _twofa_secret_is_valid,
+    normalize_twofa_secret as _normalize_twofa_secret_value,
+    seconds_until_totp_rollover as _seconds_until_totp_rollover,
+)
 
 try:
     import pyotp
@@ -34,6 +42,8 @@ else:
     PYOTP_IMPORT_ERROR = None
 
 load_dotenv()
+
+SETTINGS = load_helper_settings()
 
 try:
     import adbutils  # type: ignore
@@ -51,65 +61,39 @@ except Exception as exc:  # pragma: no cover - import-time fallback
 else:
     UIAUTOMATOR2_IMPORT_ERROR = None
 
-HELPER_BIND = (os.getenv("INSTAGRAM_APP_HELPER_BIND", "127.0.0.1:17374") or "127.0.0.1:17374").strip()
+HELPER_BIND = SETTINGS.helper_bind
 HELPER_HOST, _, HELPER_PORT = HELPER_BIND.partition(":")
 HELPER_PORT_INT = int(HELPER_PORT or "17374")
-SLEZHKA_ADMIN_BASE_URL = (
-    os.getenv("SLEZHKA_ADMIN_BASE_URL", "http://4abbf189760e.vps.myjino.ru/slezhka")
-    or "http://4abbf189760e.vps.myjino.ru/slezhka"
-).strip().rstrip("/")
-HELPER_API_KEY = (os.getenv("HELPER_API_KEY", "") or "").strip()
-ANDROID_AVD_NAME = (os.getenv("ANDROID_AVD_NAME", "") or "").strip()
-ADB_PATH_RAW = (os.getenv("ADB_PATH", "") or "").strip()
-EMULATOR_PATH_RAW = (os.getenv("EMULATOR_PATH", "") or "").strip()
-INSTAGRAM_PACKAGE = (os.getenv("INSTAGRAM_ANDROID_PACKAGE", "com.instagram.android") or "com.instagram.android").strip()
-DEFAULT_INSTAGRAM_PUBLISH_SOURCE_DIR = str(Path.home() / "SlezhkaPublishSource")
-INSTAGRAM_PUBLISH_SOURCE_DIR = (
-    os.getenv("INSTAGRAM_PUBLISH_SOURCE_DIR", DEFAULT_INSTAGRAM_PUBLISH_SOURCE_DIR)
-    or DEFAULT_INSTAGRAM_PUBLISH_SOURCE_DIR
-)
-INSTAGRAM_PUBLISH_MEDIA_DIR = (
-    os.getenv("INSTAGRAM_PUBLISH_MEDIA_DIR", "/sdcard/Movies/Videoogram")
-    or "/sdcard/Movies/Videoogram"
-).strip()
+SLEZHKA_ADMIN_BASE_URL = SETTINGS.slezhka_admin_base_url
+HELPER_API_KEY = SETTINGS.helper_api_key
+ANDROID_AVD_NAME = SETTINGS.android_avd_name
+ADB_PATH_RAW = SETTINGS.adb_path_raw
+EMULATOR_PATH_RAW = SETTINGS.emulator_path_raw
+EMULATOR_NO_WINDOW = SETTINGS.emulator_no_window
+INSTAGRAM_PACKAGE = SETTINGS.instagram_package
+INSTAGRAM_PUBLISH_SOURCE_DIR = SETTINGS.instagram_publish_source_dir
+INSTAGRAM_PUBLISH_MEDIA_DIR = SETTINGS.instagram_publish_media_dir
 PUBLISH_VIDEO_EXTENSIONS = {".mp4", ".mov"}
-PUBLISH_RUNNER_CACHE_DIR = (
-    os.getenv("PUBLISH_RUNNER_CACHE_DIR", str(Path.home() / "Library" / "Caches" / "SlezhkaHelper" / "publish_jobs"))
-    or str(Path.home() / "Library" / "Caches" / "SlezhkaHelper" / "publish_jobs")
-).strip()
-PUBLISH_RUNNER_DOWNLOADS_DIR = (
-    os.getenv("PUBLISH_RUNNER_DOWNLOADS_DIR", str(Path.home() / "Downloads" / "SlezhkaPublishArtifacts"))
-    or str(Path.home() / "Downloads" / "SlezhkaPublishArtifacts")
-).strip()
-PUBLISH_DIAGNOSTICS_DIR = (
-    os.getenv("PUBLISH_DIAGNOSTICS_DIR", str(Path.home() / "Downloads" / "SlezhkaPublishDiagnostics"))
-    or str(Path.home() / "Downloads" / "SlezhkaPublishDiagnostics")
-).strip()
-STRICT_CONFIG = (os.getenv("STRICT_CONFIG", "0") or "0").strip().lower() in {"1", "true", "yes", "on"}
-EMULATOR_STABILIZE_SECONDS = int(os.getenv("INSTAGRAM_APP_EMULATOR_STABILIZE_SECONDS", "12"))
-USE_EMULATOR_SNAPSHOTS = (os.getenv("INSTAGRAM_APP_USE_SNAPSHOTS", "0") or "0").strip().lower() in {
-    "1",
-    "true",
-    "yes",
-    "on",
-}
-PUBLISH_RUNNER_ENABLED = (os.getenv("PUBLISH_RUNNER_ENABLED", "0") or "0").strip().lower() in {"1", "true", "yes", "on"}
-PUBLISH_RUNNER_POLL_SECONDS = max(3, int(os.getenv("PUBLISH_RUNNER_POLL_SECONDS", "10")))
-PUBLISH_SUCCESS_WAIT_SECONDS = max(60, int(os.getenv("PUBLISH_SUCCESS_WAIT_SECONDS", "1200")))
-PUBLISH_HEARTBEAT_SECONDS = max(5, int(os.getenv("PUBLISH_HEARTBEAT_SECONDS", "10")))
-PUBLISH_UPLOAD_START_WAIT_SECONDS = max(20, int(os.getenv("PUBLISH_UPLOAD_START_WAIT_SECONDS", "90")))
-PUBLISH_PROFILE_VERIFY_START_DELAY_SECONDS = max(
-    60,
-    int(os.getenv("PUBLISH_PROFILE_VERIFY_START_DELAY_SECONDS", str(10 * 60))),
-)
-PUBLISH_PROFILE_VERIFY_SECONDS = max(10 * 60, int(os.getenv("PUBLISH_PROFILE_VERIFY_SECONDS", str(30 * 60))))
-PUBLISH_PROFILE_VERIFY_INTERVAL_SECONDS = max(10, int(os.getenv("PUBLISH_PROFILE_VERIFY_INTERVAL_SECONDS", "30")))
-PUBLISH_PROFILE_FRESHNESS_SECONDS = max(5 * 60, int(os.getenv("PUBLISH_PROFILE_FRESHNESS_SECONDS", str(30 * 60))))
-PUBLISH_PROFILE_CHECK_SLOTS = max(1, int(os.getenv("PUBLISH_PROFILE_CHECK_SLOTS", "3")))
-PUBLISH_PROFILE_BASELINE_SLOTS = max(1, int(os.getenv("PUBLISH_PROFILE_BASELINE_SLOTS", "1")))
-PUBLISH_RUNNER_NAME = (os.getenv("PUBLISH_RUNNER_NAME", "instagram-app-helper-runner") or "instagram-app-helper-runner").strip()
-PUBLISH_RUNNER_API_KEY = (os.getenv("PUBLISH_RUNNER_API_KEY", HELPER_API_KEY) or HELPER_API_KEY).strip()
-SERIAL_TO_AVD_MAP_RAW = (os.getenv("INSTAGRAM_RUNNER_SERIAL_TO_AVD_JSON", "") or "").strip()
+PUBLISH_RUNNER_CACHE_DIR = SETTINGS.publish_runner_cache_dir
+PUBLISH_RUNNER_DOWNLOADS_DIR = SETTINGS.publish_runner_downloads_dir
+PUBLISH_DIAGNOSTICS_DIR = SETTINGS.publish_diagnostics_dir
+STRICT_CONFIG = SETTINGS.strict_config
+EMULATOR_STABILIZE_SECONDS = SETTINGS.emulator_stabilize_seconds
+USE_EMULATOR_SNAPSHOTS = SETTINGS.use_emulator_snapshots
+PUBLISH_RUNNER_ENABLED = SETTINGS.publish_runner_enabled
+PUBLISH_RUNNER_POLL_SECONDS = SETTINGS.publish_runner_poll_seconds
+PUBLISH_SUCCESS_WAIT_SECONDS = SETTINGS.publish_success_wait_seconds
+PUBLISH_HEARTBEAT_SECONDS = SETTINGS.publish_heartbeat_seconds
+PUBLISH_UPLOAD_START_WAIT_SECONDS = SETTINGS.publish_upload_start_wait_seconds
+PUBLISH_PROFILE_VERIFY_START_DELAY_SECONDS = SETTINGS.publish_profile_verify_start_delay_seconds
+PUBLISH_PROFILE_VERIFY_SECONDS = SETTINGS.publish_profile_verify_seconds
+PUBLISH_PROFILE_VERIFY_INTERVAL_SECONDS = SETTINGS.publish_profile_verify_interval_seconds
+PUBLISH_PROFILE_FRESHNESS_SECONDS = SETTINGS.publish_profile_freshness_seconds
+PUBLISH_PROFILE_CHECK_SLOTS = SETTINGS.publish_profile_check_slots
+PUBLISH_PROFILE_BASELINE_SLOTS = SETTINGS.publish_profile_baseline_slots
+PUBLISH_RUNNER_NAME = SETTINGS.publish_runner_name
+PUBLISH_RUNNER_API_KEY = SETTINGS.publish_runner_api_key
+SERIAL_TO_AVD_MAP_RAW = SETTINGS.serial_to_avd_map_raw
 
 LOG_DIR = Path.home() / "Library" / "Logs" / "SlezhkaHelper"
 LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -182,9 +166,9 @@ RUNTIME_STATE = HelperState()
 
 LOGIN_WAIT_SECONDS = 40
 BOOT_WAIT_SECONDS = 220
-MAIL_CHALLENGE_TIMEOUT_SECONDS = max(15, int(os.getenv("INSTAGRAM_MAIL_CHALLENGE_TIMEOUT_SECONDS", "90")))
-MAIL_CHALLENGE_RETRY_SECONDS = max(10, int(os.getenv("INSTAGRAM_MAIL_CHALLENGE_RETRY_SECONDS", "30")))
-MAIL_CHALLENGE_RESEND_WAIT_SECONDS = max(5, int(os.getenv("INSTAGRAM_MAIL_CHALLENGE_RESEND_WAIT_SECONDS", "8")))
+MAIL_CHALLENGE_TIMEOUT_SECONDS = SETTINGS.instagram_mail_challenge_timeout_seconds
+MAIL_CHALLENGE_RETRY_SECONDS = SETTINGS.instagram_mail_challenge_retry_seconds
+MAIL_CHALLENGE_RESEND_WAIT_SECONDS = SETTINGS.instagram_mail_challenge_resend_wait_seconds
 
 
 class PublishFlowError(RuntimeError):
@@ -207,6 +191,20 @@ class PublishFlowError(RuntimeError):
         self.reason_code = (reason_code or "").strip()
         self.account_publish_state = (account_publish_state or "").strip()
         self.payload = dict(payload or {})
+
+
+class ReelMetricsFlowError(RuntimeError):
+    def __init__(
+        self,
+        detail: str,
+        *,
+        snapshot_reported: bool = False,
+        serial: str = "",
+    ) -> None:
+        super().__init__(detail)
+        self.detail = (detail or "Instagram reel metrics collection failed.").strip()
+        self.snapshot_reported = bool(snapshot_reported)
+        self.serial = (serial or "").strip()
 
 
 @dataclass
@@ -242,6 +240,8 @@ class ProfileVerificationResult:
     publish_phase: str = "verifying_profile"
     matched_slot: Optional[int] = None
     matched_age_seconds: Optional[int] = None
+    matched_fingerprint: str = ""
+    matched_signature_text: str = ""
     verification_attempt: int = 0
     baseline_available: bool = False
     checked_slots: int = 0
@@ -258,6 +258,7 @@ class ProfileVerificationResult:
     quick_capture_visible: bool = False
     timestamp_readable: bool = False
     diagnostics_path: str = ""
+    published_at: Optional[int] = None
 
 
 def _sdk_candidates() -> list[Path]:
@@ -290,6 +291,54 @@ def _resolve_adb_path() -> Optional[str]:
 
 def _resolve_emulator_path() -> Optional[str]:
     return _resolve_binary(EMULATOR_PATH_RAW, "emulator", ("emulator", "emulator"))
+
+
+def _build_emulator_launch_command(
+    emulator_path: str,
+    avd_name: str,
+    *,
+    port: Optional[int] = None,
+    no_window: bool = False,
+) -> list[str]:
+    command = [emulator_path, "-avd", avd_name]
+    if port is not None:
+        command.extend(["-port", str(port)])
+    command.extend(
+        [
+            "-netdelay",
+            "none",
+            "-netspeed",
+            "full",
+            "-gpu",
+            "swiftshader_indirect",
+            "-no-boot-anim",
+            "-no-metrics",
+        ]
+    )
+    if no_window:
+        command.extend(["-no-window", "-no-audio"])
+    return command
+
+
+def _emulator_launch_commands(emulator_path: str, avd_name: str, *, port: Optional[int] = None) -> list[list[str]]:
+    commands = [
+        _build_emulator_launch_command(
+            emulator_path,
+            avd_name,
+            port=port,
+            no_window=EMULATOR_NO_WINDOW,
+        )
+    ]
+    if not EMULATOR_NO_WINDOW:
+        headless_command = _build_emulator_launch_command(
+            emulator_path,
+            avd_name,
+            port=port,
+            no_window=True,
+        )
+        if headless_command != commands[0]:
+            commands.append(headless_command)
+    return commands
 
 
 def _serial_to_avd_map() -> dict[str, str]:
@@ -469,20 +518,29 @@ def _push_account_publish_status(
     handle: str,
     *,
     last_file: str = "",
+    source_path: str = "",
+    helper_ticket: str = "",
+    telemetry: Optional[dict[str, Any]] = None,
 ) -> None:
     if not HELPER_API_KEY:
         return
     try:
+        request_payload: dict[str, Any] = {
+            "state": (status or "").strip(),
+            "detail": (detail or "").strip(),
+            "handle": (handle or "").strip(),
+            "last_file": (last_file or "").strip(),
+            "source_path": (source_path or "").strip(),
+            "helper_ticket": (helper_ticket or "").strip(),
+        }
+        if isinstance(telemetry, dict):
+            for key, value in telemetry.items():
+                request_payload[key] = value
         response = http_utils.request_with_retry(
             "POST",
             f"{SLEZHKA_ADMIN_BASE_URL}/api/helper/accounts/{int(account_id)}/instagram-publish-status",
             headers={"X-Helper-Api-Key": HELPER_API_KEY},
-            json={
-                "state": (status or "").strip(),
-                "detail": (detail or "").strip(),
-                "handle": (handle or "").strip(),
-                "last_file": (last_file or "").strip(),
-            },
+            json=request_payload,
             timeout=25,
             allow_retry=True,
             log_context="helper_push_publish_status",
@@ -551,6 +609,54 @@ def _lease_publish_job() -> Optional[dict[str, Any]]:
     payload = response.json()
     job = payload.get("job")
     return job if isinstance(job, dict) else None
+
+
+def _lease_reel_metric_post() -> Optional[dict[str, Any]]:
+    if not PUBLISH_RUNNER_API_KEY:
+        raise RuntimeError("PUBLISH_RUNNER_API_KEY is not configured")
+    response = http_utils.request_with_retry(
+        "POST",
+        f"{SLEZHKA_ADMIN_BASE_URL}/api/internal/reel-metrics/lease",
+        headers={"X-Runner-Api-Key": PUBLISH_RUNNER_API_KEY},
+        json={"runner_name": PUBLISH_RUNNER_NAME},
+        timeout=25,
+        allow_retry=False,
+        log_context="reel_metrics_lease",
+    )
+    if response.status_code == 204:
+        return None
+    response.raise_for_status()
+    payload = response.json()
+    post = payload.get("post")
+    return post if isinstance(post, dict) else None
+
+
+def _push_reel_metric_snapshot(
+    post_id: int,
+    *,
+    window_key: str,
+    status: str,
+    payload: Optional[dict[str, Any]] = None,
+) -> None:
+    if not PUBLISH_RUNNER_API_KEY:
+        return
+    request_payload: dict[str, Any] = {
+        "window_key": (window_key or "").strip(),
+        "status": (status or "").strip(),
+    }
+    if isinstance(payload, dict):
+        for key, value in payload.items():
+            request_payload[key] = value
+    response = http_utils.request_with_retry(
+        "POST",
+        f"{SLEZHKA_ADMIN_BASE_URL}/api/internal/reel-metrics/posts/{int(post_id)}/snapshot",
+        headers={"X-Runner-Api-Key": PUBLISH_RUNNER_API_KEY},
+        json=request_payload,
+        timeout=25,
+        allow_retry=True,
+        log_context="reel_metrics_snapshot",
+    )
+    response.raise_for_status()
 
 
 def _push_publish_job_status(
@@ -1183,7 +1289,6 @@ def _ensure_emulator_ready(preferred_serial: str = "") -> str:
         raise RuntimeError("Android emulator not found.")
 
     avd_name = ANDROID_AVD_NAME
-    command: list[str]
     if preferred:
         avd_name = _serial_to_avd_map().get(preferred, "").strip()
         if not avd_name:
@@ -1191,43 +1296,28 @@ def _ensure_emulator_ready(preferred_serial: str = "") -> str:
         port = _serial_emulator_port(preferred)
         if port is None:
             raise RuntimeError(f"Не удалось определить порт из serial {preferred}.")
-        command = [
-            emulator_path,
-            "-avd",
-            avd_name,
-            "-port",
-            str(port),
-            "-netdelay",
-            "none",
-            "-netspeed",
-            "full",
-            "-gpu",
-            "swiftshader_indirect",
-        ]
+        launch_commands = _emulator_launch_commands(emulator_path, avd_name, port=port)
     else:
         if not avd_name:
             raise RuntimeError("ANDROID_AVD_NAME is not configured.")
-        command = [
-            emulator_path,
-            "-avd",
-            avd_name,
-            "-netdelay",
-            "none",
-            "-netspeed",
-            "full",
-            "-gpu",
-            "swiftshader_indirect",
-        ]
+        launch_commands = _emulator_launch_commands(emulator_path, avd_name)
 
     avds = _list_avds()
     if avd_name not in avds:
         raise RuntimeError(f"AVD '{avd_name}' not found. Available: {', '.join(avds) or 'none'}")
 
     _set_state(state="emulator_starting", detail=f"Запускаю AVD: {avd_name}", emulator_serial=preferred)
-    logger.info("emulator_starting: avd=%s preferred_serial=%s", avd_name, preferred or "-")
+    logger.info(
+        "emulator_starting: avd=%s preferred_serial=%s launch_mode=%s",
+        avd_name,
+        preferred or "-",
+        "headless" if "-no-window" in launch_commands[0] else "windowed",
+    )
     previous = set(existing)
     process_key = preferred or avd_name
     process = EMULATOR_PROCESSES.get(process_key)
+    launch_index = 0
+    command = list(launch_commands[launch_index])
     if process is None or process.poll() is not None:
         if not USE_EMULATOR_SNAPSHOTS:
             command.extend(["-no-snapshot-load", "-no-snapshot-save"])
@@ -1238,11 +1328,39 @@ def _ensure_emulator_ready(preferred_serial: str = "") -> str:
             start_new_session=True,
         )
     serial = preferred or _wait_for_device_serial(previous)
-    _wait_for_boot(serial)
-    _stabilize_emulator(serial)
-    _set_state(state="emulator_ready", emulator_serial=serial, detail=f"Эмулятор готов: {serial}")
-    logger.info("emulator_ready: serial=%s reused=false preferred=%s", serial, bool(preferred))
-    return serial
+    max_attempts = max(2, len(launch_commands) + (1 if len(launch_commands) > 1 else 0))
+    for attempt in range(max_attempts):
+        try:
+            _wait_for_boot(serial)
+            _stabilize_emulator(serial)
+            _set_state(state="emulator_ready", emulator_serial=serial, detail=f"Эмулятор готов: {serial}")
+            logger.info("emulator_ready: serial=%s reused=false preferred=%s", serial, bool(preferred))
+            return serial
+        except Exception as exc:
+            logger.warning(
+                "emulator_boot_failed: serial=%s attempt=%s launch_mode=%s error=%s",
+                serial,
+                attempt + 1,
+                "headless" if "-no-window" in command else "windowed",
+                exc,
+            )
+            if attempt >= max_attempts - 1:
+                raise
+            _reset_publish_emulator_boundary(serial, clear_instagram=False)
+            previous = set(_list_running_emulators())
+            if launch_index + 1 < len(launch_commands):
+                launch_index += 1
+            command = list(launch_commands[launch_index])
+            if not USE_EMULATOR_SNAPSHOTS:
+                command.extend(["-no-snapshot-load", "-no-snapshot-save"])
+            EMULATOR_PROCESSES[process_key] = subprocess.Popen(
+                command,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+            serial = preferred or _wait_for_device_serial(previous)
+    raise RuntimeError("Android emulator did not become ready.")
 
 
 def _ensure_instagram_installed(serial: str) -> None:
@@ -2560,7 +2678,7 @@ def _refresh_profile_reels_tab(device: Any, serial: str) -> None:
     time.sleep(1.4)
 
 
-def _profile_reels_slot_centers(device: Any) -> list[tuple[int, int]]:
+def _profile_reels_grid_centers(device: Any, *, limit: int) -> list[tuple[int, int]]:
     width, height = _device_display_size(device)
     candidates = _profile_reels_grid_candidates(device)
     centers: list[tuple[int, int]] = []
@@ -2569,17 +2687,35 @@ def _profile_reels_slot_centers(device: Any) -> list[tuple[int, int]]:
         if any(abs(center[0] - existing[0]) < 40 and abs(center[1] - existing[1]) < 40 for existing in centers):
             continue
         centers.append(center)
-        if len(centers) >= PUBLISH_PROFILE_CHECK_SLOTS:
+        if len(centers) >= max(1, int(limit)):
             break
-    if len(centers) >= PUBLISH_PROFILE_CHECK_SLOTS:
+    if len(centers) >= max(1, int(limit)):
         centers.sort(key=lambda item: (item[1], item[0]))
-        return centers[:PUBLISH_PROFILE_CHECK_SLOTS]
+        return centers[: max(1, int(limit))]
     fallback_y = max(360, int(height * 0.48))
-    return [
+    fallback = [
         (int(width * (1 / 6)), fallback_y),
         (int(width * (3 / 6)), fallback_y),
         (int(width * (5 / 6)), fallback_y),
-    ][:PUBLISH_PROFILE_CHECK_SLOTS]
+    ]
+    return fallback[: max(1, int(limit))]
+
+
+def _profile_reels_slot_centers(device: Any) -> list[tuple[int, int]]:
+    return _profile_reels_grid_centers(device, limit=PUBLISH_PROFILE_CHECK_SLOTS)
+
+
+def _scroll_profile_reels_grid(device: Any, serial: str) -> None:
+    width, height = _device_display_size(device)
+    _adb_swipe(
+        serial,
+        width // 2,
+        min(height - 320, int(height * 0.76)),
+        width // 2,
+        max(320, int(height * 0.34)),
+        320,
+    )
+    time.sleep(1.2)
 
 
 def _close_surface_to_profile(device: Any, serial: str, timeout_seconds: float = 8.0) -> bool:
@@ -2685,6 +2821,224 @@ def _viewer_text_candidates(device: Any) -> list[str]:
     return ordered
 
 
+def _snapshot_entry_center(entry: dict[str, Any]) -> Optional[tuple[int, int]]:
+    bounds = entry.get("bounds")
+    if not isinstance(bounds, tuple) or len(bounds) != 4:
+        return None
+    left, top, right, bottom = bounds
+    return ((int(left) + int(right)) // 2, (int(top) + int(bottom)) // 2)
+
+
+def _parse_metric_count(raw: Any) -> Optional[int]:
+    value = str(raw or "").strip().lower()
+    if not value:
+        return None
+    value = value.replace("\xa0", " ").replace("тыс.", "k").replace("тыс", "k").replace("млн", "m")
+    value = re.sub(r"\s+", "", value)
+    match = re.search(r"(\d[\d.,]*)([kmb])?\b", value)
+    if match is None:
+        return None
+    number_raw = str(match.group(1) or "").strip()
+    suffix = str(match.group(2) or "").strip().lower()
+    if not number_raw:
+        return None
+    if suffix:
+        try:
+            return int(round(float(number_raw.replace(",", ".")) * {"k": 1_000, "m": 1_000_000, "b": 1_000_000_000}.get(suffix, 1)))
+        except Exception:
+            return None
+    digits_only = re.sub(r"[^\d]", "", number_raw)
+    if not digits_only:
+        return None
+    try:
+        return int(digits_only)
+    except Exception:
+        return None
+
+
+def _parse_metric_percent(raw: Any) -> Optional[float]:
+    value = str(raw or "").strip().replace("\xa0", " ")
+    match = re.search(r"(\d+(?:[.,]\d+)?)\s*%", value)
+    if match is None:
+        return None
+    try:
+        return float(str(match.group(1)).replace(",", "."))
+    except Exception:
+        return None
+
+
+def _parse_metric_duration_seconds(raw: Any) -> Optional[float]:
+    value = str(raw or "").strip().lower().replace("\xa0", " ")
+    if not value:
+        return None
+    if re.fullmatch(r"\d{1,2}:\d{2}(?::\d{2})?", value):
+        parts = [int(part) for part in value.split(":")]
+        if len(parts) == 2:
+            return float(parts[0] * 60 + parts[1])
+        if len(parts) == 3:
+            return float(parts[0] * 3600 + parts[1] * 60 + parts[2])
+    hours_match = re.search(r"(\d+)\s*(?:h|hr|hrs|hour|hours|ч|час|часа|часов)", value)
+    minutes_match = re.search(r"(\d+)\s*(?:m|min|mins|minute|minutes|мин|минута|минуты|минут)", value)
+    seconds_match = re.search(r"(\d+)\s*(?:s|sec|secs|second|seconds|сек|секунда|секунды|секунд)", value)
+    if not any((hours_match, minutes_match, seconds_match)):
+        return None
+    hours = int(hours_match.group(1)) if hours_match else 0
+    minutes = int(minutes_match.group(1)) if minutes_match else 0
+    seconds = int(seconds_match.group(1)) if seconds_match else 0
+    return float(hours * 3600 + minutes * 60 + seconds)
+
+
+def _metric_label_matches(value: str, patterns: tuple[str, ...]) -> bool:
+    lowered = str(value or "").strip().lower()
+    if not lowered:
+        return False
+    return any(re.search(pattern, lowered) for pattern in patterns)
+
+
+def _metric_value_near_label(
+    entries: list[dict[str, Any]],
+    label_patterns: tuple[str, ...],
+    *,
+    parser: Callable[[Any], Any],
+) -> Any:
+    numeric_entries: list[dict[str, Any]] = []
+    for entry in entries:
+        parsed = parser(entry.get("value"))
+        center = _snapshot_entry_center(entry)
+        if parsed is None or center is None:
+            continue
+        numeric_entries.append({**entry, "_center": center, "_parsed": parsed})
+
+    best_score: float | None = None
+    best_value: Any = None
+    for entry in entries:
+        if not _metric_label_matches(str(entry.get("value") or ""), label_patterns):
+            continue
+        center = _snapshot_entry_center(entry)
+        if center is None:
+            continue
+        for numeric in numeric_entries:
+            candidate_center = numeric["_center"]
+            dy = abs(int(candidate_center[1]) - int(center[1]))
+            if dy > 180:
+                continue
+            dx = int(candidate_center[0]) - int(center[0])
+            score = float(dy) + (abs(dx) / 10.0)
+            if dx < -40:
+                score += 40.0
+            if best_score is None or score < best_score:
+                best_score = score
+                best_value = numeric["_parsed"]
+    return best_value
+
+
+def _extract_reel_metrics_from_entries(entries: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "plays_count": _metric_value_near_label(entries, (r"\b(views|plays|просмотры|просмотров)\b",), parser=_parse_metric_count),
+        "likes_count": _metric_value_near_label(entries, (r"\b(likes|лайки|лайков|нравится)\b",), parser=_parse_metric_count),
+        "comments_count": _metric_value_near_label(entries, (r"\b(comments|comment|комментарии|комментариев)\b",), parser=_parse_metric_count),
+        "shares_count": _metric_value_near_label(entries, (r"\b(shares|share|репосты|отправки|поделились)\b",), parser=_parse_metric_count),
+        "saves_count": _metric_value_near_label(entries, (r"\b(saves|saved|сохранения|сохранено)\b",), parser=_parse_metric_count),
+        "accounts_reached_count": _metric_value_near_label(entries, (r"(accounts reached|охваченные аккаунты|охват аккаунтов)",), parser=_parse_metric_count),
+        "watch_time_seconds": _metric_value_near_label(entries, (r"(watch time|время просмотра)",), parser=_parse_metric_duration_seconds),
+        "avg_watch_time_seconds": _metric_value_near_label(entries, (r"(average watch time|avg watch time|среднее время просмотра)",), parser=_parse_metric_duration_seconds),
+        "three_second_views_count": _metric_value_near_label(entries, (r"(3[\s-]?second views|3[\s-]?second plays|3[\s-]?секунд)",), parser=_parse_metric_count),
+        "completion_rate_pct": _metric_value_near_label(entries, (r"(completion rate|досмотр|completion)",), parser=_parse_metric_percent),
+    }
+
+
+def _reel_metrics_surface_visible(device: Any) -> bool:
+    markers = 0
+    for entry in _screen_text_snapshot(device):
+        value = str(entry.get("value") or "").strip()
+        if not value:
+            continue
+        if _metric_label_matches(value, (r"(accounts reached|охваченные аккаунты|охват аккаунтов)",)):
+            markers += 1
+        if _metric_label_matches(value, (r"(watch time|время просмотра)",)):
+            markers += 1
+        if _metric_label_matches(value, (r"(average watch time|avg watch time|среднее время просмотра)",)):
+            markers += 1
+        if _metric_label_matches(value, (r"(completion rate|досмотр|completion)",)):
+            markers += 1
+        if markers >= 2:
+            return True
+    return False
+
+
+def _open_reel_metrics_surface(device: Any, serial: str, timeout_seconds: float = 8.0) -> bool:
+    if _ig_click_first(
+        device,
+        [
+            {"textMatches": "(?i)^view insights$"},
+            {"descriptionMatches": "(?i)^view insights$"},
+            {"textMatches": "(?i)^insights$"},
+            {"descriptionMatches": "(?i)^insights$"},
+            {"textMatches": "(?i)(ваша статистика|статистика)"},
+            {"resourceIdMatches": f"{INSTAGRAM_PACKAGE}:id/.*insight.*"},
+        ],
+        timeout_seconds=1.0,
+        serial=serial,
+    ):
+        deadline = time.time() + timeout_seconds
+        while time.time() < deadline:
+            _dismiss_system_dialogs(device, serial, timeout_seconds=0.4)
+            if _reel_metrics_surface_visible(device):
+                return True
+            time.sleep(0.4)
+    return _reel_metrics_surface_visible(device)
+
+
+def _serialize_profile_reel_candidate(candidate: Optional[ProfileReelCandidate]) -> dict[str, Any]:
+    if candidate is None:
+        return {}
+    return {
+        "slot_index": int(candidate.slot_index),
+        "age_seconds": int(candidate.age_seconds) if candidate.age_seconds is not None else None,
+        "age_label": str(candidate.age_label or ""),
+        "fingerprint": str(candidate.fingerprint or ""),
+        "signature_text": str(candidate.signature_text or ""),
+        "opened": bool(candidate.opened),
+        "success_markers": bool(candidate.success_markers),
+    }
+
+
+def _merge_reel_metric_maps(*parts: Optional[dict[str, Any]]) -> dict[str, Any]:
+    merged: dict[str, Any] = {
+        "plays_count": None,
+        "likes_count": None,
+        "comments_count": None,
+        "shares_count": None,
+        "saves_count": None,
+        "accounts_reached_count": None,
+        "watch_time_seconds": None,
+        "avg_watch_time_seconds": None,
+        "three_second_views_count": None,
+        "completion_rate_pct": None,
+    }
+    for item in parts:
+        if not isinstance(item, dict):
+            continue
+        for key, value in item.items():
+            if key in merged and value not in (None, ""):
+                merged[key] = value
+    return merged
+
+
+def _open_located_reel_for_metrics(device: Any, serial: str, center: tuple[int, int]) -> bool:
+    for attempt in range(2):
+        if attempt > 0 and not _open_profile_reels_tab(device, serial, timeout_seconds=8.0):
+            return False
+        _adb_tap(serial, int(center[0]), int(center[1]))
+        if _wait_until(
+            lambda: _normalize_open_reel_surface(device, serial, timeout_seconds=1.2),
+            timeout_seconds=6.0,
+            interval=0.6,
+        ):
+            return True
+    return False
+
+
 def _normalize_open_reel_surface(device: Any, serial: str, timeout_seconds: float = 8.0) -> bool:
     deadline = time.time() + timeout_seconds
     while time.time() < deadline:
@@ -2750,17 +3104,15 @@ def _reel_signature_from_texts(texts: list[str], *, expected_handle: str = "") -
     return signature.casefold(), signature
 
 
-def _inspect_profile_reel_slot(
+def _inspect_profile_reel_center(
     device: Any,
     serial: str,
-    slot_index: int,
+    center: tuple[int, int],
     *,
+    slot_index: int = 0,
     expected_handle: str = "",
 ) -> ProfileReelCandidate:
-    centers = _profile_reels_slot_centers(device)
-    if slot_index < 0 or slot_index >= len(centers):
-        return ProfileReelCandidate(slot_index=slot_index)
-    _adb_tap(serial, centers[slot_index][0], centers[slot_index][1])
+    _adb_tap(serial, center[0], center[1])
     logger.info("profile_slot_opened: serial=%s slot=%s", serial, slot_index)
     viewer_ready = _wait_until(lambda: _normalize_open_reel_surface(device, serial, timeout_seconds=1.2), timeout_seconds=6.0, interval=0.6)
     if not viewer_ready:
@@ -2801,6 +3153,25 @@ def _inspect_profile_reel_slot(
         signature_text=signature_text,
         opened=opened,
         success_markers=success_markers,
+    )
+
+
+def _inspect_profile_reel_slot(
+    device: Any,
+    serial: str,
+    slot_index: int,
+    *,
+    expected_handle: str = "",
+) -> ProfileReelCandidate:
+    centers = _profile_reels_grid_centers(device, limit=PUBLISH_PROFILE_CHECK_SLOTS)
+    if slot_index < 0 or slot_index >= len(centers):
+        return ProfileReelCandidate(slot_index=slot_index)
+    return _inspect_profile_reel_center(
+        device,
+        serial,
+        centers[slot_index],
+        slot_index=slot_index,
+        expected_handle=expected_handle,
     )
 
 
@@ -2846,6 +3217,204 @@ def _candidate_confirms_new_upload(
     return False
 
 
+def _reel_candidate_matches_target(
+    candidate: ProfileReelCandidate,
+    *,
+    target_fingerprint: str,
+    target_signature_text: str,
+    published_at: Optional[int],
+) -> bool:
+    fingerprint_value = str(target_fingerprint or "").strip().casefold()
+    if fingerprint_value and candidate.fingerprint and candidate.fingerprint == fingerprint_value:
+        return True
+    signature_value = str(target_signature_text or "").strip().casefold()
+    candidate_signature = str(candidate.signature_text or "").strip().casefold()
+    if not signature_value or not candidate_signature:
+        return False
+    signature_match = (
+        signature_value == candidate_signature
+        or signature_value in candidate_signature
+        or candidate_signature in signature_value
+    )
+    if not signature_match:
+        return False
+    if candidate.age_seconds is None:
+        return False
+    try:
+        published_ts = int(published_at or 0)
+    except Exception:
+        published_ts = 0
+    if published_ts <= 0:
+        return False
+    expected_age = max(0, int(time.time()) - published_ts)
+    tolerance_seconds = max(2 * 60 * 60, min(24 * 60 * 60, int(max(expected_age * 0.35, 20 * 60))))
+    return abs(int(candidate.age_seconds) - expected_age) <= tolerance_seconds
+
+
+def _metrics_have_any_value(metrics: dict[str, Any]) -> bool:
+    return any(value not in (None, "", 0, 0.0) for value in metrics.values())
+
+
+def _locate_reel_for_metrics(
+    device: Any,
+    serial: str,
+    *,
+    reel_fingerprint: str,
+    reel_signature_text: str,
+    published_at: Optional[int],
+    expected_handle: str = "",
+    max_slots: int = 12,
+    max_screens: int = 3,
+) -> tuple[Optional[tuple[int, int]], Optional[ProfileReelCandidate]]:
+    if not _open_profile_reels_tab(device, serial, timeout_seconds=12.0):
+        return None, None
+    inspected = 0
+    per_screen_limit = max(1, min(4, int(max_slots)))
+    for screen_index in range(max(1, int(max_screens))):
+        centers = _profile_reels_grid_centers(device, limit=max(1, int(max_slots)))
+        if not centers:
+            break
+        for local_index, center in enumerate(centers[:per_screen_limit]):
+            candidate = _inspect_profile_reel_center(
+                device,
+                serial,
+                center,
+                slot_index=screen_index * per_screen_limit + local_index,
+                expected_handle=expected_handle,
+            )
+            inspected += 1
+            if _reel_candidate_matches_target(
+                candidate,
+                target_fingerprint=reel_fingerprint,
+                target_signature_text=reel_signature_text,
+                published_at=published_at,
+            ):
+                return center, candidate
+            if inspected >= max(1, int(max_slots)):
+                return None, None
+        if screen_index + 1 >= max(1, int(max_screens)):
+            break
+        _scroll_profile_reels_grid(device, serial)
+    return None, None
+
+
+def _sanitize_metric_snapshot_entries(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    sanitized: list[dict[str, Any]] = []
+    for entry in entries[:80]:
+        bounds = entry.get("bounds")
+        sanitized.append(
+            {
+                "value": str(entry.get("value") or "").strip(),
+                "field": str(entry.get("field") or "").strip(),
+                "resource_id": str(entry.get("resource_id") or "").strip(),
+                "class_name": str(entry.get("class_name") or "").strip(),
+                "bounds": list(bounds) if isinstance(bounds, tuple) and len(bounds) == 4 else None,
+            }
+        )
+    return sanitized
+
+
+def _format_compact_number(value: Any) -> str:
+    try:
+        number = int(value)
+    except Exception:
+        return "—"
+    if number < 1000:
+        return str(number)
+    if number < 1_000_000:
+        compact = round(number / 1000.0, 1)
+        return f"{compact:.1f}K".replace(".0K", "K")
+    compact = round(number / 1_000_000.0, 1)
+    return f"{compact:.1f}M".replace(".0M", "M")
+
+
+def _merge_reel_metric_values(*metrics_list: dict[str, Any]) -> dict[str, Any]:
+    merged: dict[str, Any] = {}
+    for metrics in metrics_list:
+        if not isinstance(metrics, dict):
+            continue
+        for key, value in metrics.items():
+            if value in (None, ""):
+                continue
+            merged[key] = value
+    return merged
+
+
+def _reel_metrics_detail(post: dict[str, Any], status: str, metrics: Optional[dict[str, Any]] = None) -> str:
+    source_name = str(post.get("source_name") or "").strip() or f"post #{int(post.get('id') or 0)}"
+    window_key = str(post.get("window_key") or post.get("collection_stage") or "t30m").strip()
+    window_label = {
+        "t30m": "30м",
+        "t6h": "6ч",
+        "t24h": "24ч",
+        "t72h": "72ч",
+    }.get(window_key, window_key or "окно")
+    metrics = dict(metrics or {})
+    if status == "ok":
+        return (
+            f"Собрал Insights для {source_name} ({window_label}). "
+            f"Views: {_format_compact_number(metrics.get('plays_count'))}. "
+            f"Likes: {_format_compact_number(metrics.get('likes_count'))}. "
+            f"Comments: {_format_compact_number(metrics.get('comments_count'))}."
+        )
+    if status == "partial":
+        return (
+            f"Собрал базовые метрики для {source_name} ({window_label}), "
+            "но расширенные Insights недоступны."
+        )
+    if status == "unavailable":
+        return f"Reel {source_name} открыт, но метрики ({window_label}) сейчас недоступны."
+    if status == "not_found":
+        return f"Не нашёл Reel {source_name} в профиле аккаунта для окна {window_label}."
+    return f"Не удалось собрать метрики Reel {source_name} ({window_label})."
+
+
+def _reel_metrics_login_failure_outcome(login_state: str) -> tuple[str, bool]:
+    state_value = (login_state or "").strip().lower()
+    if state_value == "helper_error":
+        return ("failed", True)
+    return ("unavailable", False)
+
+
+def _open_reel_viewer_at_center(device: Any, serial: str, center: tuple[int, int]) -> bool:
+    return _open_located_reel_for_metrics(device, serial, center)
+
+
+def _collect_reel_metrics_from_open_viewer(device: Any, serial: str) -> tuple[str, dict[str, Any], dict[str, Any]]:
+    viewer_entries = _screen_text_snapshot(device)
+    viewer_metrics = _extract_reel_metrics_from_entries(viewer_entries)
+    insights_entries: list[dict[str, Any]] = []
+    insights_metrics: dict[str, Any] = {}
+    insights_opened = _open_reel_metrics_surface(device, serial, timeout_seconds=8.0)
+    if insights_opened:
+        time.sleep(1.0)
+        insights_entries = _screen_text_snapshot(device)
+        insights_metrics = _extract_reel_metrics_from_entries(insights_entries)
+
+    merged_metrics = _merge_reel_metric_values(viewer_metrics, insights_metrics)
+    advanced_keys = (
+        "accounts_reached_count",
+        "watch_time_seconds",
+        "avg_watch_time_seconds",
+        "three_second_views_count",
+        "completion_rate_pct",
+    )
+    has_advanced_metrics = any(merged_metrics.get(key) not in (None, "", 0, 0.0) for key in advanced_keys)
+    has_any_metrics = _metrics_have_any_value(merged_metrics)
+    if has_advanced_metrics:
+        status = "ok"
+    elif has_any_metrics:
+        status = "partial"
+    else:
+        status = "unavailable"
+    raw_payload = {
+        "viewer": _sanitize_metric_snapshot_entries(viewer_entries),
+        "insights": _sanitize_metric_snapshot_entries(insights_entries),
+        "insights_opened": bool(insights_opened),
+    }
+    return status, merged_metrics, raw_payload
+
+
 def _format_duration_short(seconds: int) -> str:
     value = max(0, int(seconds))
     hours, remainder = divmod(value, 3600)
@@ -2881,6 +3450,55 @@ def _profile_verification_detail(source_name: str, result: ProfileVerificationRe
     if result.diagnostics_path and "Диагностика:" not in " ".join(parts):
         parts.append(f"Диагностика: {result.diagnostics_path}.")
     return " ".join(part.strip() for part in parts if str(part).strip())
+
+
+def _estimate_reel_published_at(
+    verification_result: ProfileVerificationResult,
+    *,
+    fallback_published_at: Optional[int] = None,
+) -> int:
+    if verification_result.published_at is not None:
+        try:
+            explicit_value = int(verification_result.published_at)
+        except Exception:
+            explicit_value = 0
+        if explicit_value > 0:
+            return explicit_value
+    matched_age_seconds = verification_result.matched_age_seconds
+    if matched_age_seconds is not None:
+        try:
+            estimated = int(time.time()) - max(0, int(matched_age_seconds))
+        except Exception:
+            estimated = 0
+        if estimated > 0:
+            return estimated
+    try:
+        fallback_value = int(fallback_published_at or 0)
+    except Exception:
+        fallback_value = 0
+    return fallback_value if fallback_value > 0 else int(time.time())
+
+
+def _build_reel_publish_telemetry(
+    verification_result: ProfileVerificationResult,
+    *,
+    helper_ticket: str = "",
+    fallback_published_at: Optional[int] = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "reel_fingerprint": str(verification_result.matched_fingerprint or "").strip(),
+        "reel_signature_text": str(verification_result.matched_signature_text or "").strip(),
+        "matched_slot": verification_result.matched_slot,
+        "matched_age_seconds": verification_result.matched_age_seconds,
+        "published_at": _estimate_reel_published_at(
+            verification_result,
+            fallback_published_at=fallback_published_at,
+        ),
+    }
+    ticket_value = str(helper_ticket or "").strip()
+    if ticket_value:
+        payload["helper_ticket"] = ticket_value
+    return payload
 
 
 def _confirm_publish_via_profile(
@@ -2948,6 +3566,8 @@ def _confirm_publish_via_profile(
         publish_phase: str = "verifying_profile",
         matched_slot: Optional[int] = None,
         matched_age_seconds: Optional[int] = None,
+        matched_fingerprint: str = "",
+        matched_signature_text: str = "",
         verification_attempt: int = 0,
         event_kind: str = "",
         seconds_until_profile_check: Optional[int] = None,
@@ -2961,6 +3581,8 @@ def _confirm_publish_via_profile(
             publish_phase=publish_phase,
             matched_slot=matched_slot,
             matched_age_seconds=matched_age_seconds,
+            matched_fingerprint=str(matched_fingerprint or "").strip(),
+            matched_signature_text=str(matched_signature_text or "").strip(),
             verification_attempt=verification_attempt,
             baseline_available=baseline_available,
             checked_slots=PUBLISH_PROFILE_CHECK_SLOTS,
@@ -2971,6 +3593,7 @@ def _confirm_publish_via_profile(
             verification_deadline_at=verification_deadline_at,
             first_profile_check_at=first_profile_check_at,
             timestamp_readable=timestamp_readable,
+            published_at=share_epoch,
             **_surface_kwargs(),
         )
 
@@ -3070,12 +3693,18 @@ def _confirm_publish_via_profile(
         if _published_reel_viewer_visible(device):
             viewer_texts = _viewer_text_candidates(device)
             viewer_age_seconds, _ = _extract_relative_age_from_texts(viewer_texts)
+            viewer_fingerprint, viewer_signature_text = _reel_signature_from_texts(
+                viewer_texts,
+                expected_handle=expected_handle,
+            )
             result = _build_result(
                 verified=True,
                 reason_code="publish_viewer_verified",
                 detail="Instagram оставил открытым опубликованный Reel с кнопками View insights / Boost post.",
                 publish_phase="verifying_profile",
                 matched_age_seconds=viewer_age_seconds,
+                matched_fingerprint=viewer_fingerprint,
+                matched_signature_text=viewer_signature_text,
                 verification_attempt=attempt,
                 event_kind="published_reel_viewer_verified",
                 timestamp_readable=viewer_age_seconds is not None,
@@ -3195,6 +3824,8 @@ def _confirm_publish_via_profile(
                 publish_phase="verifying_profile",
                 matched_slot=int(matched_candidate.slot_index),
                 matched_age_seconds=matched_candidate.age_seconds,
+                matched_fingerprint=matched_candidate.fingerprint,
+                matched_signature_text=matched_candidate.signature_text,
                 verification_attempt=attempt,
                 event_kind="profile_verified",
                 timestamp_readable=True,
@@ -3403,6 +4034,8 @@ def _post_login_coordinate_fallback(serial: str) -> None:
         (540, 1040),  # Don't allow / secondary action
         (540, 1180),  # Not now / save info
         (540, 1510),  # Got it / onboarding CTA
+        (540, 1630),  # Got it / onboarding CTA (current layout)
+        (540, 1730),  # Save your login info? -> Not now
         (540, 870),   # Allow / primary action
     ):
         _adb_tap(serial, x, y)
@@ -3434,6 +4067,67 @@ def _recover_logged_in_surface(device: Any, serial: str, timeout_seconds: float 
     return False
 
 
+def _dismiss_save_login_info_prompt(device: Any, serial: str) -> bool:
+    prompt_markers = [
+        {"textMatches": "(?i)(save your login info|save login info|save your login information)"},
+        {"descriptionMatches": "(?i)(save your login info|save login info|save your login information)"},
+    ]
+    dismiss_selectors = [
+        {"textMatches": "(?i)^not now$"},
+        {"descriptionMatches": "(?i)^not now$"},
+        {"resourceId": f"{INSTAGRAM_PACKAGE}:id/igds_headline_secondary_action_button"},
+        {"resourceIdMatches": f"{INSTAGRAM_PACKAGE}:id/.*secondary.*action.*button.*"},
+    ]
+    if _ig_find_first(device, prompt_markers, timeout_seconds=0.5) is None:
+        return False
+    if _ig_click_first(device, dismiss_selectors, timeout_seconds=0.5, serial=serial):
+        logger.info("manual_step_required: dismissed save-login-info prompt")
+        return True
+    for node in _dump_ui_nodes(device):
+        labels = [
+            _compact_ui_text(node.get("text")),
+            _compact_ui_text(node.get("description")),
+        ]
+        if not any(re.fullmatch(r"(?i)not now", label) for label in labels if label):
+            continue
+        if not _tap_challenge_node(serial, node):
+            continue
+        logger.info("manual_step_required: dismissed save-login-info prompt via node")
+        return True
+    return False
+
+
+def _tap_post_login_dismiss_node(device: Any, serial: str) -> bool:
+    dismiss_patterns = [
+        r"(?i)not now",
+        r"(?i)не сейчас\.?",
+        r"(?i)don[’']?t allow",
+        r"(?i)не разрешать",
+        r"(?i)запретить",
+        r"(?i)got it",
+        r"(?i)понятно",
+        r"(?i)ок(?:ей)?",
+        r"(?i)okay",
+    ]
+    for node in _dump_ui_nodes(device):
+        labels = [
+            _compact_ui_text(node.get("text")),
+            _compact_ui_text(node.get("description")),
+        ]
+        if not any(
+            re.fullmatch(pattern, label)
+            for label in labels
+            if label
+            for pattern in dismiss_patterns
+        ):
+            continue
+        if not _tap_challenge_node(serial, node):
+            continue
+        logger.info("manual_step_required: dismissed post-login prompt via node")
+        return True
+    return False
+
+
 def _handle_post_login_prompts(device: Any, serial: str, timeout_seconds: float = 18.0) -> bool:
     dismiss_selectors = [
         {"textMatches": "(?i)(not now|не сейчас|не сейчас\\.)"},
@@ -3444,7 +4138,6 @@ def _handle_post_login_prompts(device: Any, serial: str, timeout_seconds: float 
         {"resourceId": "com.android.permissioncontroller:id/permission_deny_and_dont_ask_again_button"},
         {"textMatches": "(?i)(got it|понятно|ок|okay)"},
         {"descriptionMatches": "(?i)(got it|понятно|ок|okay)"},
-        {"resourceId": f"{INSTAGRAM_PACKAGE}:id/igds_headline_primary_action_button"},
     ]
     prompt_markers = [
         {"textMatches": "(?i)(save your login info|save login info|save your login information)"},
@@ -3460,6 +4153,11 @@ def _handle_post_login_prompts(device: Any, serial: str, timeout_seconds: float 
     deadline = time.time() + timeout_seconds
     clicked_any = False
     while time.time() < deadline:
+        if _dismiss_save_login_info_prompt(device, serial):
+            clicked_any = True
+            time.sleep(1.2)
+            continue
+
         prompt_visible = _ig_find_first(device, prompt_markers, timeout_seconds=0.5) is not None
         dismiss = _find_first(device, dismiss_selectors, timeout_seconds=0.5)
         if dismiss is not None:
@@ -3471,6 +4169,10 @@ def _handle_post_login_prompts(device: Any, serial: str, timeout_seconds: float 
                 continue
             except Exception:
                 pass
+        if prompt_visible and _tap_post_login_dismiss_node(device, serial):
+            clicked_any = True
+            time.sleep(1.2)
+            continue
 
         if _wait_for_logged_in_surface(device, serial, timeout_seconds=0.8) and not prompt_visible:
             return True
@@ -3517,17 +4219,65 @@ def _human_check_visible(device: Any) -> bool:
     ) is not None
 
 
+def _unfamiliar_device_challenge_visible(device: Any) -> bool:
+    return _ig_find_first(
+        device,
+        [
+            {"textMatches": "(?i)try another device to continue"},
+            {"textMatches": "(?i)can'?t try another device\\?"},
+            {"textMatches": "(?i)this must be a device you'?ve used to log into this account before"},
+            {"textMatches": "(?i)we can'?t match the device you'?re using to the account you'?re trying to recover"},
+        ],
+        timeout_seconds=1.5,
+    ) is not None
+
+
 def _generate_current_twofa_code(secret: str) -> str:
-    if pyotp is None:
-        raise RuntimeError("pyotp is unavailable")
-    totp = pyotp.TOTP(secret)
-    digits = max(6, int(getattr(totp, "digits", 6) or 6))
-    code = str(totp.now() or "").strip()
+    profile = _extract_twofa_profile(secret)
+    if profile is None:
+        raise RuntimeError("invalid TOTP profile")
+
+    if pyotp is not None:
+        digest = getattr(hashlib, str(profile.get("algorithm") or "SHA1").lower(), None)
+        if digest is not None:
+            totp = pyotp.TOTP(
+                str(profile["secret"]),
+                digits=int(profile["digits"]),
+                interval=int(profile["period"]),
+                digest=digest,
+            )
+            code = str(totp.now() or "").strip()
+            digits = max(4, int(getattr(totp, "digits", profile["digits"]) or profile["digits"]))
+            if code.isdigit():
+                code = code.zfill(digits)
+            if code and code.isdigit() and len(code) == digits:
+                return code
+
+    code = str(_current_totp_code(secret) or "").strip()
+    digits = int(profile["digits"])
     if code.isdigit():
         code = code.zfill(digits)
     if not code or not code.isdigit() or len(code) != digits:
         raise RuntimeError(f"invalid TOTP code generated: {code!r}")
     return code
+
+
+def _wait_for_fresh_twofa_window(twofa_secret: str, serial: str, *, min_validity_seconds: float = 8.0) -> None:
+    try:
+        remaining = float(_seconds_until_totp_rollover(twofa_secret))
+    except Exception:
+        return
+    threshold = max(2.0, float(min_validity_seconds or 0))
+    if remaining > threshold:
+        return
+    wait_seconds = min(remaining + 0.8, 31.0)
+    logger.info(
+        "twofa_wait_for_next_window: serial=%s remaining=%.2fs wait=%.2fs",
+        serial,
+        remaining,
+        wait_seconds,
+    )
+    time.sleep(wait_seconds)
 
 
 def _set_instagram_code_field_value(device: Any, serial: str, field: Any, value: str) -> bool:
@@ -3573,16 +4323,10 @@ def _set_instagram_code_field_value(device: Any, serial: str, field: Any, value:
 
 def _maybe_submit_twofa(device: Any, serial: str, twofa_secret: str) -> bool:
     secret = _normalize_twofa_secret(twofa_secret)
-    if not secret or not _twofa_secret_is_valid(twofa_secret) or pyotp is None:
+    if not secret or not _twofa_secret_is_valid(twofa_secret):
         return False
 
     if not _twofa_prompt_visible(device):
-        return False
-
-    try:
-        code = _generate_current_twofa_code(secret)
-    except Exception as exc:
-        logger.warning("twofa_code_generation_failed: serial=%s error=%s", serial, exc)
         return False
 
     field = _find_first(
@@ -3597,28 +4341,51 @@ def _maybe_submit_twofa(device: Any, serial: str, twofa_secret: str) -> bool:
     if field is None:
         return False
 
-    try:
-        field.click()
-    except Exception:
-        pass
-    if not _set_instagram_code_field_value(device, serial, field, code):
-        logger.warning("twofa_field_input_failed: serial=%s", serial)
-        return False
-    try:
-        device.press("back")
-    except Exception:
-        pass
-
     confirm_selectors = [
         {"textMatches": "(?i)(confirm|continue|next|done|submit|войти|подтвердить|продолжить|далее|готово)"},
         {"descriptionMatches": "(?i)(confirm|continue|next|done|submit|войти|подтвердить|продолжить|далее|готово)"},
         {"resourceIdMatches": f"{INSTAGRAM_PACKAGE}:id/.*confirm.*"},
         {"resourceIdMatches": f"{INSTAGRAM_PACKAGE}:id/.*continue.*"},
     ]
-    if not _click_first(device, confirm_selectors, timeout_seconds=3.0):
-        _adb_shell(serial, "input", "keyevent", "66", timeout=10, check=False)
-    logger.info("twofa_submitted: serial=%s digits=%s", serial, len(code))
-    time.sleep(3.0)
+
+    submitted = False
+    for attempt in range(1, 3):
+        if attempt == 1:
+            _wait_for_fresh_twofa_window(secret, serial)
+        else:
+            try:
+                wait_seconds = min(float(_seconds_until_totp_rollover(secret)) + 0.8, 31.0)
+            except Exception:
+                wait_seconds = 1.0
+            logger.info("twofa_retry_wait: serial=%s attempt=%s wait=%.2fs", serial, attempt, wait_seconds)
+            time.sleep(wait_seconds)
+
+        try:
+            code = _generate_current_twofa_code(secret)
+        except Exception as exc:
+            logger.warning("twofa_code_generation_failed: serial=%s attempt=%s error=%s", serial, attempt, exc)
+            return submitted
+
+        try:
+            field.click()
+        except Exception:
+            pass
+        if not _set_instagram_code_field_value(device, serial, field, code):
+            logger.warning("twofa_field_input_failed: serial=%s attempt=%s", serial, attempt)
+            return submitted
+        try:
+            device.press("back")
+        except Exception:
+            pass
+
+        if not _click_first(device, confirm_selectors, timeout_seconds=3.0):
+            _adb_shell(serial, "input", "keyevent", "66", timeout=10, check=False)
+        submitted = True
+        logger.info("twofa_submitted: serial=%s attempt=%s digits=%s", serial, attempt, len(code))
+        time.sleep(3.0)
+        if not _twofa_prompt_visible(device):
+            return True
+        logger.warning("twofa_prompt_still_visible: serial=%s attempt=%s", serial, attempt)
     return True
 
 
@@ -3883,6 +4650,20 @@ def _request_instagram_new_email_code(device: Any, serial: str) -> bool:
 
 
 def _classify_login_challenge_screen_once(device: Any, serial: str) -> tuple[str, str]:
+    auth_app_prompt = _ig_find_first(
+        device,
+        [
+            {"textMatches": "(?i)(go to your authentication app|authentication app|two-factor authentication app|google authenticator|duo mobile|authenticator app)"},
+            {"textMatches": "(?i)(приложени[ея].*аутентифик|код из приложения|google authenticator|duo mobile)"},
+        ],
+        timeout_seconds=1.5,
+    )
+    if auth_app_prompt is not None:
+        return ("manual_2fa", "Instagram просит код из приложения аутентификации.")
+
+    if _human_check_visible(device):
+        return ("human_check", "Instagram показал Confirm you're a human / CAPTCHA. Автоматический обход отключён, нужна ручная проверка аккаунта.")
+
     field = _find_instagram_code_field(device, timeout_seconds=1.5)
     if field is not None:
         return ("numeric_code", "На экране challenge есть поле ввода кода.")
@@ -3961,6 +4742,50 @@ def _mail_challenge_snapshot(
     }
 
 
+def _override_terminal_challenge_state(
+    device: Any,
+    serial: str,
+    payload: dict[str, Any],
+) -> Optional[tuple[str, str, dict[str, Any]]]:
+    screen_kind, screen_detail = _classify_login_challenge_screen(device, serial)
+    twofa_secret = str(payload.get("twofa") or "").strip()
+
+    if screen_kind == "manual_2fa":
+        if twofa_secret and _maybe_submit_twofa(device, serial, twofa_secret):
+            next_state, next_detail = _detect_post_login_state(device, serial, twofa_secret)
+            if next_state != "challenge_required":
+                snapshot = _mail_challenge_snapshot(
+                    status="resolved" if next_state == "login_submitted" else "unsupported",
+                    kind="numeric_code",
+                    reason_code="twofa_app_code_applied" if next_state == "login_submitted" else "manual_2fa_required",
+                    reason_text="Код из приложения аутентификации введён автоматически."
+                    if next_state == "login_submitted"
+                    else next_detail,
+                )
+                return (next_state, next_detail, snapshot)
+        detail = "Instagram просит код из приложения аутентификации."
+        if not twofa_secret:
+            detail = "Instagram запросил 2FA-код из приложения аутентификации, но в account.twofa нет секрета."
+        snapshot = _mail_challenge_snapshot(
+            status="unsupported",
+            kind="unsupported",
+            reason_code="manual_2fa_required",
+            reason_text=detail,
+        )
+        return ("manual_2fa_required", _join_detail_text(screen_detail, detail), snapshot)
+
+    if screen_kind == "human_check":
+        snapshot = _mail_challenge_snapshot(
+            status="unsupported",
+            kind="unsupported",
+            reason_code="human_check_required",
+            reason_text=screen_detail,
+        )
+        return ("challenge_required", screen_detail, snapshot)
+
+    return None
+
+
 def _apply_instagram_approval_link(serial: str, link_url: str, twofa_secret: str) -> tuple[str, str, str]:
     opened_link = _open_instagram_approval_link(serial, link_url)
     time.sleep(4.0)
@@ -4016,6 +4841,13 @@ def _attempt_mail_challenge_login(
         )
         _emit_update(reason_code, snapshot["reason_text"], snapshot)
         return ("challenge_required", _join_detail_text(initial_detail, snapshot["reason_text"]), snapshot)
+
+    if screen_kind in {"manual_2fa", "human_check"}:
+        override_result = _override_terminal_challenge_state(device, serial, payload)
+        if override_result is not None:
+            state, detail, snapshot = override_result
+            _emit_update(snapshot["reason_code"] or "challenge_screen_unsupported", snapshot["reason_text"], snapshot)
+            return (state, _join_detail_text(initial_detail, detail), snapshot)
 
     if screen_kind in {"channel_choice", "approval"}:
         selected_email, selection_detail = _select_instagram_email_challenge_option(device, serial)
@@ -4131,6 +4963,11 @@ def _attempt_mail_challenge_login(
                     reason_code="mail_not_found_after_resend",
                     reason_text="Попросил Instagram отправить новый код, но свежего письма так и не появилось.",
                 )
+            override_result = _override_terminal_challenge_state(device, serial, payload)
+            if override_result is not None:
+                state, detail, snapshot = override_result
+                _emit_update(snapshot["reason_code"] or "challenge_screen_unsupported", snapshot["reason_text"], snapshot)
+                return (state, _join_detail_text(initial_detail, detail), snapshot)
             reason_text = str(mail_snapshot.get("reason_text") or "Не удалось получить код из почты.")
             _emit_update(
                 "mailbox_unavailable" if reason_code == "mailbox_unavailable" else "mail_code_not_found",
@@ -4299,6 +5136,12 @@ def _detect_post_login_state(device: Any, serial: str, twofa_secret: str = "") -
     if _human_check_visible(device):
         return ("challenge_required", "Instagram показал Confirm you're a human / CAPTCHA. Автоматический обход отключён, нужна ручная проверка аккаунта.")
 
+    if _unfamiliar_device_challenge_visible(device):
+        return (
+            "challenge_required",
+            "Instagram заблокировал вход экраном Try another device to continue. Для этого аккаунта нужен вход с ранее доверенного устройства.",
+        )
+
     manual_2fa = _ig_find_first(
         device,
         [
@@ -4309,11 +5152,19 @@ def _detect_post_login_state(device: Any, serial: str, twofa_secret: str = "") -
     )
     if manual_2fa is not None:
         detail = "Instagram запросил 2FA. Заверши этот шаг вручную в приложении."
-        if twofa_secret and pyotp is None:
-            detail = f"Instagram запросил 2FA, но pyotp недоступен: {PYOTP_IMPORT_ERROR}."
-        elif not twofa_secret:
+        if not twofa_secret:
             detail = "Instagram запросил 2FA. В account.twofa нет секрета, поэтому заверши шаг вручную."
         return ("manual_2fa_required", detail)
+
+    screen_kind = "unknown"
+    screen_detail = ""
+    if callable(device):
+        try:
+            screen_kind, screen_detail = _classify_login_challenge_screen(device, serial)
+        except Exception as exc:
+            logger.warning("login_challenge_classification_failed: serial=%s error=%s", serial, exc)
+    if screen_kind != "unknown":
+        return ("challenge_required", screen_detail)
 
     challenge = _ig_find_first(
         device,
@@ -5168,6 +6019,7 @@ def _run_login_flow(
 def _run_publish_flow(payload: dict[str, Any]) -> None:
     account_id = int(payload["account_id"])
     expected_handle = str(payload.get("username") or payload.get("account_login") or "").strip()
+    helper_ticket = str(payload.get("ticket") or "").strip()
     source_path_override = str(payload.get("source_path") or "").strip()
     delete_source_on_success = bool(payload.get("delete_source_on_success", True))
     preferred_serial = str(payload.get("instagram_emulator_serial") or payload.get("emulator_serial") or "").strip()
@@ -5363,12 +6215,24 @@ def _run_publish_flow(payload: dict[str, Any]) -> None:
             detail = f"Reel опубликован и подтверждён через профиль. Исходный файл {source_name} удалён из локальной папки."
         else:
             detail = f"Reel опубликован и подтверждён через профиль. Staged файл {source_name} оставлен на месте."
+        publish_telemetry = _build_reel_publish_telemetry(
+            verification_result,
+            helper_ticket=helper_ticket,
+            fallback_published_at=(
+                int(share_clicked_at_epoch) + int(wait_result.elapsed_seconds)
+                if share_clicked_at_epoch is not None
+                else int(time.time())
+            ),
+        )
         _push_account_publish_status(
             account_id,
             "published",
             detail,
             expected_handle,
             last_file=source_name,
+            source_path=source_path,
+            helper_ticket=helper_ticket,
+            telemetry=publish_telemetry,
         )
         _set_state(
             account_id=account_id,
@@ -5745,6 +6609,8 @@ def _run_publish_job(job: dict[str, Any]) -> None:
                     "checked_slots": result.checked_slots or PUBLISH_PROFILE_CHECK_SLOTS,
                     "matched_slot": result.matched_slot,
                     "matched_age_seconds": result.matched_age_seconds,
+                    "reel_fingerprint": result.matched_fingerprint,
+                    "reel_signature_text": result.matched_signature_text,
                     "baseline_available": result.baseline_available,
                     "seconds_until_profile_check": result.seconds_until_profile_check,
                     "share_clicked_at": result.share_clicked_at,
@@ -5822,6 +6688,8 @@ def _run_publish_job(job: dict[str, Any]) -> None:
                         "checked_slots": verification_result.checked_slots or PUBLISH_PROFILE_CHECK_SLOTS,
                         "matched_slot": verification_result.matched_slot,
                         "matched_age_seconds": verification_result.matched_age_seconds,
+                        "reel_fingerprint": verification_result.matched_fingerprint,
+                        "reel_signature_text": verification_result.matched_signature_text,
                         "baseline_available": verification_result.baseline_available,
                         "seconds_until_profile_check": verification_result.seconds_until_profile_check,
                         "share_clicked_at": verification_result.share_clicked_at,
@@ -5866,6 +6734,16 @@ def _run_publish_job(job: dict[str, Any]) -> None:
                         "checked_slots": verification_result.checked_slots or PUBLISH_PROFILE_CHECK_SLOTS,
                         "matched_slot": verification_result.matched_slot,
                         "matched_age_seconds": verification_result.matched_age_seconds,
+                        "reel_fingerprint": verification_result.matched_fingerprint,
+                        "reel_signature_text": verification_result.matched_signature_text,
+                        "published_at": _estimate_reel_published_at(
+                            verification_result,
+                            fallback_published_at=(
+                                int(share_clicked_at_epoch) + int(wait_result.elapsed_seconds)
+                                if share_clicked_at_epoch is not None
+                                else int(time.time())
+                            ),
+                        ),
                         "baseline_available": verification_result.baseline_available,
                         "seconds_until_profile_check": verification_result.seconds_until_profile_check,
                         "share_clicked_at": verification_result.share_clicked_at,
@@ -5954,10 +6832,204 @@ def _run_publish_job(job: dict[str, Any]) -> None:
             _delete_downloaded_publish_job_source(downloaded_source_path)
 
 
+def _run_collect_reel_metrics(post: dict[str, Any]) -> None:
+    post_id = int(post["id"])
+    account_id = int(post["account_id"])
+    batch_id = int(post.get("publish_batch_id") or 0)
+    job_id = int(post.get("publish_job_id") or 0)
+    window_key = str(post.get("window_key") or post.get("collection_stage") or "t30m").strip() or "t30m"
+    source_name = str(post.get("source_name") or "").strip()
+    preferred_serial = str(post.get("instagram_emulator_serial") or "").strip()
+    expected_handle = str(post.get("username") or post.get("account_login") or "").strip()
+    reel_fingerprint = str(post.get("reel_fingerprint") or "").strip()
+    reel_signature_text = str(post.get("reel_signature_text") or "").strip()
+    published_at_raw = post.get("published_at")
+    serial = preferred_serial
+
+    def _set_metrics_state(state: str, detail: str, *, flow_running: bool = True) -> None:
+        prefix = f"[reel metrics post {post_id}] "
+        _set_state(
+            account_id=account_id,
+            target="instagram_collect_reel_metrics",
+            state=state,
+            detail=prefix + (detail or "").strip(),
+            flow_running=flow_running,
+            emulator_serial=serial,
+        )
+
+    def _push_snapshot(
+        status: str,
+        *,
+        payload: Optional[dict[str, Any]] = None,
+        retryable: bool = False,
+        error_detail: str = "",
+    ) -> None:
+        snapshot_payload = dict(payload or {})
+        if retryable:
+            snapshot_payload["retryable"] = True
+        if error_detail:
+            snapshot_payload["error_detail"] = error_detail
+        _push_reel_metric_snapshot(
+            post_id,
+            window_key=window_key,
+            status=status,
+            payload=snapshot_payload,
+        )
+
+    diagnostics_path = ""
+    try:
+        _set_metrics_state("collecting", f"Готовлю сбор метрик для {source_name or f'post #{post_id}'} ({window_key}).")
+        login_result = _run_login_flow(
+            {
+                "account_id": account_id,
+                "account_login": str(post.get("account_login") or "").strip(),
+                "account_password": str(post.get("account_password") or "").strip(),
+                "username": expected_handle,
+                "twofa": str(post.get("twofa") or "").strip(),
+                "target": "instagram_collect_reel_metrics",
+                "instagram_emulator_serial": preferred_serial,
+            },
+            push_status=False,
+            finalize_runtime=False,
+            preferred_serial=preferred_serial,
+        )
+        serial = str(login_result.get("serial") or preferred_serial or "")
+        if login_result["state"] != "login_submitted":
+            snapshot_status, retryable = _reel_metrics_login_failure_outcome(str(login_result.get("state") or ""))
+            diagnostics = _capture_publish_diagnostics(
+                serial,
+                "reel_metrics_failed" if snapshot_status == "failed" else "reel_metrics_unavailable",
+                batch_id=batch_id or None,
+                job_id=job_id or None,
+                account_id=account_id,
+            )
+            diagnostics_path = _diagnostics_primary_path(diagnostics)
+            detail = f"Сбор метрик остановлен: {login_result['detail']}"
+            _push_snapshot(
+                snapshot_status,
+                payload={
+                    "raw_text_json": {
+                        "login_state": str(login_result.get("state") or ""),
+                        "detail": str(login_result.get("detail") or ""),
+                        "mail_challenge": login_result.get("mail_challenge") or {},
+                    },
+                    "diagnostics_path": diagnostics_path,
+                },
+                retryable=retryable,
+                error_detail=detail,
+            )
+            _set_metrics_state(snapshot_status, detail, flow_running=False)
+            return
+
+        device = login_result["device"]
+        _set_metrics_state("collecting", f"Ищу Reel {source_name or f'post #{post_id}'} в профиле аккаунта.")
+        center, candidate = _locate_reel_for_metrics(
+            device,
+            serial,
+            reel_fingerprint=reel_fingerprint,
+            reel_signature_text=reel_signature_text,
+            published_at=int(published_at_raw) if published_at_raw is not None else None,
+            expected_handle=expected_handle,
+            max_slots=12,
+            max_screens=3,
+        )
+        if center is None or candidate is None:
+            diagnostics = _capture_publish_diagnostics(
+                serial,
+                "reel_metrics_not_found",
+                batch_id=batch_id or None,
+                job_id=job_id or None,
+                account_id=account_id,
+            )
+            diagnostics_path = _diagnostics_primary_path(diagnostics)
+            detail = _reel_metrics_detail(post, "not_found")
+            _push_snapshot(
+                "not_found",
+                payload={
+                    "raw_text_json": {
+                        "reel_fingerprint": reel_fingerprint,
+                        "reel_signature_text": reel_signature_text,
+                        "published_at": published_at_raw,
+                    },
+                    "diagnostics_path": diagnostics_path,
+                },
+                error_detail=detail,
+            )
+            _set_metrics_state("not_found", detail, flow_running=False)
+            return
+
+        if not _open_profile_reels_tab(device, serial, timeout_seconds=6.0):
+            raise RuntimeError("Не удалось вернуть вкладку Reels перед сбором метрик.")
+        if not _open_reel_viewer_at_center(device, serial, center):
+            raise RuntimeError("Не удалось повторно открыть Reel для сбора метрик.")
+
+        status, metrics, raw_payload = _collect_reel_metrics_from_open_viewer(device, serial)
+        detail = _reel_metrics_detail(post, status, metrics)
+        if status == "unavailable":
+            diagnostics = _capture_publish_diagnostics(
+                serial,
+                "reel_metrics_unavailable",
+                batch_id=batch_id or None,
+                job_id=job_id or None,
+                account_id=account_id,
+            )
+            diagnostics_path = _diagnostics_primary_path(diagnostics)
+        _push_snapshot(
+            status,
+            payload={
+                **metrics,
+                "raw_text_json": {
+                    "matched_candidate": _serialize_profile_reel_candidate(candidate),
+                    **raw_payload,
+                },
+                "diagnostics_path": diagnostics_path,
+            },
+            error_detail=detail if status in {"unavailable", "not_found"} else "",
+        )
+        _set_metrics_state(status, detail, flow_running=False)
+    except Exception as exc:
+        snapshot_reported = False
+        if not diagnostics_path:
+            diagnostics = _capture_publish_diagnostics(
+                serial,
+                "reel_metrics_failed",
+                batch_id=batch_id or None,
+                job_id=job_id or None,
+                account_id=account_id,
+            )
+            diagnostics_path = _diagnostics_primary_path(diagnostics)
+        try:
+            _push_snapshot(
+                "failed",
+                payload={
+                    "raw_text_json": {
+                        "reel_fingerprint": reel_fingerprint,
+                        "reel_signature_text": reel_signature_text,
+                        "published_at": published_at_raw,
+                    },
+                    "diagnostics_path": diagnostics_path,
+                },
+                retryable=True,
+                error_detail=str(exc),
+            )
+            snapshot_reported = True
+        except Exception as snapshot_exc:
+            logger.warning("reel_metrics_snapshot_failed: post_id=%s error=%s", post_id, snapshot_exc)
+        _set_metrics_state("failed", str(exc), flow_running=False)
+        raise ReelMetricsFlowError(str(exc), snapshot_reported=snapshot_reported, serial=serial) from exc
+    finally:
+        try:
+            if serial and "device" in locals():
+                _recover_to_profile_surface(device, serial, timeout_seconds=4.0)
+        except Exception:
+            pass
+
+
 def _run_payload_flow(payload: dict[str, Any]) -> None:
     target = str(payload.get("target") or "").strip()
     if target in {"instagram_app_login", "instagram_audit_login"}:
-        _run_login_flow(payload, push_status=True)
+        preferred_serial = str(payload.get("instagram_emulator_serial") or payload.get("emulator_serial") or "").strip()
+        _run_login_flow(payload, push_status=True, preferred_serial=preferred_serial)
         return
     if target == "instagram_publish_latest_reel":
         _run_publish_flow(payload)
@@ -6031,41 +7103,91 @@ def _runner_main() -> None:
             logger.warning("publish_runner_lease_failed: error=%s", exc)
             time.sleep(PUBLISH_RUNNER_POLL_SECONDS)
             continue
-        if not job:
+        if job:
+            batch_id = int(job.get("batch_id") or 0)
+            job_id = int(job.get("id") or 0)
+            account_id = int(job.get("account_id") or 0)
+            source_name = str(job.get("source_name") or job.get("artifact_filename") or "").strip()
+            serial = str(job.get("emulator_serial") or "").strip()
+            _set_state(
+                account_id=account_id,
+                target="publish_batch_job",
+                state="leased",
+                detail=f"[batch {batch_id} job {job_id}] Runner взял job {source_name}.",
+                flow_running=True,
+                emulator_serial=serial,
+            )
+            try:
+                _run_publish_job(job)
+            except Exception as exc:
+                logger.exception("publish_runner_job_failed: batch_id=%s job_id=%s error=%s", batch_id, job_id, exc)
+                _push_publish_job_status(
+                    job_id,
+                    "failed",
+                    str(exc),
+                    last_file=source_name,
+                    serial=serial,
+                    source_path=str(job.get("source_path") or ""),
+                )
+                _set_state(
+                    account_id=account_id,
+                    target="publish_batch_job",
+                    state="failed",
+                    detail=f"[batch {batch_id} job {job_id}] {exc}",
+                    flow_running=False,
+                    emulator_serial=serial,
+                )
+            time.sleep(1.0)
+            continue
+
+        try:
+            post = _lease_reel_metric_post()
+        except Exception as exc:
+            logger.warning("reel_metrics_lease_failed: error=%s", exc)
             time.sleep(PUBLISH_RUNNER_POLL_SECONDS)
             continue
-        batch_id = int(job.get("batch_id") or 0)
-        job_id = int(job.get("id") or 0)
-        account_id = int(job.get("account_id") or 0)
-        source_name = str(job.get("source_name") or job.get("artifact_filename") or "").strip()
-        serial = str(job.get("emulator_serial") or "").strip()
+        if not post:
+            time.sleep(PUBLISH_RUNNER_POLL_SECONDS)
+            continue
+
+        post_id = int(post.get("id") or 0)
+        account_id = int(post.get("account_id") or 0)
+        source_name = str(post.get("source_name") or "").strip()
+        serial = str(post.get("instagram_emulator_serial") or "").strip()
+        window_key = str(post.get("window_key") or post.get("collection_stage") or "t30m").strip()
         _set_state(
             account_id=account_id,
-            target="publish_batch_job",
+            target="instagram_collect_reel_metrics",
             state="leased",
-            detail=f"[batch {batch_id} job {job_id}] Runner взял job {source_name}.",
+            detail=f"[reel metrics post {post_id}] Runner взял окно {window_key} для {source_name or 'reel'}.",
             flow_running=True,
             emulator_serial=serial,
         )
         try:
-            _run_publish_job(job)
+            _run_collect_reel_metrics(post)
         except Exception as exc:
-            logger.exception("publish_runner_job_failed: batch_id=%s job_id=%s error=%s", batch_id, job_id, exc)
-            _push_publish_job_status(
-                job_id,
-                "failed",
-                str(exc),
-                last_file=source_name,
-                serial=serial,
-                source_path=str(job.get("source_path") or ""),
-            )
+            logger.exception("reel_metrics_collect_failed: post_id=%s error=%s", post_id, exc)
+            snapshot_reported = isinstance(exc, ReelMetricsFlowError) and bool(exc.snapshot_reported)
+            if not snapshot_reported:
+                try:
+                    _push_reel_metric_snapshot(
+                        post_id,
+                        window_key=window_key,
+                        status="failed",
+                        payload={
+                            "retryable": True,
+                            "error_detail": str(exc),
+                        },
+                    )
+                except Exception as snapshot_exc:
+                    logger.warning("reel_metrics_collect_failed_snapshot_push: post_id=%s error=%s", post_id, snapshot_exc)
             _set_state(
                 account_id=account_id,
-                target="publish_batch_job",
+                target="instagram_collect_reel_metrics",
                 state="failed",
-                detail=f"[batch {batch_id} job {job_id}] {exc}",
+                detail=f"[reel metrics post {post_id}] {exc}",
                 flow_running=False,
-                emulator_serial=serial,
+                emulator_serial=getattr(exc, "serial", "") or serial,
             )
         time.sleep(1.0)
 

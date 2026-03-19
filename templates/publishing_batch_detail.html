@@ -96,7 +96,39 @@
           <h2 class="card__title">Аккаунты</h2>
         </header>
         <div class="card__body">
-          <div id="dashboard-accounts" class="publish-accounts-grid"></div>
+          <div id="dashboard-accounts" class="publish-accounts-grid">
+            {% if dashboard_snapshot.accounts %}
+              {% for account in dashboard_snapshot.accounts %}
+                <article class="publish-account-card{% if account.is_failed %} publish-account-card--failed{% elif account.is_active %} publish-account-card--active{% endif %}">
+                  <div class="publish-account-card__head">
+                    <div class="publish-account-card__summary">
+                      <div class="listitem__title">@{{ account.username or account.account_login or ('аккаунт-' ~ account.id) }}</div>
+                      <div class="listitem__meta">
+                        <span class="status-pill {{ account.batch_state_class }}">{{ account.batch_state_label }}</span>
+                      </div>
+                    </div>
+                    <div class="publish-account-card__actions">
+                      {% if account.artifact_download_url %}
+                        <a class="btn ghost sm" href="{{ account.artifact_download_url }}">Скачать</a>
+                      {% endif %}
+                      <a class="btn action sm" href="{{ account.open_url }}">Открыть</a>
+                    </div>
+                  </div>
+                  <div class="publish-account-card__phase">
+                    <div class="publish-account-card__phase-title">{{ account.phase_label }}</div>
+                    {% if account.phase_detail %}
+                      <div class="hint">{{ account.phase_detail }}</div>
+                    {% endif %}
+                    {% if account.reel_metrics_summary %}
+                      <div class="hint mt-sm">Аналитика: {{ account.reel_metrics_summary }}</div>
+                    {% endif %}
+                  </div>
+                </article>
+              {% endfor %}
+            {% else %}
+              <div class="hint">Аккаунты пакета пока не найдены.</div>
+            {% endif %}
+          </div>
         </div>
       </section>
 
@@ -213,6 +245,53 @@
             ].filter(Boolean).join('');
           };
 
+          const renderReelAnalytics = function (account) {
+            const reel = account && account.latest_reel ? account.latest_reel : null;
+            if (!reel) {
+              return '';
+            }
+            const history = Array.isArray(account.reel_metrics_history) ? account.reel_metrics_history : [];
+            const summary = String(account.reel_metrics_summary || '').trim()
+              || ('Сбор: ' + String(reel.collection_state_label || '—'));
+            const meta = [
+              statusPill(reel.collection_state_label || '—', reel.collection_state_class || 'unknown'),
+              reel.latest_snapshot_status_label ? statusPill(reel.latest_snapshot_status_label, reel.latest_snapshot_status_class || 'unknown') : '',
+              reel.latest_snapshot_window_label ? pill('Окно: ' + reel.latest_snapshot_window_label) : '',
+              reel.last_collected_at_label ? pill('Обновлено: ' + reel.last_collected_at_label) : '',
+              !reel.last_collected_at_label && reel.next_collect_at_label ? pill('Следующее: ' + reel.next_collect_at_label) : ''
+            ].filter(Boolean).join('');
+            const historyHtml = history.length
+              ? history.map(function (item) {
+                  return [
+                    '<div class="hint">',
+                    escapeHtml(item.window_label || '—'),
+                    ' · ',
+                    escapeHtml(item.status_label || '—'),
+                    ' · ',
+                    'V ', escapeHtml(item.plays_label || '—'),
+                    ' · L ', escapeHtml(item.likes_label || '—'),
+                    ' · C ', escapeHtml(item.comments_label || '—'),
+                    item.collected_at_label ? ' · ' + escapeHtml(item.collected_at_label) : '',
+                    '</div>'
+                  ].join('');
+                }).join('')
+              : '<div class="hint">История окон пока пустая.</div>';
+            return [
+              '<div class="hint mt-sm">Аналитика: ', escapeHtml(summary), '</div>',
+              '<details class="service-details publish-account-card__service">',
+              '<summary class="service-details__summary">Аналитика</summary>',
+              '<div class="service-details__body">',
+              meta ? '<div class="detail-stats">' + meta + '</div>' : '',
+              '<div class="hint mt-sm">Просмотры ', escapeHtml(reel.plays_label || '—'),
+                ' · Лайки ', escapeHtml(reel.likes_label || '—'),
+                ' · Комменты ', escapeHtml(reel.comments_label || '—'),
+              '</div>',
+              '<div class="service-stack mt-sm">', historyHtml, '</div>',
+              '</div>',
+              '</details>'
+            ].join('');
+          };
+
           const renderAccounts = function (accounts) {
             if (!Array.isArray(accounts) || !accounts.length) {
               return '<div class="hint">Аккаунты пакета пока не найдены.</div>';
@@ -297,6 +376,7 @@
                 '<div class="publish-progress__track" aria-hidden="true"><div class="publish-progress__fill" data-progress-fill style="width: ', progressPct, '%;"></div></div>',
                 '</div>',
                 detailLines,
+                renderReelAnalytics(account),
                 (serviceMeta || serviceHints)
                   ? '<details class="service-details publish-account-card__service"><summary class="service-details__summary">Служебное</summary><div class="service-details__body">'
                       + (serviceMeta ? '<div class="detail-stats">' + serviceMeta + '</div>' : '')

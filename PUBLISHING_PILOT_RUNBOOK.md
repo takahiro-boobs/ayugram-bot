@@ -5,7 +5,7 @@
 ## 1) Быстрый baseline сервера
 
 ```bash
-./.venv311/bin/python scripts/publishing_ops.py --env-file .env baseline
+python3 scripts/publishing/publishing_ops.py --env-file .env baseline
 ```
 
 Ожидание:
@@ -17,7 +17,7 @@
 ## 2) Снимок publish-таблиц (локально)
 
 ```bash
-./.venv311/bin/python scripts/publishing_ops.py --env-file .env snapshot-db --db-path admin.db
+python3 scripts/publishing/publishing_ops.py --env-file .env snapshot-db --db-path admin.db
 ```
 
 Используется как “нулевая точка” перед пилотом.
@@ -27,7 +27,7 @@
 ```bash
 INSTAGRAM_APP_HELPER_BIND=127.0.0.1:18374 \
 PUBLISH_RUNNER_ENABLED=1 \
-./.venv311/bin/python -m uvicorn instagram_app_helper:app --host 127.0.0.1 --port 18374
+python3 -m uvicorn instagram_app_helper:app --host 127.0.0.1 --port 18374
 ```
 
 В отдельном терминале:
@@ -48,22 +48,22 @@ curl -sS http://127.0.0.1:18374/health | jq
 3. Отправить события:
 
 ```bash
-./.venv311/bin/python scripts/publishing_ops.py --env-file .env send-event \
+python3 scripts/publishing/publishing_ops.py --env-file .env send-event \
   --event generation_started --batch-id <BATCH_ID>
 
-./.venv311/bin/python scripts/publishing_ops.py --env-file .env send-event \
+python3 scripts/publishing/publishing_ops.py --env-file .env send-event \
   --event artifact_ready --batch-id <BATCH_ID> \
   --path <ABSOLUTE_OR_BATCH_RELATIVE_MP4_PATH> \
   --filename <VIDEO_NAME>.mp4
 
-./.venv311/bin/python scripts/publishing_ops.py --env-file .env send-event \
+python3 scripts/publishing/publishing_ops.py --env-file .env send-event \
   --event generation_completed --batch-id <BATCH_ID>
 ```
 
 4. Проверить lease:
 
 ```bash
-./.venv311/bin/python scripts/publishing_ops.py --env-file .env lease --runner-name pilot-runner
+python3 scripts/publishing/publishing_ops.py --env-file .env lease --runner-name pilot-runner
 ```
 
 Ожидание: `200` (job есть) или `204` (в очереди пусто).
@@ -71,7 +71,7 @@ curl -sS http://127.0.0.1:18374/health | jq
 5. При ручной симуляции завершения job:
 
 ```bash
-./.venv311/bin/python scripts/publishing_ops.py --env-file .env set-status \
+python3 scripts/publishing/publishing_ops.py --env-file .env set-status \
   --job-id <JOB_ID> --state published --detail "pilot success" \
   --last-file <VIDEO_NAME>.mp4 --runner-name pilot-runner
 ```

@@ -10,3 +10,5 @@
 | `PUBLISH_N8N_WEBHOOK_URL` | admin | `<set>` | `<date>` | URL старта fixed workflow |
 | `PUBLISH_BASE_URL` | admin | `<set>` | `<date>` | Публичный URL админки (с base path при необходимости) |
 | `PUBLISH_STAGING_DIR` | admin | `<set>` | `<date>` | Каталог staging для batch artifacts |
+
+Локальные tunnel/webhook helper-переменные теперь вынесены из скриптов в env. См. `docs/local_scripts.md`.

@@ -7,7 +7,22 @@ import re
 import secrets
 from typing import Any, Dict, List, Optional
 
-from twofa_utils import is_valid_twofa_secret, normalize_twofa_secret
+from domain_states import (
+    ACCOUNT_INSTAGRAM_LAUNCH_STATUS_KEYS as INSTAGRAM_LAUNCH_STATUS_KEYS,
+    ACCOUNT_INSTAGRAM_PUBLISH_STATUS_KEYS as INSTAGRAM_PUBLISH_STATUS_KEYS,
+    ACTIVE_PUBLISH_BATCH_ACCOUNT_STATES,
+    ACTIVE_PUBLISH_JOB_STATES,
+    INSTAGRAM_AUDIT_BATCH_STATE_KEYS,
+    INSTAGRAM_AUDIT_ITEM_STATE_KEYS,
+    INSTAGRAM_AUDIT_MAIL_PROBE_STATE_KEYS,
+    INSTAGRAM_AUDIT_RESOLUTION_KEYS,
+    PUBLISH_BATCH_ACCOUNT_STATE_KEYS,
+    PUBLISH_BATCH_STATE_KEYS,
+    PUBLISH_JOB_STATE_KEYS,
+    PUBLISH_JOB_STATE_ORDER,
+    TERMINAL_PUBLISH_BATCH_ACCOUNT_STATES,
+)
+from twofa_utils import is_valid_twofa_secret, normalize_twofa_secret, normalize_twofa_value_for_storage
 
 DB_PATH = os.getenv("ADMIN_DB_PATH", "admin.db")
 MODEL_COMMISSION_PCT = float(os.getenv("MODEL_COMMISSION_PCT", "25"))
@@ -21,67 +36,17 @@ ACCOUNT_MAIL_STATUS_KEYS = {"never_checked", "ok", "auth_error", "connect_error"
 ACCOUNT_MAIL_CHALLENGE_STATUS_KEYS = {"idle", "resolved", "not_found", "ambiguous", "mailbox_unavailable", "unsupported"}
 ACCOUNT_TEXT_PLACEHOLDER_KEYS = {"NO_EMAIL", "NO MAIL", "NO_MAIL", "NONE", "NULL", "N/A", "NA", "-", "—"}
 HELPER_TICKET_TARGET_KEYS = {"instagram_login", "instagram_app_login", "instagram_audit_login", "instagram_publish_latest_reel"}
-INSTAGRAM_LAUNCH_STATUS_KEYS = {
-    "idle",
-    "login_submitted",
-    "manual_2fa_required",
-    "challenge_required",
-    "invalid_password",
-    "helper_error",
-}
-INSTAGRAM_PUBLISH_STATUS_KEYS = {
-    "idle",
-    "preparing",
-    "login_required",
-    "manual_2fa_required",
-    "email_code_required",
-    "challenge_required",
-    "invalid_password",
-    "importing_media",
-    "opening_reel_flow",
-    "selecting_media",
-    "publishing",
-    "published",
-    "needs_review",
-    "no_source_video",
-    "publish_error",
-}
-INSTAGRAM_AUDIT_BATCH_STATE_KEYS = {
-    "queued",
-    "running",
-    "completed",
-    "completed_with_errors",
-    "failed",
-    "canceled",
-}
-INSTAGRAM_AUDIT_ITEM_STATE_KEYS = {
-    "queued",
-    "launching",
-    "login_check",
-    "mail_check_if_needed",
-    "done",
-}
-INSTAGRAM_AUDIT_RESOLUTION_KEYS = {
-    "login_ok",
-    "manual_2fa_required",
-    "email_code_required",
-    "challenge_required",
-    "invalid_password",
-    "helper_error",
-    "missing_credentials",
-    "missing_device",
-}
-INSTAGRAM_AUDIT_MAIL_PROBE_STATE_KEYS = {
-    "pending",
-    "not_required",
-    "checking",
-    "ok",
-    "empty",
-    "auth_error",
-    "connect_error",
-    "unsupported",
-    "not_configured",
-}
+INSTAGRAM_REEL_POST_ORIGIN_KIND_KEYS = {"batch_job", "standalone"}
+INSTAGRAM_REEL_COLLECTION_STAGE_KEYS = {"t30m", "t6h", "t24h", "t72h", "done"}
+INSTAGRAM_REEL_COLLECTION_STATE_KEYS = {"scheduled", "leased", "collected", "partial", "unavailable", "not_found", "failed"}
+INSTAGRAM_REEL_METRIC_SNAPSHOT_STATUS_KEYS = {"ok", "partial", "unavailable", "not_found", "failed"}
+INSTAGRAM_REEL_COLLECTION_WINDOWS = [
+    ("t30m", 30 * 60),
+    ("t6h", 6 * 60 * 60),
+    ("t24h", 24 * 60 * 60),
+    ("t72h", 72 * 60 * 60),
+]
+INSTAGRAM_REEL_COLLECTION_RETRY_DELAYS_SECONDS = [10 * 60, 30 * 60, 2 * 60 * 60]
 RUNTIME_TASK_TYPE_KEYS = {
     "publish_batch_start",
     "instagram_audit_batch_run",
@@ -100,84 +65,6 @@ RUNTIME_TASK_STATE_KEYS = {
     "running",
     "retrying",
     "completed",
-    "failed",
-    "canceled",
-}
-PUBLISH_BATCH_STATE_KEYS = {
-    "queued_to_worker",
-    "worker_started",
-    "generating",
-    "publishing",
-    "completed",
-    "completed_needs_review",
-    "completed_with_errors",
-    "failed_generation",
-    "canceled",
-}
-PUBLISH_BATCH_ACCOUNT_STATE_KEYS = {
-    "queued_for_generation",
-    "generating",
-    "generation_failed",
-    "queued_for_publish",
-    "leased",
-    "preparing",
-    "importing_media",
-    "opening_reel_flow",
-    "selecting_media",
-    "publishing",
-    "published",
-    "needs_review",
-    "failed",
-    "canceled",
-}
-PUBLISH_JOB_STATE_KEYS = {
-    "queued",
-    "leased",
-    "preparing",
-    "importing_media",
-    "opening_reel_flow",
-    "selecting_media",
-    "publishing",
-    "published",
-    "needs_review",
-    "failed",
-    "canceled",
-}
-PUBLISH_JOB_STATE_ORDER = {
-    "queued": 10,
-    "leased": 20,
-    "preparing": 30,
-    "importing_media": 40,
-    "opening_reel_flow": 50,
-    "selecting_media": 60,
-    "publishing": 70,
-    "published": 80,
-    "needs_review": 80,
-    "failed": 80,
-    "canceled": 80,
-}
-ACTIVE_PUBLISH_JOB_STATES = {
-    "leased",
-    "preparing",
-    "importing_media",
-    "opening_reel_flow",
-    "selecting_media",
-    "publishing",
-}
-ACTIVE_PUBLISH_BATCH_ACCOUNT_STATES = {
-    "generating",
-    "queued_for_publish",
-    "leased",
-    "preparing",
-    "importing_media",
-    "opening_reel_flow",
-    "selecting_media",
-    "publishing",
-}
-TERMINAL_PUBLISH_BATCH_ACCOUNT_STATES = {
-    "generation_failed",
-    "published",
-    "needs_review",
     "failed",
     "canceled",
 }
@@ -842,6 +729,70 @@ def init_db() -> None:
             created_at INTEGER NOT NULL
         )
         """
+    )
+
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS instagram_reel_posts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            origin_kind TEXT NOT NULL,
+            account_id INTEGER NOT NULL,
+            publish_batch_id INTEGER,
+            publish_job_id INTEGER UNIQUE,
+            publish_artifact_id INTEGER,
+            helper_ticket TEXT UNIQUE,
+            source_name TEXT NOT NULL DEFAULT '',
+            source_path TEXT NOT NULL DEFAULT '',
+            reel_fingerprint TEXT NOT NULL DEFAULT '',
+            reel_signature_text TEXT NOT NULL DEFAULT '',
+            matched_slot INTEGER,
+            matched_age_seconds INTEGER,
+            published_at INTEGER NOT NULL,
+            collection_stage TEXT NOT NULL DEFAULT 't30m',
+            collection_state TEXT NOT NULL DEFAULT 'scheduled',
+            next_collect_at INTEGER,
+            last_collected_at INTEGER,
+            last_error TEXT NOT NULL DEFAULT '',
+            collection_attempt_count INTEGER NOT NULL DEFAULT 0,
+            lease_owner TEXT,
+            lease_expires_at INTEGER,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        )
+        """
+    )
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_instagram_reel_posts_account_id ON instagram_reel_posts(account_id, published_at DESC)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_instagram_reel_posts_batch_id ON instagram_reel_posts(publish_batch_id, published_at DESC)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_instagram_reel_posts_collect_due ON instagram_reel_posts(collection_stage, next_collect_at, published_at DESC)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_instagram_reel_posts_collect_lease ON instagram_reel_posts(collection_state, lease_expires_at)")
+
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS instagram_reel_metric_snapshots (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            post_id INTEGER NOT NULL,
+            window_key TEXT NOT NULL,
+            status TEXT NOT NULL,
+            collected_at INTEGER NOT NULL,
+            plays_count INTEGER,
+            likes_count INTEGER,
+            comments_count INTEGER,
+            shares_count INTEGER,
+            saves_count INTEGER,
+            accounts_reached_count INTEGER,
+            watch_time_seconds REAL,
+            avg_watch_time_seconds REAL,
+            three_second_views_count INTEGER,
+            completion_rate_pct REAL,
+            raw_text_json TEXT NOT NULL DEFAULT '',
+            diagnostics_path TEXT NOT NULL DEFAULT '',
+            created_at INTEGER NOT NULL,
+            UNIQUE(post_id, window_key)
+        )
+        """
+    )
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_instagram_reel_metric_snapshots_post_id ON instagram_reel_metric_snapshots(post_id, collected_at DESC)"
     )
 
     cur.execute("PRAGMA table_info(publish_batch_accounts)")
@@ -1952,6 +1903,34 @@ def _normalize_helper_ticket_target(raw: Optional[str]) -> str:
     return value
 
 
+def normalize_instagram_reel_post_origin_kind(raw: Optional[str]) -> str:
+    value = (raw or "standalone").strip().lower() or "standalone"
+    if value not in INSTAGRAM_REEL_POST_ORIGIN_KIND_KEYS:
+        raise ValueError("invalid instagram reel origin kind")
+    return value
+
+
+def normalize_instagram_reel_collection_stage(raw: Optional[str]) -> str:
+    value = (raw or "t30m").strip().lower() or "t30m"
+    if value not in INSTAGRAM_REEL_COLLECTION_STAGE_KEYS:
+        raise ValueError("invalid instagram reel collection stage")
+    return value
+
+
+def normalize_instagram_reel_collection_state(raw: Optional[str]) -> str:
+    value = (raw or "scheduled").strip().lower() or "scheduled"
+    if value not in INSTAGRAM_REEL_COLLECTION_STATE_KEYS:
+        raise ValueError("invalid instagram reel collection state")
+    return value
+
+
+def normalize_instagram_reel_metric_snapshot_status(raw: Optional[str]) -> str:
+    value = (raw or "ok").strip().lower() or "ok"
+    if value not in INSTAGRAM_REEL_METRIC_SNAPSHOT_STATUS_KEYS:
+        raise ValueError("invalid instagram reel metric snapshot status")
+    return value
+
+
 def normalize_account_login(raw: Optional[str]) -> str:
     return (raw or "").strip().lower()
 
@@ -2070,8 +2049,11 @@ def publish_account_readiness_issues(account: Any, *, include_rotation_state: bo
         issues.append("Не заполнен Instagram emulator serial.")
     elif not is_valid_instagram_emulator_serial(emulator_serial):
         issues.append("Instagram emulator serial заполнен неверно.")
-    if include_rotation_state and rotation_state == "not_working":
-        issues.append("Аккаунт помечен как нерабочий и исключён из автопубликации.")
+    if include_rotation_state:
+        if rotation_state == "not_working":
+            issues.append("Аккаунт помечен как нерабочий и исключён из автопубликации.")
+        elif rotation_state != "working":
+            issues.append("Аккаунт ещё не подтверждён как рабочий и не попадает в автопубликацию.")
     return issues
 
 
@@ -2096,7 +2078,7 @@ def normalize_account_twofa_secret(raw_value: Optional[str]) -> str:
     value = (raw_value or "").strip()
     if not value:
         return ""
-    normalized = normalize_twofa_secret(value)
+    normalized = normalize_twofa_value_for_storage(value)
     if not normalized or not is_valid_twofa_secret(value):
         raise ValueError("invalid twofa secret")
     return normalized
@@ -2262,16 +2244,20 @@ def account_auto_rotation_candidate(account: Any) -> Optional[Dict[str, Any]]:
     account_type = str(_publish_account_field(account, "type") or "").strip().lower()
     if account_type and account_type != "instagram":
         return None
-    candidates = [
+    live_candidates = [
         candidate
         for candidate in (
             _account_auto_rotation_publish_candidate(account),
             _account_auto_rotation_launch_candidate(account),
             _account_auto_rotation_audit_candidate(account),
-            _account_auto_rotation_config_candidate(account),
         )
         if candidate is not None
     ]
+    candidates = list(live_candidates)
+    if not candidates:
+        config_candidate = _account_auto_rotation_config_candidate(account)
+        if config_candidate is not None:
+            candidates.append(config_candidate)
     if not candidates:
         return None
     source_priority = {"config": 0, "launch": 1, "audit": 2, "publish": 3}
@@ -2386,6 +2372,61 @@ def _sync_account_auto_rotation_state_with_cursor(cur: sqlite3.Cursor, account_i
         (next_state, reason_value, timestamp, int(account_id)),
     )
     return cur.rowcount > 0
+
+
+def sync_instagram_auto_rotation_states(
+    *,
+    account_ids: Optional[List[int]] = None,
+    limit: int = 500,
+    now: Optional[int] = None,
+) -> int:
+    unique_ids: List[int] = []
+    seen_ids: set[int] = set()
+    for raw_id in account_ids or []:
+        account_id = int(raw_id)
+        if account_id <= 0 or account_id in seen_ids:
+            continue
+        seen_ids.add(account_id)
+        unique_ids.append(account_id)
+
+    conn = _connect()
+    cur = conn.cursor()
+    try:
+        if unique_ids:
+            placeholders = ",".join("?" for _ in unique_ids)
+            cur.execute(
+                f"""
+                SELECT id
+                FROM accounts
+                WHERE type = 'instagram'
+                  AND id IN ({placeholders})
+                ORDER BY updated_at DESC, id DESC
+                """,
+                tuple(unique_ids),
+            )
+        else:
+            cur.execute(
+                """
+                SELECT id
+                FROM accounts
+                WHERE type = 'instagram'
+                ORDER BY updated_at DESC, id DESC
+                LIMIT ?
+                """,
+                (int(limit),),
+            )
+        changed = 0
+        timestamp = int(now or time.time())
+        for row in cur.fetchall():
+            if _sync_account_auto_rotation_state_with_cursor(cur, int(row["id"]), now=timestamp):
+                changed += 1
+        conn.commit()
+        return changed
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def normalize_publish_batch_state(raw: Optional[str]) -> str:
@@ -5025,10 +5066,36 @@ def list_publish_ready_accounts(limit: int = 500) -> List[sqlite3.Row]:
             a.mail_challenge_updated_at,
             COALESCE(a.twofa, '') AS twofa,
             COALESCE(a.instagram_emulator_serial, '') AS instagram_emulator_serial,
+            COALESCE(a.instagram_launch_status, 'idle') AS instagram_launch_status,
+            COALESCE(a.instagram_launch_detail, '') AS instagram_launch_detail,
+            a.instagram_launch_updated_at,
             COALESCE(a.instagram_publish_status, 'idle') AS instagram_publish_status,
             COALESCE(a.instagram_publish_detail, '') AS instagram_publish_detail,
             a.instagram_publish_updated_at,
             COALESCE(a.rotation_state, 'review') AS rotation_state,
+            COALESCE(a.rotation_state_source, 'manual') AS rotation_state_source,
+            COALESCE(a.rotation_state_reason, '') AS rotation_state_reason,
+            COALESCE((
+                SELECT ai.resolution_state
+                FROM instagram_audit_items ai
+                WHERE ai.account_id = a.id
+                ORDER BY ai.updated_at DESC, ai.id DESC
+                LIMIT 1
+            ), '') AS latest_audit_resolution_state,
+            COALESCE((
+                SELECT ai.resolution_detail
+                FROM instagram_audit_items ai
+                WHERE ai.account_id = a.id
+                ORDER BY ai.updated_at DESC, ai.id DESC
+                LIMIT 1
+            ), '') AS latest_audit_resolution_detail,
+            (
+                SELECT ai.updated_at
+                FROM instagram_audit_items ai
+                WHERE ai.account_id = a.id
+                ORDER BY ai.updated_at DESC, ai.id DESC
+                LIMIT 1
+            ) AS latest_audit_updated_at,
             a.owner_worker_id,
             COALESCE(w.name, '') AS owner_worker_name,
             COALESCE(w.username, '') AS owner_worker_username,
@@ -5072,10 +5139,36 @@ def list_publish_blocked_accounts(limit: int = 500) -> List[sqlite3.Row]:
             a.mail_challenge_updated_at,
             COALESCE(a.twofa, '') AS twofa,
             COALESCE(a.instagram_emulator_serial, '') AS instagram_emulator_serial,
+            COALESCE(a.instagram_launch_status, 'idle') AS instagram_launch_status,
+            COALESCE(a.instagram_launch_detail, '') AS instagram_launch_detail,
+            a.instagram_launch_updated_at,
             COALESCE(a.instagram_publish_status, 'idle') AS instagram_publish_status,
             COALESCE(a.instagram_publish_detail, '') AS instagram_publish_detail,
             a.instagram_publish_updated_at,
             COALESCE(a.rotation_state, 'review') AS rotation_state,
+            COALESCE(a.rotation_state_source, 'manual') AS rotation_state_source,
+            COALESCE(a.rotation_state_reason, '') AS rotation_state_reason,
+            COALESCE((
+                SELECT ai.resolution_state
+                FROM instagram_audit_items ai
+                WHERE ai.account_id = a.id
+                ORDER BY ai.updated_at DESC, ai.id DESC
+                LIMIT 1
+            ), '') AS latest_audit_resolution_state,
+            COALESCE((
+                SELECT ai.resolution_detail
+                FROM instagram_audit_items ai
+                WHERE ai.account_id = a.id
+                ORDER BY ai.updated_at DESC, ai.id DESC
+                LIMIT 1
+            ), '') AS latest_audit_resolution_detail,
+            (
+                SELECT ai.updated_at
+                FROM instagram_audit_items ai
+                WHERE ai.account_id = a.id
+                ORDER BY ai.updated_at DESC, ai.id DESC
+                LIMIT 1
+            ) AS latest_audit_updated_at,
             a.owner_worker_id,
             COALESCE(w.name, '') AS owner_worker_name,
             COALESCE(w.username, '') AS owner_worker_username,
@@ -5535,6 +5628,739 @@ def list_publish_job_events(batch_id: int, limit: int = 200) -> List[sqlite3.Row
     rows = cur.fetchall()
     conn.close()
     return rows
+
+
+def _instagram_reel_stage_delay_seconds(stage: str) -> Optional[int]:
+    stage_value = normalize_instagram_reel_collection_stage(stage)
+    for key, delay_seconds in INSTAGRAM_REEL_COLLECTION_WINDOWS:
+        if key == stage_value:
+            return int(delay_seconds)
+    return None
+
+
+def _instagram_reel_next_collection_stage(stage: str) -> str:
+    stage_value = normalize_instagram_reel_collection_stage(stage)
+    ordered = [key for key, _ in INSTAGRAM_REEL_COLLECTION_WINDOWS]
+    if stage_value == "done":
+        return "done"
+    try:
+        index = ordered.index(stage_value)
+    except ValueError:
+        return "done"
+    if index + 1 >= len(ordered):
+        return "done"
+    return ordered[index + 1]
+
+
+def _instagram_reel_retry_delay_seconds(failure_count: int) -> int:
+    failures = max(1, int(failure_count or 1))
+    if failures >= len(INSTAGRAM_REEL_COLLECTION_RETRY_DELAYS_SECONDS):
+        return int(INSTAGRAM_REEL_COLLECTION_RETRY_DELAYS_SECONDS[-1])
+    return int(INSTAGRAM_REEL_COLLECTION_RETRY_DELAYS_SECONDS[failures - 1])
+
+
+def _normalize_instagram_reel_metric_raw_json(raw: Any) -> str:
+    if raw in (None, "", [], {}):
+        return ""
+    if isinstance(raw, str):
+        text = raw.strip()
+        if not text:
+            return ""
+        try:
+            parsed = json.loads(text)
+        except Exception:
+            parsed = {"raw": text}
+    else:
+        parsed = raw
+    try:
+        return json.dumps(parsed, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+    except Exception as exc:
+        raise ValueError("invalid instagram reel raw metric json") from exc
+
+
+def _instagram_reel_payload_text(payload: Optional[Dict[str, Any]], key: str) -> str:
+    if not isinstance(payload, dict):
+        return ""
+    return str(payload.get(key) or "").strip()
+
+
+def _instagram_reel_payload_int(payload: Optional[Dict[str, Any]], key: str) -> Optional[int]:
+    if not isinstance(payload, dict) or payload.get(key) in (None, ""):
+        return None
+    try:
+        return int(payload.get(key))
+    except Exception:
+        return None
+
+
+def _instagram_reel_payload_timestamp(payload: Optional[Dict[str, Any]], key: str, *, default: int) -> int:
+    value = _instagram_reel_payload_int(payload, key)
+    return int(value if value and value > 0 else default)
+
+
+def _instagram_reel_snapshot_status_to_collection_state(status: str) -> str:
+    value = normalize_instagram_reel_metric_snapshot_status(status)
+    return {
+        "ok": "collected",
+        "partial": "partial",
+        "unavailable": "unavailable",
+        "not_found": "not_found",
+        "failed": "failed",
+    }[value]
+
+
+def _instagram_reel_posts_query(where_sql: str) -> str:
+    return f"""
+        SELECT
+            p.id,
+            p.origin_kind,
+            p.account_id,
+            p.publish_batch_id,
+            p.publish_job_id,
+            p.publish_artifact_id,
+            COALESCE(p.helper_ticket, '') AS helper_ticket,
+            COALESCE(p.source_name, '') AS source_name,
+            COALESCE(p.source_path, '') AS source_path,
+            COALESCE(p.reel_fingerprint, '') AS reel_fingerprint,
+            COALESCE(p.reel_signature_text, '') AS reel_signature_text,
+            p.matched_slot,
+            p.matched_age_seconds,
+            p.published_at,
+            p.collection_stage,
+            p.collection_state,
+            p.next_collect_at,
+            p.last_collected_at,
+            COALESCE(p.last_error, '') AS last_error,
+            COALESCE(p.collection_attempt_count, 0) AS collection_attempt_count,
+            COALESCE(p.lease_owner, '') AS lease_owner,
+            p.lease_expires_at,
+            p.created_at,
+            p.updated_at,
+            COALESCE(a.username, '') AS account_username,
+            COALESCE(a.account_login, '') AS account_login,
+            COALESCE(a.instagram_emulator_serial, '') AS instagram_emulator_serial,
+            COALESCE(ls.window_key, '') AS latest_snapshot_window_key,
+            COALESCE(ls.status, '') AS latest_snapshot_status,
+            ls.collected_at AS latest_snapshot_collected_at,
+            ls.plays_count AS latest_snapshot_plays_count,
+            ls.likes_count AS latest_snapshot_likes_count,
+            ls.comments_count AS latest_snapshot_comments_count,
+            ls.shares_count AS latest_snapshot_shares_count,
+            ls.saves_count AS latest_snapshot_saves_count,
+            ls.accounts_reached_count AS latest_snapshot_accounts_reached_count,
+            ls.watch_time_seconds AS latest_snapshot_watch_time_seconds,
+            ls.avg_watch_time_seconds AS latest_snapshot_avg_watch_time_seconds,
+            ls.three_second_views_count AS latest_snapshot_three_second_views_count,
+            ls.completion_rate_pct AS latest_snapshot_completion_rate_pct,
+            COALESCE(ls.diagnostics_path, '') AS latest_snapshot_diagnostics_path
+        FROM instagram_reel_posts p
+        JOIN accounts a ON a.id = p.account_id
+        LEFT JOIN instagram_reel_metric_snapshots ls
+            ON ls.id = (
+                SELECT s.id
+                FROM instagram_reel_metric_snapshots s
+                WHERE s.post_id = p.id
+                ORDER BY s.collected_at DESC, s.id DESC
+                LIMIT 1
+            )
+        {where_sql}
+    """
+
+
+def _upsert_instagram_reel_post_for_published_job_with_cursor(
+    cur: sqlite3.Cursor,
+    *,
+    job_id: int,
+    batch_id: int,
+    artifact_id: Optional[int],
+    account_id: int,
+    source_name: str,
+    source_path: str,
+    payload: Optional[Dict[str, Any]],
+    now: int,
+) -> int:
+    published_at = _instagram_reel_payload_timestamp(payload, "published_at", default=now)
+    helper_ticket = _instagram_reel_payload_text(payload, "helper_ticket") or None
+    reel_fingerprint = _instagram_reel_payload_text(payload, "reel_fingerprint")
+    reel_signature_text = _instagram_reel_payload_text(payload, "reel_signature_text")
+    matched_slot = _instagram_reel_payload_int(payload, "matched_slot")
+    matched_age_seconds = _instagram_reel_payload_int(payload, "matched_age_seconds")
+    first_stage = "t30m"
+    next_collect_at = published_at + int(_instagram_reel_stage_delay_seconds(first_stage) or 0)
+
+    cur.execute(
+        """
+        SELECT id
+        FROM instagram_reel_posts
+        WHERE publish_job_id = ?
+        LIMIT 1
+        """,
+        (int(job_id),),
+    )
+    existing = cur.fetchone()
+    if existing is None:
+        cur.execute(
+            """
+            INSERT INTO instagram_reel_posts (
+                origin_kind,
+                account_id,
+                publish_batch_id,
+                publish_job_id,
+                publish_artifact_id,
+                helper_ticket,
+                source_name,
+                source_path,
+                reel_fingerprint,
+                reel_signature_text,
+                matched_slot,
+                matched_age_seconds,
+                published_at,
+                collection_stage,
+                collection_state,
+                next_collect_at,
+                last_collected_at,
+                last_error,
+                collection_attempt_count,
+                lease_owner,
+                lease_expires_at,
+                created_at,
+                updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 't30m', 'scheduled', ?, NULL, '', 0, NULL, NULL, ?, ?)
+            """,
+            (
+                "batch_job",
+                int(account_id),
+                int(batch_id),
+                int(job_id),
+                int(artifact_id) if artifact_id is not None else None,
+                helper_ticket,
+                (source_name or "").strip(),
+                (source_path or "").strip(),
+                reel_fingerprint,
+                reel_signature_text,
+                matched_slot,
+                matched_age_seconds,
+                published_at,
+                next_collect_at,
+                now,
+                now,
+            ),
+        )
+        return int(cur.lastrowid)
+
+    post_id = int(existing["id"])
+    cur.execute(
+        """
+        UPDATE instagram_reel_posts
+        SET origin_kind = 'batch_job',
+            account_id = ?,
+            publish_batch_id = ?,
+            publish_artifact_id = ?,
+            helper_ticket = COALESCE(?, helper_ticket),
+            source_name = ?,
+            source_path = ?,
+            reel_fingerprint = ?,
+            reel_signature_text = ?,
+            matched_slot = ?,
+            matched_age_seconds = ?,
+            published_at = ?,
+            updated_at = ?
+        WHERE id = ?
+        """,
+        (
+            int(account_id),
+            int(batch_id),
+            int(artifact_id) if artifact_id is not None else None,
+            helper_ticket,
+            (source_name or "").strip(),
+            (source_path or "").strip(),
+            reel_fingerprint,
+            reel_signature_text,
+            matched_slot,
+            matched_age_seconds,
+            published_at,
+            now,
+            post_id,
+        ),
+    )
+    return post_id
+
+
+def upsert_instagram_reel_post_for_standalone(
+    *,
+    account_id: int,
+    helper_ticket: str,
+    source_name: str = "",
+    source_path: str = "",
+    payload: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    ticket_value = (helper_ticket or "").strip()
+    if not ticket_value:
+        raise ValueError("helper ticket is required")
+    now = int(time.time())
+    published_at = _instagram_reel_payload_timestamp(payload, "published_at", default=now)
+    reel_fingerprint = _instagram_reel_payload_text(payload, "reel_fingerprint")
+    reel_signature_text = _instagram_reel_payload_text(payload, "reel_signature_text")
+    matched_slot = _instagram_reel_payload_int(payload, "matched_slot")
+    matched_age_seconds = _instagram_reel_payload_int(payload, "matched_age_seconds")
+    first_stage = "t30m"
+    next_collect_at = published_at + int(_instagram_reel_stage_delay_seconds(first_stage) or 0)
+
+    conn = _connect()
+    cur = conn.cursor()
+    try:
+        cur.execute("BEGIN IMMEDIATE")
+        cur.execute(
+            """
+            SELECT id
+            FROM instagram_reel_posts
+            WHERE helper_ticket = ?
+            LIMIT 1
+            """,
+            (ticket_value,),
+        )
+        existing = cur.fetchone()
+        if existing is None:
+            cur.execute(
+                """
+                INSERT INTO instagram_reel_posts (
+                    origin_kind,
+                    account_id,
+                    publish_batch_id,
+                    publish_job_id,
+                    publish_artifact_id,
+                    helper_ticket,
+                    source_name,
+                    source_path,
+                    reel_fingerprint,
+                    reel_signature_text,
+                    matched_slot,
+                    matched_age_seconds,
+                    published_at,
+                    collection_stage,
+                    collection_state,
+                    next_collect_at,
+                    last_collected_at,
+                    last_error,
+                    collection_attempt_count,
+                    lease_owner,
+                    lease_expires_at,
+                    created_at,
+                    updated_at
+                )
+                VALUES (?, ?, NULL, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?, 't30m', 'scheduled', ?, NULL, '', 0, NULL, NULL, ?, ?)
+                """,
+                (
+                    "standalone",
+                    int(account_id),
+                    ticket_value,
+                    (source_name or "").strip(),
+                    (source_path or "").strip(),
+                    reel_fingerprint,
+                    reel_signature_text,
+                    matched_slot,
+                    matched_age_seconds,
+                    published_at,
+                    next_collect_at,
+                    now,
+                    now,
+                ),
+            )
+            post_id = int(cur.lastrowid)
+        else:
+            post_id = int(existing["id"])
+            cur.execute(
+                """
+                UPDATE instagram_reel_posts
+                SET origin_kind = 'standalone',
+                    account_id = ?,
+                    source_name = ?,
+                    source_path = ?,
+                    reel_fingerprint = ?,
+                    reel_signature_text = ?,
+                    matched_slot = ?,
+                    matched_age_seconds = ?,
+                    published_at = ?,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    int(account_id),
+                    (source_name or "").strip(),
+                    (source_path or "").strip(),
+                    reel_fingerprint,
+                    reel_signature_text,
+                    matched_slot,
+                    matched_age_seconds,
+                    published_at,
+                    now,
+                    post_id,
+                ),
+            )
+        cur.execute(_instagram_reel_posts_query("WHERE p.id = ? LIMIT 1"), (post_id,))
+        row = cur.fetchone()
+        conn.commit()
+        return dict(row) if row is not None else {"id": post_id}
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def get_instagram_reel_post(post_id: int) -> Optional[sqlite3.Row]:
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute(_instagram_reel_posts_query("WHERE p.id = ? LIMIT 1"), (int(post_id),))
+    row = cur.fetchone()
+    conn.close()
+    return row
+
+
+def get_latest_instagram_reel_post_for_account(account_id: int) -> Optional[sqlite3.Row]:
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute(
+        _instagram_reel_posts_query("WHERE p.account_id = ? ORDER BY p.published_at DESC, p.id DESC LIMIT 1"),
+        (int(account_id),),
+    )
+    row = cur.fetchone()
+    conn.close()
+    return row
+
+
+def list_instagram_reel_posts_for_batch(batch_id: int) -> List[sqlite3.Row]:
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute(
+        _instagram_reel_posts_query("WHERE p.publish_batch_id = ? ORDER BY p.published_at DESC, p.id DESC"),
+        (int(batch_id),),
+    )
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+def list_instagram_reel_metric_snapshots(post_id: int) -> List[sqlite3.Row]:
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT
+            id,
+            post_id,
+            window_key,
+            status,
+            collected_at,
+            plays_count,
+            likes_count,
+            comments_count,
+            shares_count,
+            saves_count,
+            accounts_reached_count,
+            watch_time_seconds,
+            avg_watch_time_seconds,
+            three_second_views_count,
+            completion_rate_pct,
+            COALESCE(raw_text_json, '') AS raw_text_json,
+            COALESCE(diagnostics_path, '') AS diagnostics_path,
+            created_at
+        FROM instagram_reel_metric_snapshots
+        WHERE post_id = ?
+        ORDER BY collected_at DESC, id DESC
+        """,
+        (int(post_id),),
+    )
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+def _expire_stale_instagram_reel_post_leases_with_cursor(cur: sqlite3.Cursor, *, now: int) -> int:
+    cur.execute(
+        """
+        SELECT id, collection_attempt_count
+        FROM instagram_reel_posts
+        WHERE collection_state = 'leased'
+          AND COALESCE(lease_expires_at, 0) > 0
+          AND COALESCE(lease_expires_at, 0) < ?
+        """,
+        (int(now),),
+    )
+    rows = cur.fetchall()
+    expired = 0
+    for row in rows:
+        post_id = int(row["id"])
+        failure_count = int(row["collection_attempt_count"] or 0) + 1
+        if failure_count >= len(INSTAGRAM_REEL_COLLECTION_RETRY_DELAYS_SECONDS):
+            cur.execute(
+                """
+                UPDATE instagram_reel_posts
+                SET collection_state = 'failed',
+                    next_collect_at = NULL,
+                    last_error = ?,
+                    collection_attempt_count = ?,
+                    lease_owner = NULL,
+                    lease_expires_at = NULL,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                ("Instagram reel metric lease expired.", failure_count, now, post_id),
+            )
+        else:
+            cur.execute(
+                """
+                UPDATE instagram_reel_posts
+                SET collection_state = 'scheduled',
+                    next_collect_at = ?,
+                    last_error = ?,
+                    collection_attempt_count = ?,
+                    lease_owner = NULL,
+                    lease_expires_at = NULL,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    now + _instagram_reel_retry_delay_seconds(failure_count),
+                    "Instagram reel metric lease expired.",
+                    failure_count,
+                    now,
+                    post_id,
+                ),
+            )
+        expired += 1
+    return expired
+
+
+def lease_next_instagram_reel_post(*, runner_name: str, lease_seconds: int = 600, now: Optional[int] = None) -> Optional[Dict[str, Any]]:
+    runner = (runner_name or "").strip() or "publish-runner"
+    timestamp = int(now or time.time())
+    lease_ttl = max(60, int(lease_seconds or 0))
+    conn = _connect()
+    cur = conn.cursor()
+    try:
+        cur.execute("BEGIN IMMEDIATE")
+        _expire_stale_instagram_reel_post_leases_with_cursor(cur, now=timestamp)
+        cur.execute(
+            """
+            SELECT id
+            FROM instagram_reel_posts
+            WHERE collection_stage != 'done'
+              AND COALESCE(next_collect_at, 0) > 0
+              AND COALESCE(next_collect_at, 0) <= ?
+              AND collection_state IN ('scheduled', 'collected', 'partial', 'unavailable', 'not_found')
+            ORDER BY next_collect_at ASC, published_at ASC, id ASC
+            LIMIT 1
+            """,
+            (timestamp,),
+        )
+        row = cur.fetchone()
+        if row is None:
+            conn.rollback()
+            return None
+        cur.execute(
+            """
+            UPDATE instagram_reel_posts
+            SET collection_state = 'leased',
+                lease_owner = ?,
+                lease_expires_at = ?,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (runner, timestamp + lease_ttl, timestamp, int(row["id"])),
+        )
+        cur.execute(_instagram_reel_posts_query("WHERE p.id = ? LIMIT 1"), (int(row["id"]),))
+        leased = cur.fetchone()
+        conn.commit()
+        return dict(leased) if leased is not None else None
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def record_instagram_reel_metric_snapshot(
+    post_id: int,
+    *,
+    window_key: str,
+    status: str,
+    collected_at: Optional[int] = None,
+    plays_count: Optional[int] = None,
+    likes_count: Optional[int] = None,
+    comments_count: Optional[int] = None,
+    shares_count: Optional[int] = None,
+    saves_count: Optional[int] = None,
+    accounts_reached_count: Optional[int] = None,
+    watch_time_seconds: Optional[float] = None,
+    avg_watch_time_seconds: Optional[float] = None,
+    three_second_views_count: Optional[int] = None,
+    completion_rate_pct: Optional[float] = None,
+    raw_text_json: Any = None,
+    diagnostics_path: Optional[str] = None,
+    retryable: bool = False,
+    error_detail: Optional[str] = None,
+) -> Dict[str, Any]:
+    stage_value = normalize_instagram_reel_collection_stage(window_key)
+    status_value = normalize_instagram_reel_metric_snapshot_status(status)
+    collected_ts = int(collected_at or time.time())
+    raw_text_json_value = _normalize_instagram_reel_metric_raw_json(raw_text_json)
+    diagnostics_value = (diagnostics_path or "").strip()
+    error_value = (error_detail or "").strip()
+
+    conn = _connect()
+    cur = conn.cursor()
+    try:
+        cur.execute("BEGIN IMMEDIATE")
+        cur.execute(
+            """
+            SELECT
+                id,
+                published_at,
+                collection_stage,
+                collection_attempt_count
+            FROM instagram_reel_posts
+            WHERE id = ?
+            LIMIT 1
+            """,
+            (int(post_id),),
+        )
+        row = cur.fetchone()
+        if row is None:
+            raise ValueError("instagram reel post not found")
+
+        current_stage = normalize_instagram_reel_collection_stage(str(row["collection_stage"] or "t30m"))
+        if current_stage != stage_value and current_stage != "done":
+            raise ValueError("instagram reel collection stage mismatch")
+
+        if status_value == "failed" and retryable:
+            failure_count = int(row["collection_attempt_count"] or 0) + 1
+            if failure_count >= len(INSTAGRAM_REEL_COLLECTION_RETRY_DELAYS_SECONDS):
+                retryable = False
+            else:
+                cur.execute(
+                    """
+                    UPDATE instagram_reel_posts
+                    SET collection_state = 'scheduled',
+                        next_collect_at = ?,
+                        last_error = ?,
+                        collection_attempt_count = ?,
+                        lease_owner = NULL,
+                        lease_expires_at = NULL,
+                        updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        collected_ts + _instagram_reel_retry_delay_seconds(failure_count),
+                        error_value or "Instagram reel metrics collection failed.",
+                        failure_count,
+                        collected_ts,
+                        int(post_id),
+                    ),
+                )
+                cur.execute(_instagram_reel_posts_query("WHERE p.id = ? LIMIT 1"), (int(post_id),))
+                scheduled = cur.fetchone()
+                conn.commit()
+                return dict(scheduled) if scheduled is not None else {"id": int(post_id)}
+
+        cur.execute(
+            """
+            INSERT INTO instagram_reel_metric_snapshots (
+                post_id,
+                window_key,
+                status,
+                collected_at,
+                plays_count,
+                likes_count,
+                comments_count,
+                shares_count,
+                saves_count,
+                accounts_reached_count,
+                watch_time_seconds,
+                avg_watch_time_seconds,
+                three_second_views_count,
+                completion_rate_pct,
+                raw_text_json,
+                diagnostics_path,
+                created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(post_id, window_key) DO UPDATE SET
+                status = excluded.status,
+                collected_at = excluded.collected_at,
+                plays_count = excluded.plays_count,
+                likes_count = excluded.likes_count,
+                comments_count = excluded.comments_count,
+                shares_count = excluded.shares_count,
+                saves_count = excluded.saves_count,
+                accounts_reached_count = excluded.accounts_reached_count,
+                watch_time_seconds = excluded.watch_time_seconds,
+                avg_watch_time_seconds = excluded.avg_watch_time_seconds,
+                three_second_views_count = excluded.three_second_views_count,
+                completion_rate_pct = excluded.completion_rate_pct,
+                raw_text_json = excluded.raw_text_json,
+                diagnostics_path = excluded.diagnostics_path
+            """,
+            (
+                int(post_id),
+                stage_value,
+                status_value,
+                collected_ts,
+                int(plays_count) if plays_count is not None else None,
+                int(likes_count) if likes_count is not None else None,
+                int(comments_count) if comments_count is not None else None,
+                int(shares_count) if shares_count is not None else None,
+                int(saves_count) if saves_count is not None else None,
+                int(accounts_reached_count) if accounts_reached_count is not None else None,
+                float(watch_time_seconds) if watch_time_seconds is not None else None,
+                float(avg_watch_time_seconds) if avg_watch_time_seconds is not None else None,
+                int(three_second_views_count) if three_second_views_count is not None else None,
+                float(completion_rate_pct) if completion_rate_pct is not None else None,
+                raw_text_json_value,
+                diagnostics_value,
+                collected_ts,
+            ),
+        )
+
+        next_stage = _instagram_reel_next_collection_stage(stage_value)
+        next_collect_at = None
+        if status_value != "failed" and next_stage != "done":
+            next_collect_at = int(row["published_at"] or 0) + int(_instagram_reel_stage_delay_seconds(next_stage) or 0)
+
+        cur.execute(
+            """
+            UPDATE instagram_reel_posts
+            SET collection_stage = ?,
+                collection_state = ?,
+                next_collect_at = ?,
+                last_collected_at = ?,
+                last_error = ?,
+                collection_attempt_count = 0,
+                lease_owner = NULL,
+                lease_expires_at = NULL,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                next_stage if status_value != "failed" else stage_value,
+                _instagram_reel_snapshot_status_to_collection_state(status_value),
+                next_collect_at,
+                collected_ts,
+                error_value if status_value == "failed" else "",
+                collected_ts,
+                int(post_id),
+            ),
+        )
+        cur.execute(_instagram_reel_posts_query("WHERE p.id = ? LIMIT 1"), (int(post_id),))
+        updated = cur.fetchone()
+        conn.commit()
+        return dict(updated) if updated is not None else {"id": int(post_id)}
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def append_publish_job_event(
@@ -6457,8 +7283,10 @@ def update_publish_job_state(
             SELECT
                 id,
                 batch_id,
+                artifact_id,
                 account_id,
                 state,
+                source_path,
                 source_name,
                 COALESCE(last_file, '') AS last_file,
                 COALESCE(detail, '') AS detail
@@ -6568,6 +7396,19 @@ def update_publish_job_state(
             job_id=int(job_id),
             updated_at=timestamp,
         )
+
+        if state_value == "published":
+            _upsert_instagram_reel_post_for_published_job_with_cursor(
+                cur,
+                job_id=int(job_id),
+                batch_id=int(row["batch_id"]),
+                artifact_id=int(row["artifact_id"]) if row["artifact_id"] is not None else None,
+                account_id=int(row["account_id"]),
+                source_name=last_file_value or str(row["source_name"] or ""),
+                source_path=str(row["source_path"] or ""),
+                payload=payload,
+                now=timestamp,
+            )
 
         _append_publish_job_event_with_cursor(
             cur,

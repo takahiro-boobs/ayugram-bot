@@ -8,7 +8,7 @@ from typing import Any
 
 from fastapi.testclient import TestClient
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
@@ -45,7 +45,7 @@ def _extract_audit_id(location: str) -> int:
 
 
 def _ensure_reports_dir() -> Path:
-    reports_dir = Path("reports")
+    reports_dir = ROOT / "reports"
     reports_dir.mkdir(parents=True, exist_ok=True)
     return reports_dir
 

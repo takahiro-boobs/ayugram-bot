@@ -3,7 +3,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[2]
 src = ROOT / "tmp_publish_batch_bridge.json"
 out = ROOT / "tmp_publish_batch_bridge_updated.json"
 workflow = json.loads(src.read_text(encoding='utf-8'))[0]

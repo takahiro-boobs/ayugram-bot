@@ -5,7 +5,7 @@ import subprocess
 import unittest
 from pathlib import Path
 
-import patch_publish_factory_workflow as factory_patch
+from scripts.publishing import patch_publish_factory_workflow as factory_patch
 
 
 class PublishWorkflowBuilderTests(unittest.TestCase):
@@ -156,7 +156,7 @@ process.stdout.write(JSON.stringify(result));
         self.assertIn("video_render", render_code)
 
     def test_bridge_source_includes_factory_timeout_and_artifact_packaging_progress(self) -> None:
-        source = Path("build_publish_bridge.py").read_text(encoding="utf-8")
+        source = Path("scripts/publishing/build_publish_bridge.py").read_text(encoding="utf-8")
         self.assertIn("factory_timeout_seconds: factoryTimeoutSeconds", source)
         self.assertIn("stage_key: 'artifact_packaging'", source)
         self.assertIn("Получен mp4 для @${handle}. Готовлю artifact к публикации.", source)

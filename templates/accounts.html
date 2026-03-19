@@ -150,37 +150,37 @@
           {% for a in accounts %}
             <article class="account-card" id="{{ a.card_id }}">
               <div class="account-card__head">
-                <div>
-                  <div class="listitem__title">Аккаунт {{ a.type_label }}</div>
-                  <div class="hint mono">@{{ a.username }}</div>
+                <div class="account-card__titleblock">
+                  <div class="listitem__title mono">@{{ a.username }}</div>
+                  <div class="hint">{{ a.type_label }}</div>
                 </div>
-                <a class="btn primary sm" href="{{ urlp(a.detail_url) }}">Открыть</a>
+                <div class="account-card__head-actions">
+                  <form method="post"
+                        action="{{ urlp('/accounts') }}/{{ a.id }}/rotation-state"
+                        class="status-picker status-picker--compact {% if a.rotation_state == 'working' %}status-picker--working{% else %}status-picker--not-working{% endif %}">
+                    <input type="hidden" name="next_url" value="{{ accounts_list_url }}#{{ a.card_id }}">
+                    <div class="status-picker__wrap">
+                      <span class="status-picker__dot" aria-hidden="true"></span>
+                      <select class="status-picker__select"
+                              name="rotation_state"
+                              aria-label="Состояние аккаунта {{ a.username }}"
+                              onchange="this.form.submit()">
+                        <option value="working" {% if a.rotation_state == 'working' %}selected{% endif %}>Рабочий</option>
+                        <option value="not_working" {% if a.rotation_state != 'working' %}selected{% endif %}>Нерабочий</option>
+                      </select>
+                    </div>
+                    <noscript>
+                      <button class="btn ghost sm" type="submit">Сохранить</button>
+                    </noscript>
+                  </form>
+                  <a class="btn primary sm" href="{{ urlp(a.detail_url) }}">Открыть</a>
+                </div>
               </div>
               <div class="account-card__meta">
                 <span class="pill">Переходов: {{ a.starts_unique_total }}</span>
-                <span class="pill">Почта: {{ a.mail_provider_label }}</span>
-                <span class="status-pill {{ a.mail_ready_class }}">{{ a.mail_ready_label }}</span>
-                <form method="post"
-                      action="{{ urlp('/accounts') }}/{{ a.id }}/rotation-state"
-                      class="status-picker status-picker--compact {% if a.rotation_state == 'working' %}status-picker--working{% else %}status-picker--not-working{% endif %}">
-                  <input type="hidden" name="next_url" value="{{ accounts_list_url }}#{{ a.card_id }}">
-                  <div class="status-picker__wrap">
-                    <span class="status-picker__dot" aria-hidden="true"></span>
-                    <select class="status-picker__select"
-                            name="rotation_state"
-                            aria-label="Состояние аккаунта {{ a.username }}"
-                            onchange="this.form.submit()">
-                      <option value="working" {% if a.rotation_state == 'working' %}selected{% endif %}>Рабочий</option>
-                      <option value="not_working" {% if a.rotation_state != 'working' %}selected{% endif %}>Нерабочий</option>
-                    </select>
-                  </div>
-                  <noscript>
-                    <button class="btn ghost sm" type="submit">Сохранить</button>
-                  </noscript>
-                </form>
               </div>
-              {% if a.rotation_state_reason %}
-                <div class="hint mt-sm">{{ a.rotation_state_reason }}</div>
+              {% if a.rotation_state != 'working' and a.compact_block_reason %}
+                <div class="hint mt-sm account-card__reason">Причина: {{ a.compact_block_reason }}</div>
               {% endif %}
             </article>
           {% endfor %}

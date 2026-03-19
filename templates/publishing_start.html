@@ -13,25 +13,10 @@
           <span class="pill">Готово к запуску: {{ ready_accounts_count }}</span>
           <span class="pill">Выбрано: <span id="selected-count">{{ selected_accounts_count }}</span></span>
           <span class="pill">Неполные: {{ blocked_accounts_count }}</span>
-          <span class="status-pill {% if n8n_webhook_configured %}on{% else %}off{% endif %}">
-            {% if n8n_webhook_configured %}Автозапуск готов{% else %}Автозапуск не настроен{% endif %}
-          </span>
         </div>
-        <details class="service-details mb-sm">
-          <summary class="service-details__summary">Служебное</summary>
-          <div class="service-details__body">
-            <div class="detail-stats">
-              <span class="pill">Сценарий: {{ publish_workflow_key }}</span>
-              <span class="pill mono">Папка staging: {{ staging_root }}</span>
-            </div>
-          </div>
-        </details>
 
         <form method="post" action="{{ urlp('/publishing/batches') }}" class="grid form-gap-md" id="publish-select-form">
           <div class="publish-select-toolbar">
-            <div class="publish-select-summary">
-              К запуску готовы только выбранные аккаунты. Batch пойдёт по ним строго по очереди в порядке выбора.
-            </div>
             <div class="publish-select-actions">
               <button class="btn ghost sm" type="button" id="select-all-accounts">Выбрать все</button>
               <button class="btn ghost sm" type="button" id="clear-all-accounts">Снять все</button>
@@ -53,38 +38,6 @@
                   <label class="listitem__title" for="publish-account-{{ account.id }}" style="cursor:pointer;">
                     @{{ account.username }}
                   </label>
-                  <div class="listitem__meta">
-                    <span class="status-pill {{ account.instagram_publish_status_class }}">{{ account.instagram_publish_status_label }}</span>
-                    <span class="status-pill {{ account.mail_ready_class }}">{{ account.mail_ready_label }}</span>
-                    <span class="pill">Mail: {{ account.mail_provider_label }}</span>
-                    <span class="brand__tag">{{ account.owner_label }}</span>
-                  </div>
-                  {% if account.publish_warnings %}
-                    <div class="hint mt-sm">{{ account.publish_warnings|join(' ') }}</div>
-                  {% endif %}
-                  {% if account.instagram_publish_detail %}
-                    <div class="hint mt-sm">{{ account.instagram_publish_detail }}</div>
-                  {% endif %}
-                  <details class="service-details mt-sm">
-                    <summary class="service-details__summary">Служебное</summary>
-                    <div class="service-details__body">
-                      <div class="detail-stats">
-                        <span class="pill">ID: {{ account.id }}</span>
-                        <span class="pill mono">{{ account.account_login }}</span>
-                        <span class="pill mono">{{ account.instagram_emulator_serial }}</span>
-                        <span class="status-pill {{ account.mail_status_class }}">{{ account.mail_status_label }}</span>
-                        {% if account.mail_challenge_status != 'idle' %}
-                          <span class="status-pill {{ account.mail_challenge_class }}">{{ account.mail_challenge_label }}</span>
-                        {% endif %}
-                        <span class="status-pill {% if account.twofa_ready %}on{% else %}review{% endif %}">
-                          {% if account.twofa_ready %}2FA готов{% else %}2FA не заполнен{% endif %}
-                        </span>
-                      </div>
-                      {% if account.mail_ready_detail %}
-                        <div class="hint mt-sm">{{ account.mail_ready_detail }}</div>
-                      {% endif %}
-                    </div>
-                  </details>
                 </div>
                 <a class="btn action sm" href="{{ urlp('/accounts') }}/{{ account.id }}">Открыть</a>
               </div>
@@ -93,7 +46,7 @@
           <div id="publish-account-order" hidden></div>
 
           {% if accounts|length == 0 %}
-            <div class="hint">Нет готовых аккаунтов с логином, паролем и рабочим serial эмулятора.</div>
+            <div class="hint">Нет рабочих аккаунтов.</div>
           {% endif %}
           <div class="row row-between">
             <a class="btn ghost" href="{{ urlp('/publishing') }}">Назад</a>
@@ -122,30 +75,9 @@
               <div class="row row-between row-start">
                 <div>
                   <div class="listitem__title">@{{ account.username }}</div>
-                  <div class="listitem__meta">
-                    <span class="status-pill off">Не готов</span>
-                    <span class="brand__tag">{{ account.owner_label }}</span>
-                  </div>
-                  <div class="hint mt-sm">{{ account.publish_blockers|join(' ') }}</div>
-                  <details class="service-details mt-sm">
-                    <summary class="service-details__summary">Служебное</summary>
-                    <div class="service-details__body">
-                      <div class="detail-stats">
-                        <span class="pill">ID: {{ account.id }}</span>
-                        {% if account.account_login %}
-                          <span class="pill mono">{{ account.account_login }}</span>
-                        {% endif %}
-                        {% if account.instagram_emulator_serial %}
-                          <span class="pill mono">{{ account.instagram_emulator_serial }}</span>
-                        {% endif %}
-                        <span class="status-pill {{ account.mail_ready_class }}">{{ account.mail_ready_label }}</span>
-                        <span class="pill">Mail: {{ account.mail_provider_label }}</span>
-                      </div>
-                      {% if account.mail_ready_detail %}
-                        <div class="hint mt-sm">{{ account.mail_ready_detail }}</div>
-                      {% endif %}
-                    </div>
-                  </details>
+                  {% if account.compact_block_reason %}
+                    <div class="hint mt-sm">Причина: {{ account.compact_block_reason }}</div>
+                  {% endif %}
                 </div>
                 <a class="btn action sm" href="{{ urlp('/accounts') }}/{{ account.id }}">Открыть</a>
               </div>

@@ -10,14 +10,131 @@ import os
 import random
 from typing import Any
 
-from aiogram import Bot, Dispatcher, F, Router
-from aiogram.client.default import DefaultBotProperties
-from aiogram.exceptions import TelegramConflictError, TelegramNetworkError
-from aiogram.filters import Command, StateFilter
-from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
-from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message, ReplyKeyboardRemove
+try:
+    from aiogram import Bot, Dispatcher, F, Router
+    from aiogram.client.default import DefaultBotProperties
+    from aiogram.exceptions import TelegramConflictError, TelegramNetworkError
+    from aiogram.filters import Command, StateFilter
+    from aiogram.fsm.context import FSMContext
+    from aiogram.fsm.state import State, StatesGroup
+    from aiogram.fsm.storage.memory import MemoryStorage
+    from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message, ReplyKeyboardRemove
+except ModuleNotFoundError as exc:
+    if exc.name not in {"aiogram"} and not str(exc.name).startswith("aiogram."):
+        raise
+
+    # Keep the module importable in test/runtime environments where aiogram
+    # is unavailable for the current interpreter.
+    class TelegramConflictError(Exception):
+        pass
+
+
+    class TelegramNetworkError(Exception):
+        pass
+
+
+    class DefaultBotProperties:
+        def __init__(self, **_: Any) -> None:
+            pass
+
+
+    class _DummySession:
+        async def close(self) -> None:
+            return None
+
+
+    class Bot:
+        def __init__(self, *_: Any, **__: Any) -> None:
+            self.session = _DummySession()
+
+        async def delete_webhook(self, **_: Any) -> None:
+            return None
+
+
+    class Dispatcher:
+        def __init__(self, *_: Any, **__: Any) -> None:
+            pass
+
+        def include_router(self, *_: Any, **__: Any) -> None:
+            return None
+
+        async def start_polling(self, *_: Any, **__: Any) -> None:
+            raise RuntimeError("aiogram is not installed")
+
+
+    class _DummyFilter:
+        def __getattr__(self, _: str) -> "_DummyFilter":
+            return self
+
+        def __call__(self, *_: Any, **__: Any) -> "_DummyFilter":
+            return self
+
+        def __eq__(self, _: object) -> "_DummyFilter":
+            return self
+
+        def startswith(self, *_: Any, **__: Any) -> "_DummyFilter":
+            return self
+
+
+    F = _DummyFilter()
+
+
+    class Router:
+        def message(self, *_: Any, **__: Any):
+            def decorator(func):
+                return func
+
+            return decorator
+
+        def callback_query(self, *_: Any, **__: Any):
+            def decorator(func):
+                return func
+
+            return decorator
+
+
+    class FSMContext:
+        pass
+
+
+    class State:
+        pass
+
+
+    class StatesGroup:
+        pass
+
+
+    class MemoryStorage:
+        pass
+
+
+    class InlineKeyboardButton:
+        def __init__(self, text: str, callback_data: str | None = None, url: str | None = None) -> None:
+            self.text = text
+            self.callback_data = callback_data
+            self.url = url
+
+
+    class InlineKeyboardMarkup:
+        def __init__(self, inline_keyboard: list[list[InlineKeyboardButton]] | None = None) -> None:
+            self.inline_keyboard = inline_keyboard or []
+
+
+    class Message:
+        pass
+
+
+    class ReplyKeyboardRemove:
+        pass
+
+
+    def Command(*_: Any, **__: Any) -> object:
+        return object()
+
+
+    def StateFilter(*_: Any, **__: Any) -> object:
+        return object()
 from dotenv import load_dotenv
 
 import db

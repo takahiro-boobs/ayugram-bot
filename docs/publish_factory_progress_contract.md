@@ -159,7 +159,7 @@ Notes:
 Manual progress event test:
 
 ```bash
-python3 scripts/publishing_ops.py send-event \
+python3 scripts/publishing/publishing_ops.py send-event \
   --base-url http://127.0.0.1:8000 \
   --shared-secret "$PUBLISH_SHARED_SECRET" \
   --event generation_progress \
@@ -174,7 +174,7 @@ python3 scripts/publishing_ops.py send-event \
 Manual progress snapshot fetch:
 
 ```bash
-python3 scripts/publishing_ops.py progress \
+python3 scripts/publishing/publishing_ops.py progress \
   --base-url http://127.0.0.1:8000 \
   --admin-user "$ADMIN_USER" \
   --admin-pass "$ADMIN_PASS" \

@@ -48,6 +48,75 @@
         </div>
       </section>
 
+      {% if latest_reel %}
+        <section class="card">
+          <div class="card__body">
+            <div class="listitem__title">Последний Reel</div>
+            <div class="detail-stats mt-sm">
+              <span class="pill">Опубликован: {{ latest_reel.published_at_label or '—' }}</span>
+              <span class="pill">Просмотры: {{ latest_reel.plays_label }}</span>
+              <span class="pill">Лайки: {{ latest_reel.likes_label }}</span>
+              <span class="pill">Комменты: {{ latest_reel.comments_label }}</span>
+              <span class="status-pill {{ latest_reel.collection_state_class }}">{{ latest_reel.collection_state_label }}</span>
+              {% if latest_reel.latest_snapshot_status_label %}
+                <span class="status-pill {{ latest_reel.latest_snapshot_status_class }}">{{ latest_reel.latest_snapshot_status_label }}</span>
+              {% endif %}
+              {% if latest_reel.latest_snapshot_window_label %}
+                <span class="pill">Окно: {{ latest_reel.latest_snapshot_window_label }}</span>
+              {% endif %}
+            </div>
+            {% if latest_reel.compact_summary %}
+              <div class="hint mt-sm">{{ latest_reel.compact_summary }}</div>
+            {% endif %}
+            <details class="service-details mt-sm">
+              <summary class="service-details__summary">Аналитика</summary>
+              <div class="service-details__body">
+                <div class="detail-stats">
+                  {% if latest_reel.accounts_reached_label and latest_reel.accounts_reached_label != '—' %}
+                    <span class="pill">Охват: {{ latest_reel.accounts_reached_label }}</span>
+                  {% endif %}
+                  {% if latest_reel.watch_time_label and latest_reel.watch_time_label != '—' %}
+                    <span class="pill">Watch time: {{ latest_reel.watch_time_label }}</span>
+                  {% endif %}
+                  {% if latest_reel.avg_watch_time_label and latest_reel.avg_watch_time_label != '—' %}
+                    <span class="pill">Avg watch: {{ latest_reel.avg_watch_time_label }}</span>
+                  {% endif %}
+                  {% if latest_reel.three_second_views_label and latest_reel.three_second_views_label != '—' %}
+                    <span class="pill">3s: {{ latest_reel.three_second_views_label }}</span>
+                  {% endif %}
+                  {% if latest_reel.completion_rate_label and latest_reel.completion_rate_label != '—' %}
+                    <span class="pill">Досмотр: {{ latest_reel.completion_rate_label }}</span>
+                  {% endif %}
+                  {% if latest_reel.last_collected_at_label %}
+                    <span class="pill">Обновлено: {{ latest_reel.last_collected_at_label }}</span>
+                  {% elif latest_reel.next_collect_at_label %}
+                    <span class="pill">Следующее окно: {{ latest_reel.next_collect_at_label }}</span>
+                  {% endif %}
+                </div>
+                {% if latest_reel.history %}
+                  <div class="list mt-sm">
+                    {% for item in latest_reel.history %}
+                      <div class="listitem">
+                        <div class="listitem__meta">
+                          <span class="pill">{{ item.window_label }}</span>
+                          <span class="status-pill {{ item.status_class }}">{{ item.status_label }}</span>
+                          <span class="hint">{{ item.collected_at_label or '—' }}</span>
+                        </div>
+                        <div class="hint mt-sm">
+                          Просмотры {{ item.plays_label }} · Лайки {{ item.likes_label }} · Комменты {{ item.comments_label }}
+                        </div>
+                      </div>
+                    {% endfor %}
+                  </div>
+                {% else %}
+                  <div class="hint mt-sm">История окон пока не собрана.</div>
+                {% endif %}
+              </div>
+            </details>
+          </div>
+        </section>
+      {% endif %}
+
       <section class="card">
         <div class="card__body">
           <details class="service-details">

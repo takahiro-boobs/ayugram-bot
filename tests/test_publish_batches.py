@@ -86,7 +86,17 @@ class PublishingBatchTests(unittest.TestCase):
             instagram_emulator_serial=serial,
             default_link_name=f"Instagram @{username}",
         )
-        return int(created["account_id"])
+        account_id = int(created["account_id"])
+        if serial and rotation_state != "not_working":
+            self.db.update_account_instagram_launch_state(
+                account_id,
+                "login_submitted",
+                "Тестовая live-проверка входа выполнена.",
+            )
+        return account_id
+
+    def _mark_instagram_login_ok(self, account_id: int, *, detail: str = "Тестовая live-проверка входа выполнена.") -> None:
+        self.db.update_account_instagram_launch_state(account_id, "login_submitted", detail)
 
     def _sign_payload(self, payload: dict) -> dict[str, object]:
         body = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode("utf-8")
@@ -1185,8 +1195,7 @@ class PublishingBatchTests(unittest.TestCase):
         page = self.client.get("/publishing/start")
         self.assertEqual(page.status_code, 200)
         self.assertIn("blocked_user", page.text)
-        self.assertIn("2FA не заполнен", page.text)
-        self.assertNotIn("Не заполнен TOTP 2FA secret.", page.text)
+        self.assertNotIn("2FA не заполнен", page.text)
 
     def test_accounts_without_mail_automation_stay_ready_and_confirm_page_shows_warning(self) -> None:
         created = self.db.create_account_with_default_link(
@@ -1202,6 +1211,7 @@ class PublishingBatchTests(unittest.TestCase):
             default_link_name="Instagram @mail_warn_user",
         )
         account_id = int(created["account_id"])
+        self._mark_instagram_login_ok(account_id)
 
         ready_ids = {int(row["id"]) for row in self.db.list_publish_ready_accounts()}
         blocked_ids = {int(row["id"]) for row in self.db.list_publish_blocked_accounts()}
@@ -1211,9 +1221,8 @@ class PublishingBatchTests(unittest.TestCase):
         start_page = self.client.get("/publishing/start")
         self.assertEqual(start_page.status_code, 200)
         self.assertIn("mail_warn_user", start_page.text)
-        self.assertIn("Mail: Auto / IMAP", start_page.text)
-        self.assertIn("Почта не готова для auto-code", start_page.text)
-        self.assertIn("Для IMAP-режима не заполнен пароль почты.", start_page.text)
+        self.assertNotIn("Почта не готова для auto-code", start_page.text)
+        self.assertNotIn("Для IMAP-режима не заполнен пароль почты.", start_page.text)
 
         confirm_page = self.client.post(
             "/publishing/prepare",
@@ -1240,6 +1249,7 @@ class PublishingBatchTests(unittest.TestCase):
             default_link_name="Instagram @mail_placeholder_user",
         )
         account_id = int(created["account_id"])
+        self._mark_instagram_login_ok(account_id)
 
         account = dict(self.db.get_account(account_id))
         self.assertEqual(account["email"], "")
@@ -1249,9 +1259,33 @@ class PublishingBatchTests(unittest.TestCase):
         start_page = self.client.get("/publishing/start")
         self.assertEqual(start_page.status_code, 200)
         self.assertIn("mail_placeholder_user", start_page.text)
-        self.assertIn("Почта не задана", start_page.text)
-        self.assertIn("Не заполнен email аккаунта.", start_page.text)
-        self.assertIn("Почта не готова для auto-code", start_page.text)
+        self.assertNotIn("Почта не задана", start_page.text)
+        self.assertNotIn("Не заполнен email аккаунта.", start_page.text)
+        self.assertNotIn("Почта не готова для auto-code", start_page.text)
+
+    def test_publishing_start_requires_confirmed_instagram_login(self) -> None:
+        created = self.db.create_account_with_default_link(
+            account_type="instagram",
+            account_login="no_live_check_login",
+            account_password="pass123",
+            username="no_live_check_user",
+            email="no_live_check_user@example.com",
+            email_password="mailpass",
+            proxy="",
+            twofa="JBSWY3DPEHPK3PXP",
+            instagram_emulator_serial="emulator-5554",
+            default_link_name="Instagram @no_live_check_user",
+        )
+        account_id = int(created["account_id"])
+
+        ready_ids = {int(row["id"]) for row in self.db.list_publish_ready_accounts()}
+        self.assertIn(account_id, ready_ids)
+
+        start_page = self.client.get("/publishing/start")
+        self.assertEqual(start_page.status_code, 200)
+        self.assertNotIn("@no_live_check_user</label>", start_page.text)
+        self.assertIn("no_live_check_user", start_page.text)
+        self.assertIn("Причина: Нет проверки", start_page.text)
 
     def test_publishing_start_auto_assigns_missing_serial_from_helper_inventory(self) -> None:
         account_id = self._create_instagram_account("auto_serial_1", "auto_serial_1", "", twofa="")
@@ -1266,7 +1300,8 @@ class PublishingBatchTests(unittest.TestCase):
         self.assertEqual(page.status_code, 200)
         self.assertEqual(str(self.db.get_account(account_id)["instagram_emulator_serial"]), "emulator-5554")
         self.assertIn("auto_serial_1", page.text)
-        self.assertIn("Готово к запуску: 1", page.text)
+        self.assertIn("Готово к запуску: 0", page.text)
+        self.assertIn("Причина: Нет проверки", page.text)
 
     def test_publishing_start_falls_back_to_default_serial_when_helper_unavailable(self) -> None:
         account_id = self._create_instagram_account("auto_default_1", "auto_default_1", "", twofa="")
@@ -1276,7 +1311,7 @@ class PublishingBatchTests(unittest.TestCase):
 
         self.assertEqual(page.status_code, 200)
         self.assertEqual(str(self.db.get_account(account_id)["instagram_emulator_serial"]), "default")
-        self.assertIn("default", page.text)
+        self.assertIn("Причина: Нет проверки", page.text)
         created = self.db.create_publish_batch([account_id], created_by_admin="admin", workflow_key="default")
         self.assertGreater(int(created["batch_id"]), 0)
 
@@ -1436,7 +1471,7 @@ class PublishingBatchTests(unittest.TestCase):
         self.assertIn("@ready_state", page.text)
         self.assertNotIn("@blocked_state</label>", page.text)
         self.assertIn("@blocked_state", page.text)
-        self.assertIn("Аккаунт помечен как нерабочий и исключён из автопубликации.", page.text)
+        self.assertIn("Причина: Нерабочий", page.text)
 
         with self.assertRaisesRegex(ValueError, "account .* not ready"):
             self.db.create_publish_batch([blocked_id], created_by_admin="admin", workflow_key="default")
@@ -1460,6 +1495,24 @@ class PublishingBatchTests(unittest.TestCase):
         account = dict(self.db.get_account(account_id))
         self.assertEqual(account["rotation_state"], "not_working")
         self.assertEqual(account["rotation_state_source"], "manual")
+
+    def test_live_failure_is_not_overridden_by_config_fallback_on_resync(self) -> None:
+        account_id = self._create_instagram_account("livefail1", "live_fail_user", "emulator-5554")
+
+        changed = self.db.update_account_instagram_launch_state(
+            account_id,
+            "challenge_required",
+            "Instagram запросил challenge.",
+        )
+        self.assertTrue(changed)
+
+        changed_count = self.db.sync_instagram_auto_rotation_states(account_ids=[account_id])
+        self.assertEqual(changed_count, 0)
+
+        account = dict(self.db.get_account(account_id))
+        self.assertEqual(account["rotation_state"], "not_working")
+        self.assertEqual(account["rotation_state_source"], "auto")
+        self.assertIn("challenge", account["rotation_state_reason"].lower())
 
     def test_publish_ready_account_is_auto_marked_working_on_create(self) -> None:
         account_id = self._create_instagram_account("ready-auto", "ready_auto", "emulator-5554", twofa="")
@@ -2078,6 +2131,188 @@ class PublishingBatchTests(unittest.TestCase):
             self.assertIsNone(self.db.lease_next_publish_job(runner_name="runner-2", lease_seconds=60))
         expired_job = dict(self.db.get_publish_job(job_id))
         self.assertEqual(expired_job["state"], "failed")
+
+    def test_published_job_creates_reel_post_and_progress_snapshot_exposes_metrics(self) -> None:
+        account_id = self._create_instagram_account("login-reel", "user-reel", "emulator-5554")
+
+        response = self.client.post(
+            "/publishing/batches",
+            data={"account_ids": [str(account_id)], "launch_mode": "existing_video"},
+            follow_redirects=False,
+        )
+        self.assertEqual(response.status_code, 303)
+        batch_id = int(response.headers["location"].rsplit("/", 1)[-1])
+
+        upload = self.client.post(
+            f"/api/publishing/batches/{batch_id}/artifacts/upload",
+            data={"account_id": str(account_id)},
+            files={"media_file": ("ready.mp4", b"ready-video", "video/mp4")},
+        )
+        self.assertEqual(upload.status_code, 200)
+        upload_payload = upload.json()
+        job_id = int(upload_payload["job_ids"][0])
+        headers = {"X-Runner-Api-Key": os.environ["PUBLISH_RUNNER_API_KEY"]}
+
+        status = self.client.post(
+            f"/api/internal/publishing/jobs/{job_id}/status",
+            json={
+                "state": "published",
+                "detail": "Reel подтверждён через профиль.",
+                "last_file": "ready.mp4",
+                "runner_name": "runner-1",
+                "source_path": upload_payload["path"],
+                "publish_phase": "verifying_profile",
+                "accepted_by_instagram": True,
+                "elapsed_seconds": 42,
+                "event_kind": "profile_verified",
+                "matched_slot": 1,
+                "matched_age_seconds": 120,
+                "reel_fingerprint": "finger-1",
+                "reel_signature_text": "new reel",
+                "published_at": 1710000000,
+            },
+            headers=headers,
+        )
+        self.assertEqual(status.status_code, 200)
+
+        posts = [dict(row) for row in self.db.list_instagram_reel_posts_for_batch(batch_id)]
+        self.assertEqual(len(posts), 1)
+        self.assertEqual(int(posts[0]["publish_job_id"]), job_id)
+        self.assertEqual(posts[0]["reel_fingerprint"], "finger-1")
+        self.assertEqual(posts[0]["reel_signature_text"], "new reel")
+        self.assertEqual(int(posts[0]["published_at"]), 1710000000)
+
+        self.db.record_instagram_reel_metric_snapshot(
+            int(posts[0]["id"]),
+            window_key="t30m",
+            status="partial",
+            plays_count=1200,
+            likes_count=45,
+            comments_count=6,
+            collected_at=1710001800,
+        )
+        snapshot = self._progress_snapshot(batch_id)
+        account = snapshot["accounts"][0]
+        self.assertEqual(account["latest_reel"]["plays_label"], "1.2K")
+        self.assertIn("Просмотры 1.2K", account["reel_metrics_summary"])
+        self.assertEqual(account["reel_metrics_history"][0]["window_label"], "30м")
+
+        page = self.client.get(f"/publishing/batches/{batch_id}")
+        self.assertEqual(page.status_code, 200)
+        self.assertIn("Просмотры 1.2K", page.text)
+
+    def test_standalone_publish_callback_creates_single_reel_post_by_helper_ticket(self) -> None:
+        account_id = self._create_instagram_account("login-standalone", "user-standalone", "emulator-5554")
+        headers = {"X-Helper-Api-Key": os.environ["HELPER_API_KEY"]}
+        payload = {
+            "state": "published",
+            "detail": "Standalone publish success.",
+            "handle": "user-standalone",
+            "last_file": "video.mp4",
+            "source_path": "/tmp/video.mp4",
+            "helper_ticket": "ticket-123",
+            "reel_fingerprint": "finger-standalone",
+            "reel_signature_text": "standalone reel",
+            "matched_slot": 0,
+            "matched_age_seconds": 90,
+            "published_at": 1710000100,
+        }
+
+        first = self.client.post(f"/api/helper/accounts/{account_id}/instagram-publish-status", json=payload, headers=headers)
+        second = self.client.post(f"/api/helper/accounts/{account_id}/instagram-publish-status", json=payload, headers=headers)
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+
+        latest = dict(self.db.get_latest_instagram_reel_post_for_account(account_id))
+        self.assertEqual(latest["origin_kind"], "standalone")
+        self.assertEqual(latest["helper_ticket"], "ticket-123")
+        self.assertEqual(latest["reel_fingerprint"], "finger-standalone")
+
+        conn = self.db._connect()
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT COUNT(*) AS total FROM instagram_reel_posts WHERE helper_ticket = ?", ("ticket-123",))
+            total = int(cur.fetchone()["total"])
+        finally:
+            conn.close()
+        self.assertEqual(total, 1)
+
+    def test_reel_metrics_lease_and_snapshot_advances_window(self) -> None:
+        account_id = self._create_instagram_account("login-metrics", "user-metrics", "emulator-5554")
+        post = self.db.upsert_instagram_reel_post_for_standalone(
+            account_id=account_id,
+            helper_ticket="metrics-ticket-1",
+            source_name="video.mp4",
+            source_path="/tmp/video.mp4",
+            payload={
+                "helper_ticket": "metrics-ticket-1",
+                "reel_fingerprint": "finger-1",
+                "reel_signature_text": "metrics reel",
+                "published_at": 100,
+            },
+        )
+        headers = {"X-Runner-Api-Key": os.environ["PUBLISH_RUNNER_API_KEY"]}
+
+        lease = self.client.post("/api/internal/reel-metrics/lease", json={"runner_name": "runner-1"}, headers=headers)
+        self.assertEqual(lease.status_code, 200)
+        leased_post = lease.json()["post"]
+        self.assertEqual(leased_post["id"], int(post["id"]))
+        self.assertEqual(leased_post["window_key"], "t30m")
+        self.assertEqual(leased_post["account_login"], "login-metrics")
+
+        snapshot = self.client.post(
+            f"/api/internal/reel-metrics/posts/{int(post['id'])}/snapshot",
+            json={
+                "window_key": "t30m",
+                "status": "partial",
+                "plays_count": 1200,
+                "likes_count": 45,
+                "comments_count": 6,
+                "collected_at": 2000,
+            },
+            headers=headers,
+        )
+        self.assertEqual(snapshot.status_code, 200)
+        updated = dict(self.db.get_instagram_reel_post(int(post["id"])))
+        self.assertEqual(updated["collection_stage"], "t6h")
+        self.assertEqual(updated["collection_state"], "partial")
+        self.assertEqual(int(updated["next_collect_at"]), 100 + 6 * 60 * 60)
+
+    def test_reel_metrics_retryable_failure_reschedules_same_window(self) -> None:
+        account_id = self._create_instagram_account("login-metrics-retry", "user-metrics-retry", "emulator-5554")
+        post = self.db.upsert_instagram_reel_post_for_standalone(
+            account_id=account_id,
+            helper_ticket="metrics-ticket-2",
+            source_name="video.mp4",
+            source_path="/tmp/video.mp4",
+            payload={
+                "helper_ticket": "metrics-ticket-2",
+                "reel_fingerprint": "finger-2",
+                "reel_signature_text": "metrics reel 2",
+                "published_at": 100,
+            },
+        )
+        headers = {"X-Runner-Api-Key": os.environ["PUBLISH_RUNNER_API_KEY"]}
+
+        lease = self.client.post("/api/internal/reel-metrics/lease", json={"runner_name": "runner-1"}, headers=headers)
+        self.assertEqual(lease.status_code, 200)
+
+        snapshot = self.client.post(
+            f"/api/internal/reel-metrics/posts/{int(post['id'])}/snapshot",
+            json={
+                "window_key": "t30m",
+                "status": "failed",
+                "retryable": True,
+                "error_detail": "adb timeout",
+                "collected_at": 2000,
+            },
+            headers=headers,
+        )
+        self.assertEqual(snapshot.status_code, 200)
+        updated = dict(self.db.get_instagram_reel_post(int(post["id"])))
+        self.assertEqual(updated["collection_stage"], "t30m")
+        self.assertEqual(updated["collection_state"], "scheduled")
+        self.assertEqual(int(updated["next_collect_at"]), 2600)
 
 
 if __name__ == "__main__":

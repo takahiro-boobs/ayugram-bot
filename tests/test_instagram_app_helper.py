@@ -1,6 +1,8 @@
 import importlib
+import subprocess
 import tempfile
 import unittest
+from itertools import count
 from pathlib import Path
 from unittest.mock import ANY, MagicMock, patch
 
@@ -98,6 +100,77 @@ class InstagramAppHelperTests(unittest.TestCase):
             value = self.helper._generate_current_twofa_code("JBSWY3DPEHPK3PXP")
         self.assertEqual(value, "012345")
 
+    def test_generate_current_twofa_code_uses_stdlib_fallback_without_pyotp(self) -> None:
+        with (
+            patch.object(self.helper, "pyotp", None),
+            patch.object(self.helper, "_current_totp_code", return_value="12345") as current_totp_mock,
+        ):
+            value = self.helper._generate_current_twofa_code("JBSWY3DPEHPK3PXP")
+        current_totp_mock.assert_called_once_with("JBSWY3DPEHPK3PXP")
+        self.assertEqual(value, "012345")
+
+    def test_dismiss_save_login_info_prompt_uses_not_now_node(self) -> None:
+        with (
+            patch.object(self.helper, "_ig_find_first", return_value=object()),
+            patch.object(self.helper, "_ig_click_first", return_value=False),
+            patch.object(
+                self.helper,
+                "_dump_ui_nodes",
+                return_value=[
+                    {
+                        "text": "Not now",
+                        "description": "Not now",
+                        "bounds": (68, 1673, 1012, 1789),
+                    }
+                ],
+            ),
+            patch.object(self.helper, "_adb_tap") as adb_tap_mock,
+        ):
+            self.assertTrue(self.helper._dismiss_save_login_info_prompt(MagicMock(), "emulator-5554"))
+        adb_tap_mock.assert_called_once_with("emulator-5554", 540, 1731)
+
+    def test_tap_post_login_dismiss_node_uses_got_it_node(self) -> None:
+        with (
+            patch.object(
+                self.helper,
+                "_dump_ui_nodes",
+                return_value=[
+                    {
+                        "text": "Got it",
+                        "description": "",
+                        "bounds": (40, 1554, 1040, 1694),
+                    }
+                ],
+            ),
+            patch.object(self.helper, "_adb_tap") as adb_tap_mock,
+        ):
+            self.assertTrue(self.helper._tap_post_login_dismiss_node(MagicMock(), "emulator-5554"))
+        adb_tap_mock.assert_called_once_with("emulator-5554", 540, 1624)
+
+    def test_handle_post_login_prompts_uses_node_fallback_for_onboarding_popup(self) -> None:
+        with (
+            patch.object(self.helper, "_dismiss_save_login_info_prompt", return_value=False),
+            patch.object(self.helper, "_ig_find_first", side_effect=[object(), None]),
+            patch.object(self.helper, "_find_first", return_value=None),
+            patch.object(self.helper, "_tap_post_login_dismiss_node", return_value=True) as tap_node_mock,
+            patch.object(self.helper, "_wait_for_logged_in_surface", return_value=True),
+            patch.object(self.helper.time, "sleep", return_value=None),
+        ):
+            self.assertTrue(self.helper._handle_post_login_prompts(MagicMock(), "emulator-5554", timeout_seconds=2.0))
+        tap_node_mock.assert_called_once()
+
+    def test_run_payload_flow_passes_preferred_serial_to_login_flow(self) -> None:
+        payload = {
+            "target": "instagram_audit_login",
+            "account_id": 15,
+            "account_login": "login15",
+            "account_password": "pass15",
+            "instagram_emulator_serial": "emulator-5554",
+        }
+        with patch.object(self.helper, "_run_login_flow") as run_login_flow_mock:
+            self.helper._run_payload_flow(payload)
+        run_login_flow_mock.assert_called_once_with(payload, push_status=True, preferred_serial="emulator-5554")
+
     def test_maybe_submit_twofa_uses_digit_keyevents_and_keeps_leading_zero(self) -> None:
         field = MagicMock()
         totp = MagicMock()
@@ -122,6 +195,31 @@ class InstagramAppHelperTests(unittest.TestCase):
         ]
         self.assertEqual(digit_events[:6], ["7", "8", "9", "10", "11", "12"])
 
+    def test_wait_for_fresh_twofa_window_waits_near_rollover(self) -> None:
+        with (
+            patch.object(self.helper, "_seconds_until_totp_rollover", return_value=2.2),
+            patch.object(self.helper.time, "sleep", return_value=None) as sleep_mock,
+        ):
+            self.helper._wait_for_fresh_twofa_window("JBSWY3DPEHPK3PXP", "emulator-5554", min_validity_seconds=8.0)
+        sleep_mock.assert_called_once()
+        self.assertAlmostEqual(float(sleep_mock.call_args.args[0]), 3.0, places=1)
+
+    def test_maybe_submit_twofa_retries_when_prompt_stays_visible(self) -> None:
+        field = MagicMock()
+        with (
+            patch.object(self.helper, "_twofa_secret_is_valid", return_value=True),
+            patch.object(self.helper, "_twofa_prompt_visible", side_effect=[True, True, False]),
+            patch.object(self.helper, "_find_first", return_value=field),
+            patch.object(self.helper, "_generate_current_twofa_code", side_effect=["123456", "654321"]) as code_mock,
+            patch.object(self.helper, "_seconds_until_totp_rollover", side_effect=[30.0, 2.0]),
+            patch.object(self.helper, "_set_instagram_code_field_value", return_value=True) as set_value_mock,
+            patch.object(self.helper, "_click_first", return_value=True),
+            patch.object(self.helper.time, "sleep", return_value=None),
+        ):
+            self.assertTrue(self.helper._maybe_submit_twofa(MagicMock(), "emulator-5554", "JBSWY3DPEHPK3PXP"))
+        self.assertEqual(code_mock.call_count, 2)
+        self.assertEqual(set_value_mock.call_count, 2)
+
     def test_detect_post_login_state_invalid_password(self) -> None:
         with (
             patch.object(self.helper.time, "sleep", return_value=None),
@@ -139,11 +237,33 @@ class InstagramAppHelperTests(unittest.TestCase):
             patch.object(self.helper, "_maybe_submit_twofa", return_value=False),
             patch.object(self.helper, "_mail_code_challenge_visible", return_value=False),
             patch.object(self.helper, "_human_check_visible", return_value=False),
+            patch.object(self.helper, "_unfamiliar_device_challenge_visible", return_value=False),
             patch.object(self.helper, "_ig_find_first", side_effect=[None, None, object()]),
+            patch.object(self.helper, "_classify_login_challenge_screen", return_value=("unknown", "")),
         ):
             state, detail = self.helper._detect_post_login_state(object(), "emulator-5554")
         self.assertEqual(state, "challenge_required")
         self.assertIn("Fully-auto", detail)
+
+    def test_detect_post_login_state_routes_recovery_channel_choice_into_challenge_flow(self) -> None:
+        class FakeDevice:
+            def __call__(self, **kwargs):
+                raise AssertionError("selector lookup should be mocked in this test")
+
+        with (
+            patch.object(self.helper.time, "sleep", return_value=None),
+            patch.object(self.helper, "_dismiss_system_dialogs"),
+            patch.object(self.helper, "_maybe_submit_twofa", return_value=False),
+            patch.object(self.helper, "_mail_code_challenge_visible", return_value=False),
+            patch.object(self.helper, "_human_check_visible", return_value=False),
+            patch.object(self.helper, "_unfamiliar_device_challenge_visible", return_value=False),
+            patch.object(self.helper, "_ig_find_first", side_effect=[None, None, None]),
+            patch.object(self.helper, "_classify_login_challenge_screen", return_value=("channel_choice", "Instagram предлагает выбрать канал подтверждения. Переключаюсь на email.")),
+            patch.object(self.helper, "_signed_out_surface_visible", return_value=False),
+        ):
+            state, detail = self.helper._detect_post_login_state(FakeDevice(), "emulator-5554")
+        self.assertEqual(state, "challenge_required")
+        self.assertIn("канал", detail.lower())
 
     def test_detect_post_login_state_mail_code_challenge_prefers_mail_flow(self) -> None:
         with (
@@ -169,6 +289,20 @@ class InstagramAppHelperTests(unittest.TestCase):
             state, detail = self.helper._detect_post_login_state(object(), "emulator-5554")
         self.assertEqual(state, "challenge_required")
         self.assertIn("human", detail.lower())
+
+    def test_detect_post_login_state_unfamiliar_device_requires_trusted_device(self) -> None:
+        with (
+            patch.object(self.helper.time, "sleep", return_value=None),
+            patch.object(self.helper, "_dismiss_system_dialogs"),
+            patch.object(self.helper, "_ig_find_first", return_value=None),
+            patch.object(self.helper, "_maybe_submit_twofa", return_value=False),
+            patch.object(self.helper, "_mail_code_challenge_visible", return_value=False),
+            patch.object(self.helper, "_human_check_visible", return_value=False),
+            patch.object(self.helper, "_unfamiliar_device_challenge_visible", return_value=True),
+        ):
+            state, detail = self.helper._detect_post_login_state(object(), "emulator-5554")
+        self.assertEqual(state, "challenge_required")
+        self.assertIn("try another device", detail.lower())
 
     def test_classify_login_challenge_screen_detects_channel_choice(self) -> None:
         channel_choice_xml = """<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>
@@ -221,6 +355,16 @@ class InstagramAppHelperTests(unittest.TestCase):
         self.assertEqual(kind, "phone_only")
         self.assertIn("phone", detail.lower())
 
+    def test_classify_login_challenge_screen_detects_authentication_app_before_numeric_code(self) -> None:
+        with (
+            patch.object(self.helper, "_ig_find_first", side_effect=[object()]),
+            patch.object(self.helper, "_human_check_visible", return_value=False),
+            patch.object(self.helper, "_find_instagram_code_field", return_value=object()),
+        ):
+            kind, detail = self.helper._classify_login_challenge_screen(object(), "emulator-5554")
+        self.assertEqual(kind, "manual_2fa")
+        self.assertIn("аутентификации", detail)
+
     def test_select_instagram_email_challenge_option_uses_try_another_way(self) -> None:
         with (
             patch.object(self.helper, "_tap_instagram_challenge_email_option", side_effect=[False, True]) as tap_mock,
@@ -242,7 +386,9 @@ class InstagramAppHelperTests(unittest.TestCase):
             patch.object(self.helper, "_maybe_submit_twofa", return_value=False),
             patch.object(self.helper, "_mail_code_challenge_visible", return_value=False),
             patch.object(self.helper, "_human_check_visible", return_value=False),
+            patch.object(self.helper, "_unfamiliar_device_challenge_visible", return_value=False),
             patch.object(self.helper, "_ig_find_first", side_effect=[None, None, None]),
+            patch.object(self.helper, "_classify_login_challenge_screen", return_value=("unknown", "")),
             patch.object(self.helper, "_signed_out_surface_visible", return_value=True),
         ):
             state, detail = self.helper._detect_post_login_state(object(), "emulator-5554")
@@ -256,7 +402,9 @@ class InstagramAppHelperTests(unittest.TestCase):
             patch.object(self.helper, "_maybe_submit_twofa", return_value=False),
             patch.object(self.helper, "_mail_code_challenge_visible", return_value=False),
             patch.object(self.helper, "_human_check_visible", return_value=False),
+            patch.object(self.helper, "_unfamiliar_device_challenge_visible", return_value=False),
             patch.object(self.helper, "_ig_find_first", side_effect=[None, None, None]),
+            patch.object(self.helper, "_classify_login_challenge_screen", return_value=("unknown", "")),
             patch.object(self.helper, "_signed_out_surface_visible", return_value=False),
             patch.object(self.helper, "_handle_post_login_prompts", return_value=False),
             patch.object(self.helper, "_login_form_visible", return_value=False),
@@ -507,6 +655,64 @@ class InstagramAppHelperTests(unittest.TestCase):
         self.assertIn("phone/manual recovery", detail)
         self.assertEqual(snapshot["reason_code"], "challenge_manual_recovery_only")
 
+    def test_attempt_mail_challenge_login_reclassifies_auth_app_after_resend(self) -> None:
+        payload = {
+            "account_id": 44,
+            "ticket": "auth-app-ticket",
+            "mail_enabled": True,
+            "twofa": "",
+        }
+        unresolved = {
+            "status": "not_found",
+            "kind": "numeric_code",
+            "reason_code": "mail_not_found",
+            "reason_text": "Свежий код не найден.",
+        }
+        with (
+            patch.object(self.helper, "_classify_login_challenge_screen", side_effect=[("numeric_code", "Есть поле ввода кода."), ("manual_2fa", "Instagram просит код из приложения аутентификации.")]),
+            patch.object(self.helper, "_resolve_account_mail_challenge", side_effect=[unresolved, unresolved]),
+            patch.object(self.helper, "_request_instagram_new_email_code", return_value=True),
+        ):
+            state, detail, snapshot = self.helper._attempt_mail_challenge_login(
+                object(),
+                "emulator-5554",
+                payload,
+                challenge_started_at=1700000000,
+                initial_detail="Instagram запросил challenge.",
+            )
+        self.assertEqual(state, "manual_2fa_required")
+        self.assertIn("account.twofa нет секрета", detail)
+        self.assertEqual(snapshot["reason_code"], "manual_2fa_required")
+
+    def test_attempt_mail_challenge_login_reclassifies_human_check_after_resend(self) -> None:
+        payload = {
+            "account_id": 45,
+            "ticket": "human-check-ticket",
+            "mail_enabled": True,
+            "twofa": "",
+        }
+        unresolved = {
+            "status": "not_found",
+            "kind": "numeric_code",
+            "reason_code": "mail_not_found",
+            "reason_text": "Свежий код не найден.",
+        }
+        with (
+            patch.object(self.helper, "_classify_login_challenge_screen", side_effect=[("numeric_code", "Есть поле ввода кода."), ("human_check", "Instagram показал Confirm you're a human / CAPTCHA. Автоматический обход отключён, нужна ручная проверка аккаунта.")]),
+            patch.object(self.helper, "_resolve_account_mail_challenge", side_effect=[unresolved, unresolved]),
+            patch.object(self.helper, "_request_instagram_new_email_code", return_value=True),
+        ):
+            state, detail, snapshot = self.helper._attempt_mail_challenge_login(
+                object(),
+                "emulator-5554",
+                payload,
+                challenge_started_at=1700000000,
+                initial_detail="Instagram запросил challenge.",
+            )
+        self.assertEqual(state, "challenge_required")
+        self.assertIn("human", detail.lower())
+        self.assertEqual(snapshot["reason_code"], "human_check_required")
+
     def test_publish_status_from_login_state_marks_numeric_mail_challenge_as_email_code_required(self) -> None:
         status = self.helper._publish_status_from_login_state(
             "challenge_required",
@@ -643,6 +849,63 @@ class InstagramAppHelperTests(unittest.TestCase):
         self.assertEqual(run_calls[1].args[0], ["/usr/bin/adb", "-s", "emulator-5554", "emu", "kill"])
         self.assertEqual(self.helper.EMULATOR_PROCESSES, {})
         set_state_mock.assert_called_once_with(emulator_serial="")
+
+    def test_ensure_emulator_ready_retries_after_wait_for_device_timeout(self) -> None:
+        self.helper.EMULATOR_PROCESSES.clear()
+        popen_one = MagicMock()
+        popen_one.poll.return_value = None
+        popen_two = MagicMock()
+        popen_two.poll.return_value = None
+        with (
+            patch.object(self.helper, "_list_running_emulators", side_effect=[[], [], [], []]),
+            patch.object(self.helper, "_resolve_emulator_path", return_value="/usr/bin/emulator"),
+            patch.object(self.helper, "_list_avds", return_value=["SlezhkaPixel13"]),
+            patch.object(self.helper, "_wait_for_device_serial", side_effect=["emulator-5554", "emulator-5554"]),
+            patch.object(
+                self.helper,
+                "_wait_for_boot",
+                side_effect=[subprocess.TimeoutExpired(cmd=["adb", "-s", "emulator-5554", "wait-for-device"], timeout=60), None],
+            ) as wait_for_boot_mock,
+            patch.object(self.helper, "_stabilize_emulator") as stabilize_mock,
+            patch.object(self.helper, "_reset_publish_emulator_boundary") as reset_mock,
+            patch.object(self.helper, "_set_state") as set_state_mock,
+            patch.object(self.helper.subprocess, "Popen", side_effect=[popen_one, popen_two]),
+        ):
+            serial = self.helper._ensure_emulator_ready("emulator-5554")
+        self.assertEqual(serial, "emulator-5554")
+        self.assertEqual(wait_for_boot_mock.call_count, 2)
+        reset_mock.assert_called_once_with("emulator-5554", clear_instagram=False)
+        stabilize_mock.assert_called_once_with("emulator-5554")
+        self.assertEqual(set_state_mock.call_args_list[-1].kwargs["emulator_serial"], "emulator-5554")
+
+    def test_ensure_emulator_ready_falls_back_to_headless_launch_after_windowed_failure(self) -> None:
+        self.helper.EMULATOR_PROCESSES.clear()
+        popen_one = MagicMock()
+        popen_one.poll.return_value = None
+        popen_two = MagicMock()
+        popen_two.poll.return_value = None
+        with (
+            patch.object(self.helper, "EMULATOR_NO_WINDOW", False),
+            patch.object(self.helper, "_list_running_emulators", side_effect=[[], [], [], []]),
+            patch.object(self.helper, "_resolve_emulator_path", return_value="/usr/bin/emulator"),
+            patch.object(self.helper, "_list_avds", return_value=["SlezhkaPixel13"]),
+            patch.object(self.helper, "_wait_for_device_serial", side_effect=["emulator-5554", "emulator-5554"]),
+            patch.object(
+                self.helper,
+                "_wait_for_boot",
+                side_effect=[subprocess.TimeoutExpired(cmd=["adb", "-s", "emulator-5554", "wait-for-device"], timeout=60), None],
+            ),
+            patch.object(self.helper, "_stabilize_emulator"),
+            patch.object(self.helper, "_reset_publish_emulator_boundary"),
+            patch.object(self.helper, "_set_state"),
+            patch.object(self.helper.subprocess, "Popen", side_effect=[popen_one, popen_two]) as popen_mock,
+        ):
+            self.helper._ensure_emulator_ready("emulator-5554")
+        first_command = popen_mock.call_args_list[0].args[0]
+        second_command = popen_mock.call_args_list[1].args[0]
+        self.assertNotIn("-no-window", first_command)
+        self.assertIn("-no-window", second_command)
+        self.assertIn("-no-audio", second_command)
 
     def test_run_publish_job_enforces_boundary_reset_and_clean_login_before_terminal_push(self) -> None:
         login_result = {
@@ -1810,7 +2073,254 @@ class InstagramAppHelperTests(unittest.TestCase):
         payload = {"target": "instagram_audit_login", "account_id": 1}
         with patch.object(self.helper, "_run_login_flow") as login_mock:
             self.helper._run_payload_flow(payload)
-        login_mock.assert_called_once_with(payload, push_status=True)
+        login_mock.assert_called_once_with(payload, push_status=True, preferred_serial="")
+
+    def test_push_account_publish_status_includes_helper_ticket_and_reel_telemetry(self) -> None:
+        response = MagicMock()
+        response.raise_for_status.return_value = None
+        with patch.object(self.helper.http_utils, "request_with_retry", return_value=response) as request_mock:
+            self.helper._push_account_publish_status(
+                5,
+                "published",
+                "ok",
+                "ayugram_sed",
+                last_file="video.mp4",
+                source_path="/tmp/video.mp4",
+                helper_ticket="ticket-123",
+                telemetry={
+                    "reel_fingerprint": "sig-1",
+                    "reel_signature_text": "new reel",
+                    "matched_slot": 1,
+                    "matched_age_seconds": 90,
+                    "published_at": 1710000000,
+                },
+            )
+        payload = request_mock.call_args.kwargs["json"]
+        self.assertEqual(payload["helper_ticket"], "ticket-123")
+        self.assertEqual(payload["source_path"], "/tmp/video.mp4")
+        self.assertEqual(payload["reel_fingerprint"], "sig-1")
+        self.assertEqual(payload["reel_signature_text"], "new reel")
+        self.assertEqual(payload["matched_slot"], 1)
+        self.assertEqual(payload["published_at"], 1710000000)
+
+    def test_run_publish_job_published_pushes_reel_telemetry(self) -> None:
+        device = object()
+        login_result = {
+            "state": "login_submitted",
+            "detail": "Вход выполнен.",
+            "serial": "emulator-5554",
+            "device": device,
+        }
+        wait_result = self.helper.PublishWaitResult(
+            outcome="publish_confirmed",
+            publish_phase="waiting_confirmation",
+            accepted_by_instagram=True,
+            elapsed_seconds=12,
+            last_activity="Instagram принял Reel.",
+            success=True,
+            event_kind="publish_confirmation_wait",
+        )
+        verify_result = self.helper.ProfileVerificationResult(
+            verified=True,
+            detail="Найден свежий Reel.",
+            publish_phase="verifying_profile",
+            matched_slot=0,
+            matched_age_seconds=120,
+            matched_fingerprint="finger-1",
+            matched_signature_text="new reel",
+            checked_slots=1,
+            event_kind="profile_verified",
+            timestamp_readable=True,
+        )
+        job = {
+            "id": 32,
+            "account_id": 5,
+            "batch_id": 48,
+            "source_path": "/tmp/video.mp4",
+            "emulator_serial": "emulator-5554",
+            "account_login": "ayugram_sed",
+            "account_password": "secret-pass",
+            "username": "ayugram_sed",
+            "twofa": "",
+        }
+        with (
+            patch.object(self.helper, "_resolve_publish_job_source", return_value={"path": "/tmp/video.mp4", "name": "video.mp4"}),
+            patch.object(self.helper, "_publish_boundary_reset_needed", side_effect=[False, True]),
+            patch.object(self.helper, "_reset_publish_emulator_boundary"),
+            patch.object(self.helper, "_run_login_flow", return_value=login_result),
+            patch.object(self.helper, "_capture_profile_reels_baseline", return_value={"available": False, "candidates": []}),
+            patch.object(self.helper, "_import_video_into_emulator", return_value="/sdcard/Movies/video.mp4"),
+            patch.object(self.helper, "_open_reel_creation_flow"),
+            patch.object(self.helper, "_select_reel_media"),
+            patch.object(self.helper, "_advance_reel_next"),
+            patch.object(self.helper, "_share_reel"),
+            patch.object(self.helper, "_wait_for_publish_success", return_value=wait_result),
+            patch.object(self.helper, "_confirm_publish_via_profile", return_value=verify_result),
+            patch.object(self.helper, "_push_publish_job_status") as push_mock,
+            patch.object(self.helper, "_set_state"),
+            patch.object(self.helper, "_capture_publish_diagnostics"),
+            patch.object(self.helper.time, "time", return_value=1710000600),
+            patch.object(self.helper.time, "monotonic", side_effect=count(0, 1)),
+        ):
+            self.helper._run_publish_job(job)
+        payload = push_mock.call_args_list[-1].kwargs["payload"]
+        self.assertEqual(payload["reel_fingerprint"], "finger-1")
+        self.assertEqual(payload["reel_signature_text"], "new reel")
+        self.assertEqual(payload["matched_slot"], 0)
+        self.assertEqual(payload["matched_age_seconds"], 120)
+        self.assertEqual(payload["published_at"], 1710000480)
+
+    def test_run_publish_flow_published_pushes_helper_ticket_and_reel_telemetry(self) -> None:
+        device = object()
+        login_result = {
+            "state": "login_submitted",
+            "detail": "Вход выполнен.",
+            "serial": "emulator-5554",
+            "device": device,
+        }
+        wait_result = self.helper.PublishWaitResult(
+            outcome="publish_confirmed",
+            publish_phase="waiting_confirmation",
+            accepted_by_instagram=True,
+            elapsed_seconds=20,
+            last_activity="Instagram принял Reel.",
+            success=True,
+            event_kind="publish_confirmation_wait",
+        )
+        verify_result = self.helper.ProfileVerificationResult(
+            verified=True,
+            detail="Найден свежий Reel.",
+            publish_phase="verifying_profile",
+            matched_slot=2,
+            matched_age_seconds=45,
+            matched_fingerprint="finger-2",
+            matched_signature_text="sig text",
+            checked_slots=3,
+            event_kind="profile_verified",
+            timestamp_readable=True,
+        )
+        payload = {
+            "target": "instagram_publish_latest_reel",
+            "ticket": "ticket-321",
+            "account_id": 5,
+            "account_login": "ayugram_sed",
+            "account_password": "secret-pass",
+            "username": "ayugram_sed",
+            "instagram_emulator_serial": "emulator-5554",
+            "source_path": "/tmp/video.mp4",
+            "delete_source_on_success": False,
+        }
+        with (
+            patch.object(self.helper, "_source_video_info_from_path", return_value={"path": "/tmp/video.mp4", "name": "video.mp4"}),
+            patch.object(self.helper, "_run_login_flow", return_value=login_result),
+            patch.object(self.helper, "_capture_profile_reels_baseline", return_value={"available": False, "candidates": []}),
+            patch.object(self.helper, "_import_video_into_emulator", return_value="/sdcard/Movies/video.mp4"),
+            patch.object(self.helper, "_open_reel_creation_flow"),
+            patch.object(self.helper, "_select_reel_media"),
+            patch.object(self.helper, "_advance_reel_next"),
+            patch.object(self.helper, "_share_reel"),
+            patch.object(self.helper, "_wait_for_publish_success", return_value=wait_result),
+            patch.object(self.helper, "_confirm_publish_via_profile", return_value=verify_result),
+            patch.object(self.helper, "_push_account_publish_status") as push_mock,
+            patch.object(self.helper, "_set_state"),
+            patch.object(self.helper.time, "time", return_value=1710000600),
+            patch.object(self.helper.time, "monotonic", side_effect=count(0, 1)),
+        ):
+            self.helper._run_publish_flow(payload)
+        published_call = push_mock.call_args_list[-1]
+        self.assertEqual(published_call.args[1], "published")
+        self.assertEqual(published_call.kwargs["helper_ticket"], "ticket-321")
+        self.assertEqual(published_call.kwargs["source_path"], "/tmp/video.mp4")
+        self.assertEqual(published_call.kwargs["telemetry"]["reel_fingerprint"], "finger-2")
+        self.assertEqual(published_call.kwargs["telemetry"]["matched_slot"], 2)
+        self.assertEqual(published_call.kwargs["telemetry"]["published_at"], 1710000555)
+
+    def test_collect_reel_metrics_marks_not_found_without_retry(self) -> None:
+        device = object()
+        post = {
+            "id": 91,
+            "account_id": 5,
+            "publish_batch_id": 44,
+            "publish_job_id": 12,
+            "window_key": "t30m",
+            "source_name": "video.mp4",
+            "account_login": "ayugram_sed",
+            "account_password": "secret-pass",
+            "username": "ayugram_sed",
+            "instagram_emulator_serial": "emulator-5554",
+            "reel_fingerprint": "sig-1",
+            "reel_signature_text": "sig text",
+            "published_at": 1710000000,
+        }
+        with (
+            patch.object(self.helper, "_run_login_flow", return_value={"state": "login_submitted", "serial": "emulator-5554", "device": device}),
+            patch.object(self.helper, "_locate_reel_for_metrics", return_value=(None, None)),
+            patch.object(self.helper, "_capture_publish_diagnostics", return_value={"screenshot": "/tmp/not-found.png"}),
+            patch.object(self.helper, "_push_reel_metric_snapshot") as push_snapshot_mock,
+            patch.object(self.helper, "_set_state"),
+            patch.object(self.helper, "_recover_to_profile_surface"),
+        ):
+            self.helper._run_collect_reel_metrics(post)
+        self.assertEqual(push_snapshot_mock.call_args.kwargs["status"], "not_found")
+        self.assertEqual(push_snapshot_mock.call_args.kwargs["payload"]["diagnostics_path"], "/tmp/not-found.png")
+
+    def test_collect_reel_metrics_records_partial_snapshot(self) -> None:
+        device = object()
+        candidate = self.helper.ProfileReelCandidate(
+            slot_index=1,
+            age_seconds=90,
+            age_label="1 min ago",
+            fingerprint="sig-1",
+            signature_text="sig text",
+            opened=True,
+        )
+        post = {
+            "id": 92,
+            "account_id": 5,
+            "publish_batch_id": 44,
+            "publish_job_id": 12,
+            "window_key": "t30m",
+            "source_name": "video.mp4",
+            "account_login": "ayugram_sed",
+            "account_password": "secret-pass",
+            "username": "ayugram_sed",
+            "instagram_emulator_serial": "emulator-5554",
+            "reel_fingerprint": "sig-1",
+            "reel_signature_text": "sig text",
+            "published_at": 1710000000,
+        }
+        with (
+            patch.object(self.helper, "_run_login_flow", return_value={"state": "login_submitted", "serial": "emulator-5554", "device": device}),
+            patch.object(self.helper, "_locate_reel_for_metrics", return_value=((120, 640), candidate)),
+            patch.object(self.helper, "_open_profile_reels_tab", return_value=True),
+            patch.object(self.helper, "_open_reel_viewer_at_center", return_value=True),
+            patch.object(
+                self.helper,
+                "_collect_reel_metrics_from_open_viewer",
+                return_value=(
+                    "partial",
+                    {"plays_count": 1200, "likes_count": 45, "comments_count": 6},
+                    {"viewer": [], "insights": [], "insights_opened": False},
+                ),
+            ),
+            patch.object(self.helper, "_push_reel_metric_snapshot") as push_snapshot_mock,
+            patch.object(self.helper, "_set_state"),
+            patch.object(self.helper, "_recover_to_profile_surface"),
+        ):
+            self.helper._run_collect_reel_metrics(post)
+        payload = push_snapshot_mock.call_args.kwargs["payload"]
+        self.assertEqual(push_snapshot_mock.call_args.kwargs["status"], "partial")
+        self.assertEqual(payload["plays_count"], 1200)
+        self.assertEqual(payload["likes_count"], 45)
+        self.assertEqual(payload["comments_count"], 6)
+
+    def test_parse_metric_helpers_support_compact_formats(self) -> None:
+        self.assertEqual(self.helper._parse_metric_count("1.2K"), 1200)
+        self.assertEqual(self.helper._parse_metric_count("1,2K"), 1200)
+        self.assertEqual(self.helper._parse_metric_count("12 345"), 12345)
+        self.assertEqual(self.helper._parse_metric_percent("67,5%"), 67.5)
+        self.assertEqual(self.helper._parse_metric_duration_seconds("1:23"), 83.0)
+        self.assertEqual(self.helper._parse_metric_duration_seconds("1 ч 02 мин 03 сек"), 3723.0)
 
 
 if __name__ == "__main__":
