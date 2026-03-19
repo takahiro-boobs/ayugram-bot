@@ -245,6 +245,17 @@ class InstagramAppHelperTests(unittest.TestCase):
         self.assertEqual(state, "challenge_required")
         self.assertIn("Fully-auto", detail)
 
+    def test_detect_post_login_state_returns_helper_error_for_android_anr(self) -> None:
+        with (
+            patch.object(self.helper.time, "sleep", return_value=None),
+            patch.object(self.helper, "_dismiss_system_dialogs"),
+            patch.object(self.helper, "_android_system_anr_dialog_visible", return_value=True),
+            patch.object(self.helper, "_android_system_anr_detail", return_value="Android показал системный ANR-диалог (system)."),
+        ):
+            state, detail = self.helper._detect_post_login_state(object(), "emulator-5554")
+        self.assertEqual(state, "helper_error")
+        self.assertIn("ANR", detail)
+
     def test_detect_post_login_state_routes_recovery_channel_choice_into_challenge_flow(self) -> None:
         class FakeDevice:
             def __call__(self, **kwargs):
@@ -370,6 +381,7 @@ class InstagramAppHelperTests(unittest.TestCase):
             patch.object(self.helper, "_tap_instagram_challenge_email_option", side_effect=[False, True]) as tap_mock,
             patch.object(self.helper, "_ig_click_first", return_value=True) as click_mock,
             patch.object(self.helper, "_press_instagram_challenge_continue", return_value=True) as continue_mock,
+            patch.object(self.helper, "_dismiss_instagram_challenge_delivery_error", return_value=""),
             patch.object(self.helper.time, "sleep", return_value=None),
         ):
             selected, detail = self.helper._select_instagram_email_challenge_option(object(), "emulator-5554")
@@ -378,6 +390,44 @@ class InstagramAppHelperTests(unittest.TestCase):
         self.assertEqual(tap_mock.call_count, 2)
         click_mock.assert_called_once()
         continue_mock.assert_called_once()
+
+    def test_select_instagram_email_challenge_option_retries_after_delivery_error_popup(self) -> None:
+        with (
+            patch.object(self.helper, "_tap_instagram_challenge_email_option", return_value=True) as tap_mock,
+            patch.object(self.helper, "_press_instagram_challenge_continue", return_value=True) as continue_mock,
+            patch.object(
+                self.helper,
+                "_await_instagram_challenge_delivery_error",
+                side_effect=[
+                    "Instagram показал ошибку доставки challenge: Sorry, something went wrong. Код или ссылка на email не были отправлены.",
+                    "",
+                ],
+            ),
+            patch.object(self.helper.time, "sleep", return_value=None),
+        ):
+            selected, detail = self.helper._select_instagram_email_challenge_option(object(), "emulator-5554")
+        self.assertTrue(selected)
+        self.assertIn("email-канал", detail)
+        self.assertEqual(tap_mock.call_count, 2)
+        self.assertEqual(continue_mock.call_count, 2)
+
+    def test_request_instagram_new_email_code_retries_after_delayed_delivery_error_popup(self) -> None:
+        with (
+            patch.object(self.helper, "_ig_click_first", side_effect=[True, False, True, True, False, True]) as click_mock,
+            patch.object(
+                self.helper,
+                "_await_instagram_challenge_delivery_error",
+                side_effect=[
+                    "Instagram показал ошибку доставки challenge: Sorry, something went wrong. Код или ссылка на email не были отправлены.",
+                    "",
+                ],
+            ),
+            patch.object(self.helper.time, "sleep", return_value=None),
+        ):
+            requested, detail = self.helper._request_instagram_new_email_code(object(), "emulator-5554")
+        self.assertTrue(requested)
+        self.assertIn("принял запрос", detail)
+        self.assertEqual(click_mock.call_count, 6)
 
     def test_detect_post_login_state_signed_out_loop_requests_retry(self) -> None:
         with (
@@ -655,6 +705,33 @@ class InstagramAppHelperTests(unittest.TestCase):
         self.assertIn("phone/manual recovery", detail)
         self.assertEqual(snapshot["reason_code"], "challenge_manual_recovery_only")
 
+    def test_attempt_mail_challenge_login_maps_android_anr_to_helper_error(self) -> None:
+        payload = {
+            "account_id": 99,
+            "ticket": "system-anr-ticket",
+            "mail_enabled": True,
+            "twofa": "",
+        }
+        with (
+            patch.object(self.helper, "_classify_login_challenge_screen", return_value=("system_anr", "Android показал системный ANR-диалог (system).")),
+            patch.object(
+                self.helper,
+                "_challenge_delivery_option_nodes",
+                return_value={"email_nodes": [], "phone_nodes": [], "continue_nodes": [], "manual_recovery_nodes": []},
+            ),
+        ):
+            state, detail, snapshot = self.helper._attempt_mail_challenge_login(
+                object(),
+                "emulator-5554",
+                payload,
+                challenge_started_at=1700000000,
+                initial_detail="Instagram запросил challenge.",
+            )
+        self.assertEqual(state, "helper_error")
+        self.assertIn("ANR", detail)
+        self.assertEqual(snapshot["reason_code"], "android_system_anr")
+        self.assertEqual(snapshot["kind"], "system_dialog")
+
     def test_attempt_mail_challenge_login_reclassifies_auth_app_after_resend(self) -> None:
         payload = {
             "account_id": 44,
@@ -671,7 +748,7 @@ class InstagramAppHelperTests(unittest.TestCase):
         with (
             patch.object(self.helper, "_classify_login_challenge_screen", side_effect=[("numeric_code", "Есть поле ввода кода."), ("manual_2fa", "Instagram просит код из приложения аутентификации.")]),
             patch.object(self.helper, "_resolve_account_mail_challenge", side_effect=[unresolved, unresolved]),
-            patch.object(self.helper, "_request_instagram_new_email_code", return_value=True),
+            patch.object(self.helper, "_request_instagram_new_email_code", return_value=(True, "")),
         ):
             state, detail, snapshot = self.helper._attempt_mail_challenge_login(
                 object(),
@@ -700,7 +777,7 @@ class InstagramAppHelperTests(unittest.TestCase):
         with (
             patch.object(self.helper, "_classify_login_challenge_screen", side_effect=[("numeric_code", "Есть поле ввода кода."), ("human_check", "Instagram показал Confirm you're a human / CAPTCHA. Автоматический обход отключён, нужна ручная проверка аккаунта.")]),
             patch.object(self.helper, "_resolve_account_mail_challenge", side_effect=[unresolved, unresolved]),
-            patch.object(self.helper, "_request_instagram_new_email_code", return_value=True),
+            patch.object(self.helper, "_request_instagram_new_email_code", return_value=(True, "")),
         ):
             state, detail, snapshot = self.helper._attempt_mail_challenge_login(
                 object(),
@@ -712,6 +789,110 @@ class InstagramAppHelperTests(unittest.TestCase):
         self.assertEqual(state, "challenge_required")
         self.assertIn("human", detail.lower())
         self.assertEqual(snapshot["reason_code"], "human_check_required")
+
+    def test_attempt_mail_challenge_login_marks_delivery_failed_when_resend_popup_persists(self) -> None:
+        payload = {
+            "account_id": 47,
+            "ticket": "delivery-failed-ticket",
+            "mail_enabled": True,
+            "twofa": "",
+        }
+        unresolved = {
+            "status": "not_found",
+            "kind": "numeric_code",
+            "reason_code": "mail_not_found",
+            "reason_text": "Свежий код не найден.",
+        }
+        with (
+            patch.object(self.helper, "_classify_login_challenge_screen", return_value=("numeric_code", "Есть поле ввода кода.")),
+            patch.object(self.helper, "_resolve_account_mail_challenge", return_value=unresolved),
+            patch.object(
+                self.helper,
+                "_request_instagram_new_email_code",
+                return_value=(
+                    False,
+                    "Instagram показал ошибку доставки challenge: Sorry, something went wrong. Код или ссылка на email не были отправлены. Instagram несколько раз не смог отправить новый код на email.",
+                ),
+            ),
+        ):
+            state, detail, snapshot = self.helper._attempt_mail_challenge_login(
+                object(),
+                "emulator-5554",
+                payload,
+                challenge_started_at=1700000000,
+                initial_detail="Instagram запросил challenge.",
+            )
+        self.assertEqual(state, "challenge_required")
+        self.assertEqual(snapshot["status"], "delivery_failed")
+        self.assertEqual(snapshot["reason_code"], "mail_code_send_failed")
+        self.assertIn("не смог отправить новый код", detail)
+
+    def test_attempt_mail_challenge_login_reclassifies_persisted_delivery_popup_after_resend(self) -> None:
+        payload = {
+            "account_id": 48,
+            "ticket": "persisted-popup-ticket",
+            "mail_enabled": True,
+            "twofa": "",
+        }
+        unresolved = {
+            "status": "not_found",
+            "kind": "numeric_code",
+            "reason_code": "mail_not_found",
+            "reason_text": "Свежий код не найден.",
+        }
+        with (
+            patch.object(self.helper, "_classify_login_challenge_screen", return_value=("numeric_code", "Есть поле ввода кода.")),
+            patch.object(self.helper, "_resolve_account_mail_challenge", side_effect=[unresolved, unresolved]),
+            patch.object(self.helper, "_request_instagram_new_email_code", return_value=(True, "")),
+            patch.object(
+                self.helper,
+                "_dismiss_instagram_challenge_delivery_error",
+                return_value="Instagram показал ошибку доставки challenge: Sorry, something went wrong. Код или ссылка на email не были отправлены.",
+            ),
+        ):
+            state, detail, snapshot = self.helper._attempt_mail_challenge_login(
+                object(),
+                "emulator-5554",
+                payload,
+                challenge_started_at=1700000000,
+                initial_detail="Instagram запросил challenge.",
+            )
+        self.assertEqual(state, "challenge_required")
+        self.assertEqual(snapshot["status"], "delivery_failed")
+        self.assertEqual(snapshot["reason_code"], "mail_code_send_failed")
+        self.assertIn("не смог отправить код", detail)
+
+    def test_attempt_mail_challenge_login_retries_mail_resend_three_times_before_final_not_found(self) -> None:
+        payload = {
+            "account_id": 49,
+            "ticket": "triple-resend-ticket",
+            "mail_enabled": True,
+            "twofa": "",
+        }
+        unresolved = {
+            "status": "not_found",
+            "kind": "numeric_code",
+            "reason_code": "mail_not_found",
+            "reason_text": "Свежий код не найден.",
+        }
+        with (
+            patch.object(self.helper, "_classify_login_challenge_screen", return_value=("numeric_code", "Есть поле ввода кода.")),
+            patch.object(self.helper, "_resolve_account_mail_challenge", side_effect=[unresolved, unresolved, unresolved, unresolved]),
+            patch.object(self.helper, "_request_instagram_new_email_code", return_value=(True, "")) as resend_mock,
+            patch.object(self.helper, "_dismiss_instagram_challenge_delivery_error", return_value=""),
+        ):
+            state, detail, snapshot = self.helper._attempt_mail_challenge_login(
+                object(),
+                "emulator-5554",
+                payload,
+                challenge_started_at=1700000000,
+                initial_detail="Instagram запросил challenge.",
+            )
+        self.assertEqual(state, "challenge_required")
+        self.assertEqual(snapshot["status"], "not_found")
+        self.assertEqual(snapshot["reason_code"], "mail_not_found_after_resend")
+        self.assertIn("3 раза", snapshot["reason_text"])
+        self.assertEqual(resend_mock.call_count, 3)
 
     def test_publish_status_from_login_state_marks_numeric_mail_challenge_as_email_code_required(self) -> None:
         status = self.helper._publish_status_from_login_state(
@@ -766,7 +947,7 @@ class InstagramAppHelperTests(unittest.TestCase):
             ),
             patch.object(self.helper, "_classify_login_challenge_screen", return_value=("numeric_code", "Есть поле ввода кода.")),
             patch.object(self.helper, "_resolve_account_mail_challenge", side_effect=[first_mail, second_mail]) as resolve_mock,
-            patch.object(self.helper, "_request_instagram_new_email_code", return_value=True) as resend_mock,
+            patch.object(self.helper, "_request_instagram_new_email_code", return_value=(True, "")) as resend_mock,
             patch.object(self.helper, "_submit_instagram_email_code", return_value=True) as submit_mock,
             patch.object(self.helper, "_push_account_launch_status") as push_mock,
             patch.object(self.helper, "_set_state"),
@@ -822,6 +1003,41 @@ class InstagramAppHelperTests(unittest.TestCase):
         self.assertEqual(result["state"], "login_submitted")
         clear_mock.assert_called_once_with("emulator-5554")
         wait_logged_mock.assert_not_called()
+        push_mock.assert_called_once()
+
+    def test_run_login_flow_retries_after_android_anr_helper_error(self) -> None:
+        payload = {
+            "account_id": 5,
+            "account_login": "ayugram_sed",
+            "account_password": "secret-pass",
+            "username": "ayugram_sed",
+            "target": "publish_batch_job",
+        }
+        with (
+            patch.object(self.helper, "_ensure_emulator_ready", return_value="emulator-5554"),
+            patch.object(self.helper, "_ensure_instagram_installed"),
+            patch.object(self.helper, "_launch_instagram_app") as launch_mock,
+            patch.object(self.helper, "_connect_ui", return_value=object()),
+            patch.object(self.helper, "_dismiss_system_dialogs"),
+            patch.object(self.helper, "_wait_for_logged_in_surface", return_value=False),
+            patch.object(self.helper, "_ensure_signed_out_instagram_session", return_value="already_signed_out"),
+            patch.object(self.helper, "_fill_credentials_and_submit"),
+            patch.object(
+                self.helper,
+                "_detect_post_login_state",
+                side_effect=[
+                    ("helper_error", "Android показал системный ANR-диалог (system)."),
+                    ("login_submitted", "Вход выполнен."),
+                ],
+            ),
+            patch.object(self.helper, "_push_account_launch_status") as push_mock,
+            patch.object(self.helper, "_set_state"),
+            patch.object(self.helper, "_adb_shell"),
+            patch.object(self.helper.time, "sleep", return_value=None),
+        ):
+            result = self.helper._run_login_flow(payload)
+        self.assertEqual(result["state"], "login_submitted")
+        self.assertEqual(launch_mock.call_count, 2)
         push_mock.assert_called_once()
 
     def test_reset_publish_emulator_boundary_clears_instagram_and_kills_processes(self) -> None:
@@ -1052,6 +1268,97 @@ class InstagramAppHelperTests(unittest.TestCase):
         self.assertEqual(reset_mock.call_count, 1)
         self.assertEqual(push_mock.call_args_list[-1].args[1], "published")
         self.assertEqual(set_state_mock.call_args_list[-1].kwargs["state"], "idle")
+
+    def test_run_publish_job_selects_cover_before_advancing_and_share(self) -> None:
+        device = object()
+        call_order: list[str] = []
+        login_result = {
+            "state": "login_submitted",
+            "detail": "Вход выполнен.",
+            "serial": "emulator-5554",
+            "device": device,
+        }
+        wait_result = self.helper.PublishWaitResult(
+            outcome="publish_confirmed",
+            publish_phase="waiting_confirmation",
+            accepted_by_instagram=True,
+            elapsed_seconds=12,
+            last_activity="Instagram принял Reel.",
+            success=True,
+            event_kind="publish_confirmation_wait",
+        )
+        verify_result = self.helper.ProfileVerificationResult(
+            verified=True,
+            detail="Найден свежий Reel.",
+            publish_phase="verifying_profile",
+            matched_slot=0,
+            matched_age_seconds=120,
+            checked_slots=1,
+            event_kind="profile_verified",
+            timestamp_readable=True,
+        )
+        job = {
+            "id": 132,
+            "account_id": 5,
+            "batch_id": 48,
+            "source_path": "/tmp/video.mp4",
+            "emulator_serial": "emulator-5554",
+            "account_login": "ayugram_sed",
+            "account_password": "secret-pass",
+            "username": "ayugram_sed",
+            "twofa": "",
+        }
+        with (
+            patch.object(self.helper, "_resolve_publish_job_source", return_value={"path": "/tmp/video.mp4", "name": "video.mp4"}),
+            patch.object(self.helper, "_publish_boundary_reset_needed", side_effect=[False, True]),
+            patch.object(self.helper, "_reset_publish_emulator_boundary"),
+            patch.object(self.helper, "_run_login_flow", return_value=login_result),
+            patch.object(self.helper, "_capture_profile_reels_baseline", return_value={"available": False, "candidates": []}),
+            patch.object(self.helper, "_import_video_into_emulator", return_value="/sdcard/Movies/video.mp4"),
+            patch.object(self.helper, "_open_reel_creation_flow"),
+            patch.object(self.helper, "_select_reel_media", side_effect=lambda *_args, **_kwargs: call_order.append("select_media")),
+            patch.object(self.helper, "_pick_random_reel_cover_frame", side_effect=lambda *_args, **_kwargs: call_order.append("cover") or True),
+            patch.object(self.helper, "_advance_reel_next", side_effect=lambda *_args, **_kwargs: call_order.append(f"next:{_kwargs.get('steps', _args[2] if len(_args) > 2 else '?')}")),
+            patch.object(self.helper, "_share_reel", side_effect=lambda *_args, **_kwargs: call_order.append("share")),
+            patch.object(self.helper, "_wait_for_publish_success", return_value=wait_result),
+            patch.object(self.helper, "_confirm_publish_via_profile", return_value=verify_result),
+            patch.object(self.helper, "_push_publish_job_status"),
+            patch.object(self.helper, "_set_state"),
+            patch.object(self.helper, "_capture_publish_diagnostics"),
+        ):
+            self.helper._run_publish_job(job)
+        self.assertEqual(call_order[:5], ["select_media", "next:1", "cover", "next:1", "share"])
+
+    def test_pick_random_reel_cover_frame_uses_thumbnail_tray_bounds(self) -> None:
+        class FakeDevice:
+            def __call__(self, **kwargs):
+                raise AssertionError("selector lookup should be mocked in this test")
+
+        tray = MagicMock()
+        tray.info = {"bounds": {"left": 120, "top": 1280, "right": 960, "bottom": 1430}}
+
+        with (
+            patch.object(self.helper, "_dismiss_system_dialogs"),
+            patch.object(self.helper, "_dismiss_instagram_interstitials"),
+            patch.object(self.helper, "_ig_find_first", side_effect=[tray]),
+            patch.object(self.helper, "_device_display_size", return_value=(1080, 1920)),
+            patch.object(self.helper, "_adb_tap") as tap_mock,
+            patch.object(self.helper.time, "time_ns", return_value=1710000000000000000),
+            patch.object(self.helper.time, "sleep", return_value=None),
+        ):
+            result = self.helper._pick_random_reel_cover_frame(
+                FakeDevice(),
+                "emulator-5554",
+                source_name="video.mp4",
+                source_path="/tmp/video.mp4",
+            )
+        self.assertTrue(result)
+        tap_mock.assert_called_once()
+        self.assertEqual(tap_mock.call_args.args[0], "emulator-5554")
+        self.assertGreater(tap_mock.call_args.args[1], 120)
+        self.assertLess(tap_mock.call_args.args[1], 960)
+        self.assertGreaterEqual(tap_mock.call_args.args[2], 1280)
+        self.assertLessEqual(tap_mock.call_args.args[2], 1430)
 
     def test_wait_for_create_surface_recovers_when_foreground_is_lost(self) -> None:
         device = object()
@@ -2074,6 +2381,29 @@ class InstagramAppHelperTests(unittest.TestCase):
         with patch.object(self.helper, "_run_login_flow") as login_mock:
             self.helper._run_payload_flow(payload)
         login_mock.assert_called_once_with(payload, push_status=True, preferred_serial="")
+
+    def test_run_payload_flow_routes_account_status_target(self) -> None:
+        payload = {"target": "instagram_account_status_check", "account_id": 1}
+        with patch.object(self.helper, "_run_account_status_check_flow") as flow_mock:
+            self.helper._run_payload_flow(payload)
+        flow_mock.assert_called_once_with(payload)
+
+    def test_push_account_status_auto_result_includes_checked_at_and_diagnostics(self) -> None:
+        response = MagicMock()
+        response.raise_for_status.return_value = None
+        with patch.object(self.helper.http_utils, "request_with_retry", return_value=response) as request_mock:
+            self.helper._push_account_status_auto_result(
+                5,
+                "limited_recommendations",
+                "Instagram shows limited recommendations.",
+                "ayugram_sed",
+                checked_at=1710000000,
+                diagnostics_path="/tmp/account-status.png",
+            )
+        payload = request_mock.call_args.kwargs["json"]
+        self.assertEqual(payload["status"], "limited_recommendations")
+        self.assertEqual(payload["checked_at"], 1710000000)
+        self.assertEqual(payload["diagnostics_path"], "/tmp/account-status.png")
 
     def test_push_account_publish_status_includes_helper_ticket_and_reel_telemetry(self) -> None:
         response = MagicMock()

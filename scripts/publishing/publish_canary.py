@@ -34,6 +34,7 @@ ACTIVE_PUBLISH_STATES = {
     "importing_media",
     "opening_reel_flow",
     "selecting_media",
+    "selecting_cover",
     "publishing",
 }
 ACTIVE_BATCH_ACCOUNT_STATES = {
@@ -45,6 +46,7 @@ ACTIVE_BATCH_ACCOUNT_STATES = {
     "importing_media",
     "opening_reel_flow",
     "selecting_media",
+    "selecting_cover",
     "publishing",
 }
 TERMINAL_ACCOUNT_STATES = {"published", "needs_review", "failed", "canceled", "generation_failed"}

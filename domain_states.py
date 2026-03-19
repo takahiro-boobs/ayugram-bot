@@ -19,6 +19,7 @@ ACCOUNT_INSTAGRAM_PUBLISH_STATUS_LABELS = {
     "importing_media": "Импорт медиа",
     "opening_reel_flow": "Открываю Reel",
     "selecting_media": "Выбираю видео",
+    "selecting_cover": "Выбираю обложку",
     "publishing": "Публикую",
     "published": "Опубликовано",
     "needs_review": "Нужна проверка",
@@ -94,6 +95,7 @@ PUBLISH_BATCH_ACCOUNT_STATE_LABELS = {
     "importing_media": "Импорт медиа",
     "opening_reel_flow": "Открываю Reel",
     "selecting_media": "Выбор видео",
+    "selecting_cover": "Выбор обложки",
     "publishing": "Публикация",
     "published": "Опубликовано",
     "needs_review": "Нужна проверка",
@@ -109,6 +111,7 @@ PUBLISH_JOB_STATE_LABELS = {
     "importing_media": "Импорт медиа",
     "opening_reel_flow": "Открываю Reel",
     "selecting_media": "Выбор видео",
+    "selecting_cover": "Выбор обложки",
     "publishing": "Публикация",
     "published": "Опубликовано",
     "needs_review": "Нужна проверка",
@@ -132,6 +135,7 @@ PUBLISH_JOB_STATE_ORDER = {
     "importing_media": 40,
     "opening_reel_flow": 50,
     "selecting_media": 60,
+    "selecting_cover": 65,
     "publishing": 70,
     "published": 80,
     "needs_review": 80,
@@ -145,6 +149,7 @@ ACTIVE_PUBLISH_JOB_STATES = {
     "importing_media",
     "opening_reel_flow",
     "selecting_media",
+    "selecting_cover",
     "publishing",
 }
 
@@ -156,6 +161,7 @@ ACTIVE_PUBLISH_BATCH_ACCOUNT_STATES = {
     "importing_media",
     "opening_reel_flow",
     "selecting_media",
+    "selecting_cover",
     "publishing",
 }
 

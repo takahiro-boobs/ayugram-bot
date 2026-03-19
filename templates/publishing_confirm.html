@@ -38,12 +38,15 @@
                     <span class="status-pill {{ account.mail_ready_class }}">{{ account.mail_ready_label }}</span>
                     <span class="pill">Mail: {{ account.mail_provider_label }}</span>
                     <span class="brand__tag">{{ account.owner_label }}</span>
+                    <span class="status-pill {{ account.trust_state_class }}">{{ account.trust_state_label }}</span>
+                    <span class="status-pill {{ account.risk_state_class }}">{{ account.risk_state_label }}</span>
+                    <span class="status-pill {{ account.shadow_status_class }}">{{ account.shadow_status_label }}</span>
                     <span class="status-pill {% if account.twofa_ready %}on{% else %}review{% endif %}">
                       {% if account.twofa_ready %}2FA готов{% else %}2FA не заполнен{% endif %}
                     </span>
                   </div>
                   {% if account.publish_warnings %}
-                    <div class="hint mt-sm">{{ account.publish_warnings|join(' ') }}</div>
+                    <div class="hint mt-sm">{{ account.publish_warnings|join(' · ') }}</div>
                   {% endif %}
                   {% if account.mail_ready_detail %}
                     <div class="hint mt-sm">{{ account.mail_ready_detail }}</div>

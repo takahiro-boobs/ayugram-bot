@@ -105,6 +105,9 @@
                       <div class="listitem__title">@{{ account.username or account.account_login or ('аккаунт-' ~ account.id) }}</div>
                       <div class="listitem__meta">
                         <span class="status-pill {{ account.batch_state_class }}">{{ account.batch_state_label }}</span>
+                        <span class="status-pill {{ account.trust_state_class }}">{{ account.trust_state_label }}</span>
+                        <span class="status-pill {{ account.risk_state_class }}">{{ account.risk_state_label }}</span>
+                        <span class="status-pill {{ account.shadow_status_class }}">{{ account.shadow_status_label }}</span>
                       </div>
                     </div>
                     <div class="publish-account-card__actions">
@@ -121,6 +124,15 @@
                     {% endif %}
                     {% if account.reel_metrics_summary %}
                       <div class="hint mt-sm">Аналитика: {{ account.reel_metrics_summary }}</div>
+                    {% endif %}
+                    {% if account.risk_reasons %}
+                      <div class="hint mt-sm">Risk: {{ account.risk_reasons|join(' · ') }}</div>
+                    {% endif %}
+                    {% if account.shadow_reasons %}
+                      <div class="hint mt-sm">Shadow: {{ account.shadow_reasons|join(' · ') }}</div>
+                    {% endif %}
+                    {% if account.latest_reel and account.latest_reel.shadow_reasons %}
+                      <div class="hint mt-sm">Reel shadow: {{ account.latest_reel.shadow_reasons|join(' · ') }}</div>
                     {% endif %}
                   </div>
                 </article>
@@ -255,6 +267,7 @@
               || ('Сбор: ' + String(reel.collection_state_label || '—'));
             const meta = [
               statusPill(reel.collection_state_label || '—', reel.collection_state_class || 'unknown'),
+              reel.shadow_status_label ? statusPill(reel.shadow_status_label, reel.shadow_status_class || 'unknown') : '',
               reel.latest_snapshot_status_label ? statusPill(reel.latest_snapshot_status_label, reel.latest_snapshot_status_class || 'unknown') : '',
               reel.latest_snapshot_window_label ? pill('Окно: ' + reel.latest_snapshot_window_label) : '',
               reel.last_collected_at_label ? pill('Обновлено: ' + reel.last_collected_at_label) : '',
@@ -286,6 +299,9 @@
                 ' · Лайки ', escapeHtml(reel.likes_label || '—'),
                 ' · Комменты ', escapeHtml(reel.comments_label || '—'),
               '</div>',
+              (Array.isArray(reel.shadow_reasons) && reel.shadow_reasons.length)
+                ? '<div class="hint mt-sm">Shadow: ' + escapeHtml(reel.shadow_reasons.join(' · ')) + '</div>'
+                : '',
               '<div class="service-stack mt-sm">', historyHtml, '</div>',
               '</div>',
               '</details>'
@@ -308,6 +324,9 @@
               ].filter(Boolean).join(' · ');
               const primaryMeta = [
                 statusPill(account.batch_state_label || '—', account.batch_state_class || 'unknown'),
+                account.trust_state_label ? statusPill(account.trust_state_label, account.trust_state_class || 'unknown') : '',
+                account.risk_state_label ? statusPill(account.risk_state_label, account.risk_state_class || 'unknown') : '',
+                account.shadow_status_label ? statusPill(account.shadow_status_label, account.shadow_status_class || 'unknown') : '',
                 account.instagram_publish_status_label && account.is_failed
                   ? statusPill(account.instagram_publish_status_label, account.instagram_publish_status_class || 'unknown')
                   : '',
@@ -329,12 +348,19 @@
               ].filter(Boolean).join('');
               const serviceMeta = [
                 pill('ID: ' + Number(account.id || 0)),
+                pill('Trust: ' + Number(account.trust_score_value || 0) + '/100'),
+                pill('Risk: ' + Number(account.risk_score_value || 0) + '/100'),
+                pill('Shadow: ' + Number(account.shadow_score_value || 0) + '/100'),
                 account.instagram_emulator_serial ? '<span class="pill mono">' + escapeHtml(account.instagram_emulator_serial) + '</span>' : '',
+                account.last_login_serial ? '<span class="pill mono">Last login: ' + escapeHtml(account.last_login_serial) + '</span>' : '',
+                account.pinned_proxy ? '<span class="pill mono">Pinned proxy: ' + escapeHtml(account.pinned_proxy) + '</span>' : '',
                 account.owner_label ? '<span class="brand__tag">' + escapeHtml(account.owner_label) + '</span>' : '',
                 account.job_state_label ? statusPill(account.job_state_label, account.job_state_class || 'unknown') : '',
                 account.instagram_publish_status_label && !account.is_failed
                   ? statusPill(account.instagram_publish_status_label, account.instagram_publish_status_class || 'unknown')
                   : '',
+                account.account_status_manual_label ? statusPill('Account Status: ' + account.account_status_manual_label, account.account_status_manual_class || 'unknown') : '',
+                account.last_session_mode_label ? statusPill(account.last_session_mode_label, account.last_session_mode_class || 'unknown') : '',
                 account.mail_ready_label ? statusPill(account.mail_ready_label, account.mail_ready_class || 'unknown') : '',
                 account.mail_status_label ? statusPill(account.mail_status_label, account.mail_status_class || 'unknown') : '',
                 account.mail_provider_label ? pill('Mail: ' + account.mail_provider_label) : '',
@@ -345,6 +371,15 @@
               ].filter(Boolean).join('');
               const serviceHints = [
                 account.mail_ready_detail ? '<div class="hint">' + escapeHtml(account.mail_ready_detail) + '</div>' : '',
+                Array.isArray(account.risk_reasons) && account.risk_reasons.length
+                  ? '<div class="hint">Risk: ' + escapeHtml(account.risk_reasons.join(' · ')) + '</div>'
+                  : '',
+                Array.isArray(account.shadow_reasons) && account.shadow_reasons.length
+                  ? '<div class="hint">Shadow: ' + escapeHtml(account.shadow_reasons.join(' · ')) + '</div>'
+                  : '',
+                account.publish_cooldown_until_label
+                  ? '<div class="hint">Cooldown до: ' + escapeHtml(String(account.publish_cooldown_until_label || '')) + '</div>'
+                  : '',
                 mailChallengeVisible && account.mail_challenge_kind_label
                   ? '<div class="hint">Сценарий: '
                       + escapeHtml(account.mail_challenge_kind_label)

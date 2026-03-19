@@ -57,6 +57,8 @@
               <span class="pill">Просмотры: {{ latest_reel.plays_label }}</span>
               <span class="pill">Лайки: {{ latest_reel.likes_label }}</span>
               <span class="pill">Комменты: {{ latest_reel.comments_label }}</span>
+              <span class="status-pill {{ latest_reel.shadow_status_class }}">Reel: {{ latest_reel.shadow_status_label }}</span>
+              <span class="pill">Shadow: {{ latest_reel.shadow_score_value }}/100</span>
               <span class="status-pill {{ latest_reel.collection_state_class }}">{{ latest_reel.collection_state_label }}</span>
               {% if latest_reel.latest_snapshot_status_label %}
                 <span class="status-pill {{ latest_reel.latest_snapshot_status_class }}">{{ latest_reel.latest_snapshot_status_label }}</span>
@@ -67,6 +69,9 @@
             </div>
             {% if latest_reel.compact_summary %}
               <div class="hint mt-sm">{{ latest_reel.compact_summary }}</div>
+            {% endif %}
+            {% if latest_reel.shadow_reasons %}
+              <div class="hint mt-sm">Shadow: {{ latest_reel.shadow_reasons|join(' · ') }}</div>
             {% endif %}
             <details class="service-details mt-sm">
               <summary class="service-details__summary">Аналитика</summary>
@@ -138,12 +143,36 @@
                     <span class="pill">Mail: {{ account.mail_provider_label }}</span>
                     <span class="status-pill {{ account.instagram_launch_status_class }}">{{ account.instagram_launch_status_label }}</span>
                     <span class="status-pill {{ account.instagram_publish_status_class }}">{{ account.instagram_publish_status_label }}</span>
+                    <span class="status-pill {{ account.trust_state_class }}">{{ account.trust_state_label }}</span>
+                    <span class="pill">Trust: {{ account.trust_score_value }}/100</span>
+                    <span class="status-pill {{ account.risk_state_class }}">{{ account.risk_state_label }}</span>
+                    <span class="pill">Risk: {{ account.risk_score_value }}/100</span>
+                    <span class="status-pill {{ account.shadow_status_class }}">Shadow: {{ account.shadow_status_label }}</span>
+                    <span class="pill">Shadow: {{ account.shadow_score_value }}/100</span>
+                    <span class="status-pill {{ account.account_status_manual_class }}">Account Status: {{ account.account_status_manual_label }}</span>
+                    <span class="status-pill {{ account.account_status_auto_class }}">Auto: {{ account.account_status_auto_label }}</span>
+                    <span class="status-pill {{ account.last_session_mode_class }}">{{ account.last_session_mode_label }}</span>
                     {% if account.audit_joke_label %}
                       <span class="status-pill {{ account.audit_joke_class }}">Аккаунт: {{ account.audit_joke_label }}</span>
                     {% endif %}
                   </div>
                   {% if account.rotation_state_reason %}
                     <div class="hint mt-sm">{{ account.rotation_state_reason }}</div>
+                  {% endif %}
+                  {% if account.risk_reasons %}
+                    <div class="hint mt-sm">Risk signals: {{ account.risk_reasons|join(' · ') }}</div>
+                  {% endif %}
+                  {% if account.shadow_reasons %}
+                    <div class="hint mt-sm">Shadow signals: {{ account.shadow_reasons|join(' · ') }}</div>
+                  {% endif %}
+                  {% if account.account_status_auto_checked_at or account.account_status_auto_detail %}
+                    <div class="hint mt-sm">
+                      Auto-check{% if account.account_status_auto_checked_at_label %}: {{ account.account_status_auto_checked_at_label }}{% else %}:{% endif %}
+                      {% if account.account_status_auto_detail %} {{ account.account_status_auto_detail }}{% endif %}
+                    </div>
+                  {% endif %}
+                  {% if account.account_status_auto_diagnostics_path %}
+                    <div class="hint mt-sm mono">{{ account.account_status_auto_diagnostics_path }}</div>
                   {% endif %}
 
                   {% if account.has_profile_url or account.can_launch_instagram or latest_audit %}
@@ -157,6 +186,10 @@
                         <form method="post" action="{{ urlp('/accounts') }}/{{ account.id }}/launch/instagram" class="inline-form">
                           <input type="hidden" name="return_to" value="{{ return_to }}">
                           <button class="btn primary sm" type="submit">Войти в Instagram</button>
+                        </form>
+                        <form method="post" action="{{ urlp('/accounts') }}/{{ account.id }}/check/instagram-account-status" class="inline-form">
+                          <input type="hidden" name="return_to" value="{{ return_to }}">
+                          <button class="btn ghost sm" type="submit">Проверить рекомендации</button>
                         </form>
                       {% endif %}
                       {% if latest_audit %}
@@ -198,10 +231,27 @@
                         {% if account.instagram_emulator_serial %}
                           <span class="pill mono">{{ account.instagram_emulator_serial }}</span>
                         {% endif %}
+                        {% if account.last_login_serial %}
+                          <span class="pill mono">Last login: {{ account.last_login_serial }}</span>
+                        {% endif %}
                       </div>
                       <div class="listitem__meta">
                         <span class="hint mono">Логин: {{ account.account_login }}</span>
                         <span class="hint mono">Почта: {{ account.email }}</span>
+                      </div>
+                      <div class="listitem__meta">
+                        {% if account.pinned_proxy %}
+                          <span class="pill mono">Pinned proxy: {{ account.pinned_proxy }}</span>
+                        {% endif %}
+                        {% if account.publish_cooldown_until %}
+                          <span class="pill">Cooldown до: {{ account.publish_cooldown_until|dt }}</span>
+                        {% endif %}
+                        {% if account.last_stable_login_at %}
+                          <span class="pill">Stable login: {{ account.last_stable_login_at|dt }}</span>
+                        {% endif %}
+                        {% if account.last_stable_publish_at %}
+                          <span class="pill">Stable publish: {{ account.last_stable_publish_at|dt }}</span>
+                        {% endif %}
                       </div>
                     </div>
                   </div>
@@ -266,6 +316,15 @@
                     <div class="field accounts-grid-wide">
                       <label class="label">Серийный номер эмулятора Instagram</label>
                       <input class="input mono" name="instagram_emulator_serial" value="{{ account.instagram_emulator_serial or '' }}" placeholder="если пусто, подставится автоматически перед публикацией">
+                    </div>
+
+                    <div class="field">
+                      <label class="label">Account Status</label>
+                      <select class="input" name="account_status_manual">
+                        {% for item in account_status_manual_options %}
+                          <option value="{{ item.key }}" {% if account.account_status_manual == item.key %}selected{% endif %}>{{ item.label }}</option>
+                        {% endfor %}
+                      </select>
                     </div>
 
                     <div class="field">

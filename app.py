@@ -142,6 +142,18 @@ ACCOUNT_MAIL_PROVIDER_OPTIONS = [
     {"key": "microsoft_graph", "label": "Microsoft Graph"},
 ]
 ACCOUNT_MAIL_PROVIDER_LABELS = {opt["key"]: opt["label"] for opt in ACCOUNT_MAIL_PROVIDER_OPTIONS}
+ACCOUNT_STATUS_MANUAL_OPTIONS = [
+    {"key": "unknown", "label": "Не проверялось"},
+    {"key": "ok", "label": "OK"},
+    {"key": "limited_recommendations", "label": "Limited recommendations"},
+]
+ACCOUNT_STATUS_MANUAL_LABELS = {opt["key"]: opt["label"] for opt in ACCOUNT_STATUS_MANUAL_OPTIONS}
+ACCOUNT_STATUS_AUTO_LABELS = {
+    "unknown": "Нет автопроверки",
+    "ok": "Auto OK",
+    "limited_recommendations": "Auto limited recommendations",
+    "inconclusive": "Auto inconclusive",
+}
 ACCOUNT_MAIL_STATUS_LABELS = {
     "never_checked": "Не проверялась",
     "ok": "Почта OK",
@@ -154,6 +166,7 @@ ACCOUNT_MAIL_CHALLENGE_STATUS_LABELS = {
     "idle": "Нет challenge",
     "resolved": "Challenge найден",
     "not_found": "Код не найден",
+    "delivery_failed": "Не удалось отправить код",
     "ambiguous": "Найдено несколько писем",
     "mailbox_unavailable": "Почта недоступна",
     "unsupported": "Challenge не поддержан",
@@ -161,6 +174,7 @@ ACCOUNT_MAIL_CHALLENGE_STATUS_LABELS = {
 ACCOUNT_MAIL_CHALLENGE_KIND_LABELS = {
     "numeric_code": "Код из письма",
     "approval_link": "Ссылка подтверждения",
+    "system_dialog": "Системный диалог Android",
     "unsupported": "Неподдерживаемый сценарий",
 }
 RUNTIME_TASK_STATE_LABELS = {
@@ -177,6 +191,14 @@ PUBLISH_PROGRESS_STEPS = [
     {"key": "publish_queue", "label": "Очередь публикации"},
     {"key": "instagram_publish", "label": "Публикация в Instagram"},
     {"key": "done", "label": "Готово"},
+]
+PUBLISH_GENERATOR_PROFILES = [
+    {"topic": "отношения", "style": "напряжённый и честный", "messagesCount": 8},
+    {"topic": "флирт", "style": "остроумный и быстрый", "messagesCount": 7},
+    {"topic": "ревность", "style": "тихий конфликт с подколом", "messagesCount": 9},
+    {"topic": "неловкое знакомство", "style": "живой и немного нервный", "messagesCount": 6},
+    {"topic": "переписка после ссоры", "style": "сдержанный, колкий и короткий", "messagesCount": 10},
+    {"topic": "драма в чате", "style": "резкий и эмоциональный", "messagesCount": 11},
 ]
 INSTAGRAM_AUDIT_MAIL_PROBE_LABELS = INSTAGRAM_AUDIT_MAIL_PROBE_STATE_LABELS
 ACCOUNTS_IMPORT_MAX_BYTES = SETTINGS.accounts_import_max_bytes
@@ -519,11 +541,97 @@ def _account_instagram_publish_status_meta(state: Optional[str]) -> tuple[str, s
         "importing_media": "wait",
         "opening_reel_flow": "wait",
         "selecting_media": "wait",
+        "selecting_cover": "wait",
         "publishing": "wait",
         "published": "on",
         "needs_review": "review",
         "no_source_video": "review",
         "publish_error": "off",
+    }.get(value, "unknown")
+    return label, status_class
+
+
+def _account_trust_meta(state: Optional[str]) -> tuple[str, str]:
+    value = (state or "").strip().lower() or "yellow"
+    label = {
+        "green": "Trust green",
+        "yellow": "Trust yellow",
+        "red": "Trust red",
+    }.get(value, "Trust unknown")
+    status_class = {
+        "green": "on",
+        "yellow": "review",
+        "red": "off",
+    }.get(value, "unknown")
+    return label, status_class
+
+
+def _account_status_manual_meta(state: Optional[str]) -> tuple[str, str]:
+    value = (state or "").strip().lower() or "unknown"
+    label = ACCOUNT_STATUS_MANUAL_LABELS.get(value, "Не проверялось")
+    status_class = {
+        "unknown": "unknown",
+        "ok": "on",
+        "limited_recommendations": "off",
+    }.get(value, "unknown")
+    return label, status_class
+
+
+def _account_status_auto_meta(state: Optional[str]) -> tuple[str, str]:
+    value = (state or "").strip().lower() or "unknown"
+    label = ACCOUNT_STATUS_AUTO_LABELS.get(value, "Нет автопроверки")
+    status_class = {
+        "unknown": "unknown",
+        "ok": "on",
+        "limited_recommendations": "off",
+        "inconclusive": "review",
+    }.get(value, "unknown")
+    return label, status_class
+
+
+def _account_session_mode_meta(state: Optional[str]) -> tuple[str, str]:
+    value = (state or "").strip().lower() or "unknown"
+    label = {
+        "unknown": "Сессия неизвестна",
+        "session_reuse": "Session reused",
+        "fresh_login": "Fresh login",
+        "clean_login": "Clean login",
+    }.get(value, "Сессия неизвестна")
+    status_class = {
+        "unknown": "unknown",
+        "session_reuse": "on",
+        "fresh_login": "review",
+        "clean_login": "off",
+    }.get(value, "unknown")
+    return label, status_class
+
+
+def _distribution_risk_meta(state: Optional[str]) -> tuple[str, str]:
+    value = (state or "").strip().lower() or "green"
+    label = {
+        "green": "Risk green",
+        "yellow": "Risk yellow",
+        "red": "Risk red",
+    }.get(value, "Risk unknown")
+    status_class = {
+        "green": "on",
+        "yellow": "review",
+        "red": "off",
+    }.get(value, "unknown")
+    return label, status_class
+
+
+def _shadow_status_meta(state: Optional[str]) -> tuple[str, str]:
+    value = (state or "").strip().lower() or "ok"
+    label = {
+        "ok": "OK",
+        "risk": "Risk",
+        "shadowban_suspected": "Shadowban suspected",
+    }.get(value, "OK")
+    status_class = {
+        "ok": "on",
+        "risk": "review",
+        "shadowban_suspected": "off",
     }.get(value, "unknown")
     return label, status_class
 
@@ -644,11 +752,75 @@ def _compact_account_block_reason(account: dict[str, Any]) -> str:
         return "Нет эмулятора"
     if "нет подтверждённой проверки входа" in reason_lower or "проверки входа" in reason_lower:
         return "Нет проверки"
+    if any(token in " ".join(issues) for token in ("limited recommendations", "shadowban", "shadow-checker", "ограничение рекомендаций")):
+        return "Рекомендации"
     if launch_status == "challenge_required" or publish_status == "challenge_required" or audit_status == "challenge_required":
         return "Challenge"
     if rotation_state == "not_working":
         return "Нерабочий"
     return ""
+
+
+def _decorate_account_policy_meta(
+    account: dict[str, Any],
+    *,
+    include_risk: bool = False,
+    include_shadow: bool = False,
+) -> dict[str, Any]:
+    trust_label, trust_class = _account_trust_meta(account.get("trust_state"))
+    account["trust_state_label"] = trust_label
+    account["trust_state_class"] = trust_class
+    try:
+        account["trust_score_value"] = int(round(float(account.get("trust_score") or 0)))
+    except Exception:
+        account["trust_score_value"] = 0
+
+    manual_label, manual_class = _account_status_manual_meta(account.get("account_status_manual"))
+    account["account_status_manual_label"] = manual_label
+    account["account_status_manual_class"] = manual_class
+
+    session_label, session_class = _account_session_mode_meta(account.get("last_session_mode"))
+    account["last_session_mode_label"] = session_label
+    account["last_session_mode_class"] = session_class
+    account["publish_cooldown_until_label"] = _format_timestamp_label(account.get("publish_cooldown_until"))
+    account["last_session_mode_at_label"] = _format_timestamp_label(account.get("last_session_mode_at"))
+    account["last_stable_login_at_label"] = _format_timestamp_label(account.get("last_stable_login_at"))
+    account["last_stable_publish_at_label"] = _format_timestamp_label(account.get("last_stable_publish_at"))
+
+    if include_risk:
+        account_id = int(account.get("id") or 0)
+        risk_snapshot = db.get_account_distribution_risk(account_id) if account_id > 0 else {}
+        risk_label, risk_class = _distribution_risk_meta(risk_snapshot.get("risk_state"))
+        account["risk_score_value"] = int(round(float(risk_snapshot.get("risk_score") or 0)))
+        account["risk_state"] = str(risk_snapshot.get("risk_state") or "green")
+        account["risk_state_label"] = risk_label
+        account["risk_state_class"] = risk_class
+        account["risk_reasons"] = list(risk_snapshot.get("reasons") or [])
+        account["risk_baseline_reach_avg"] = risk_snapshot.get("baseline_reach_avg")
+        account["risk_latest_reach"] = risk_snapshot.get("latest_reach")
+        account["risk_reach_ratio"] = risk_snapshot.get("reach_ratio")
+        account["risk_samples"] = int(risk_snapshot.get("samples") or 0)
+        account["risk_comparable_window"] = str(risk_snapshot.get("comparable_window") or "").strip()
+        account["risk_insufficient_data"] = bool(risk_snapshot.get("insufficient_data"))
+    if include_shadow:
+        account_id = int(account.get("id") or 0)
+        shadow_snapshot = db.get_account_shadow_snapshot(account_id) if account_id > 0 else {}
+        shadow_label, shadow_class = _shadow_status_meta(shadow_snapshot.get("shadow_status"))
+        auto_label, auto_class = _account_status_auto_meta(shadow_snapshot.get("account_status_auto"))
+        account["shadow_status"] = str(shadow_snapshot.get("shadow_status") or "ok")
+        account["shadow_status_label"] = shadow_label
+        account["shadow_status_class"] = shadow_class
+        account["shadow_score_value"] = int(round(float(shadow_snapshot.get("shadow_score") or 0)))
+        account["shadow_reasons"] = list(shadow_snapshot.get("shadow_reasons") or [])
+        account["shadow_confirmed_by_instagram"] = bool(shadow_snapshot.get("shadow_confirmed_by_instagram"))
+        account["account_status_auto"] = str(shadow_snapshot.get("account_status_auto") or "unknown")
+        account["account_status_auto_label"] = auto_label
+        account["account_status_auto_class"] = auto_class
+        account["account_status_auto_detail"] = str(shadow_snapshot.get("account_status_auto_detail") or "").strip()
+        account["account_status_auto_checked_at"] = shadow_snapshot.get("account_status_auto_checked_at")
+        account["account_status_auto_checked_at_label"] = _format_timestamp_label(shadow_snapshot.get("account_status_auto_checked_at"))
+        account["account_status_auto_diagnostics_path"] = str(shadow_snapshot.get("account_status_auto_diagnostics_path") or "").strip()
+    return account
 
 
 def _instagram_audit_mail_probe_meta(state: Optional[str]) -> tuple[str, str]:
@@ -695,6 +867,7 @@ def _publish_job_state_meta(state: Optional[str]) -> tuple[str, str]:
         "importing_media": "wait",
         "opening_reel_flow": "wait",
         "selecting_media": "wait",
+        "selecting_cover": "wait",
         "publishing": "wait",
         "published": "on",
         "needs_review": "review",
@@ -717,6 +890,7 @@ def _publish_batch_account_state_meta(state: Optional[str]) -> tuple[str, str]:
         "importing_media": "wait",
         "opening_reel_flow": "wait",
         "selecting_media": "wait",
+        "selecting_cover": "wait",
         "publishing": "wait",
         "published": "on",
         "needs_review": "review",
@@ -3090,6 +3264,7 @@ def _accounts_page_response(
         account["instagram_publish_status_label"] = publish_label
         account["instagram_publish_status_class"] = publish_class
         account["identity_handle"] = _account_identity_handle(account)
+        _decorate_account_policy_meta(account)
         owner_name = str(account.get("owner_worker_name") or "").strip()
         owner_username = str(account.get("owner_worker_username") or "").strip()
         account["owner_label"] = f"{owner_name} (@{owner_username})" if owner_username else (owner_name or "Без работника")
@@ -3145,6 +3320,7 @@ def _accounts_page_response(
             "rotation_state_options": ACCOUNT_ROTATION_STATE_OPTIONS,
             "views_state_options": ACCOUNT_VIEWS_STATE_OPTIONS,
             "mail_provider_options": ACCOUNT_MAIL_PROVIDER_OPTIONS,
+            "account_status_manual_options": ACCOUNT_STATUS_MANUAL_OPTIONS,
             "sort_options": ACCOUNT_LIST_SORT_OPTIONS,
             "error": error,
             "success": success,
@@ -3228,6 +3404,7 @@ def _account_detail_page_response(
     account["instagram_publish_status_label"] = publish_label
     account["instagram_publish_status_class"] = publish_class
     account["identity_handle"] = _account_identity_handle(account)
+    _decorate_account_policy_meta(account, include_risk=True, include_shadow=True)
     account["can_publish_instagram"] = bool(account["can_launch_instagram"])
     links = [dict(r) for r in db.list_account_links_with_stats(int(account["id"]), owner_worker_id=owner_worker_id)]
     for link in links:
@@ -3245,6 +3422,7 @@ def _account_detail_page_response(
         latest_reel = _decorate_instagram_reel_post(
             dict(latest_reel_row),
             snapshots=[dict(item) for item in db.list_instagram_reel_metric_snapshots(int(latest_reel_row["id"]))],
+            include_shadow=True,
         )
     latest_audit = db.get_latest_instagram_audit_for_account(int(account["id"]))
     latest_audit_data = dict(latest_audit) if latest_audit else None
@@ -3281,6 +3459,7 @@ def _account_detail_page_response(
             "rotation_state_options": ACCOUNT_ROTATION_STATE_OPTIONS,
             "views_state_options": ACCOUNT_VIEWS_STATE_OPTIONS,
             "mail_provider_options": ACCOUNT_MAIL_PROVIDER_OPTIONS,
+            "account_status_manual_options": ACCOUNT_STATUS_MANUAL_OPTIONS,
             "workers": workers,
             "back_url": back_url,
             "detail_self_url": detail_self_url,
@@ -3636,6 +3815,7 @@ def _publish_account_progress_for_state(state: str) -> int:
         "importing_media": 78,
         "opening_reel_flow": 84,
         "selecting_media": 90,
+        "selecting_cover": 94,
         "publishing": 96,
         "published": 100,
         "needs_review": 100,
@@ -3652,6 +3832,7 @@ def _publish_live_progress_ceiling(state: str) -> int:
         "importing_media": 82,
         "opening_reel_flow": 88,
         "selecting_media": 94,
+        "selecting_cover": 96,
         "publishing": 99,
     }.get(value, 0)
 
@@ -3840,7 +4021,12 @@ def _decorate_instagram_reel_snapshot(raw: dict[str, Any]) -> dict[str, Any]:
     return row
 
 
-def _decorate_instagram_reel_post(raw: dict[str, Any], *, snapshots: Optional[list[dict[str, Any]]] = None) -> dict[str, Any]:
+def _decorate_instagram_reel_post(
+    raw: dict[str, Any],
+    *,
+    snapshots: Optional[list[dict[str, Any]]] = None,
+    include_shadow: bool = False,
+) -> dict[str, Any]:
     row = dict(raw)
     state_label, state_class = _instagram_reel_collection_state_meta(row.get("collection_state"))
     latest_status_label, latest_status_class = _instagram_reel_snapshot_status_meta(row.get("latest_snapshot_status"))
@@ -3874,6 +4060,19 @@ def _decorate_instagram_reel_post(raw: dict[str, Any], *, snapshots: Optional[li
         if item
     )
     row["history"] = [_decorate_instagram_reel_snapshot(dict(item)) for item in (snapshots or [])]
+    if include_shadow:
+        post_id = int(row.get("id") or 0)
+        shadow_snapshot = db.get_instagram_reel_shadow_snapshot(post_id) if post_id > 0 else {}
+        shadow_label, shadow_class = _shadow_status_meta(shadow_snapshot.get("shadow_status"))
+        row["shadow_status"] = str(shadow_snapshot.get("shadow_status") or "ok")
+        row["shadow_status_label"] = shadow_label
+        row["shadow_status_class"] = shadow_class
+        row["shadow_score_value"] = int(round(float(shadow_snapshot.get("shadow_score") or 0)))
+        row["shadow_reasons"] = list(shadow_snapshot.get("shadow_reasons") or [])
+        row["shadow_comparable_window"] = str(shadow_snapshot.get("comparable_window") or "").strip()
+        row["shadow_reach_ratio"] = shadow_snapshot.get("reach_ratio")
+        row["shadow_samples"] = int(shadow_snapshot.get("samples") or 0)
+        row["shadow_insufficient_data"] = bool(shadow_snapshot.get("insufficient_data"))
     return row
 
 
@@ -3896,9 +4095,11 @@ def _publish_mail_event_meta(event_kind: str) -> tuple[str, str]:
         "approval_link_failed": ("Ссылка из письма не сработала", "review"),
         "challenge_phone_only": ("Доступен только phone", "review"),
         "challenge_manual_recovery_only": ("Нужен manual recovery", "review"),
+        "mail_code_send_failed": ("Instagram не отправил код", "review"),
         "mailbox_unavailable": ("Почта недоступна", "off"),
         "challenge_requires_link": ("Нужна ссылка из письма", "review"),
         "challenge_screen_unsupported": ("Challenge не поддержан", "review"),
+        "android_system_anr": ("Сбой Android/эмулятора", "off"),
     }
     return mapping.get(value, ("", ""))
 
@@ -4009,14 +4210,14 @@ def _publish_event_progress_for_state(state: str, payload: dict[str, Any]) -> in
         return 60
     if value == "publishing" and payload:
         return _publish_progress_for_publishing_payload(payload)
-    if value in {"leased", "preparing", "importing_media", "opening_reel_flow", "selecting_media", "publishing", "published"}:
+    if value in {"leased", "preparing", "importing_media", "opening_reel_flow", "selecting_media", "selecting_cover", "publishing", "published"}:
         return _publish_account_progress_for_state(value)
     return 0
 
 
 def _publish_account_sort_group(state: str) -> int:
     value = (state or "").strip().lower()
-    if value in {"generating", "queued_for_publish", "leased", "preparing", "importing_media", "opening_reel_flow", "selecting_media", "publishing"}:
+    if value in {"generating", "queued_for_publish", "leased", "preparing", "importing_media", "opening_reel_flow", "selecting_media", "selecting_cover", "publishing"}:
         return 0
     if value == "queued_for_generation":
         return 1
@@ -4102,6 +4303,7 @@ def _build_publish_dashboard_snapshot(batch_id: int) -> Optional[dict[str, Any]]
         decorated_post = _decorate_instagram_reel_post(
             post,
             snapshots=[dict(item) for item in db.list_instagram_reel_metric_snapshots(int(post["id"]))],
+            include_shadow=True,
         )
         publish_job_id = int(decorated_post.get("publish_job_id") or 0)
         if publish_job_id > 0:
@@ -4168,7 +4370,7 @@ def _build_publish_dashboard_snapshot(batch_id: int) -> Optional[dict[str, Any]]
             if (
                 account_id not in latest_publish_progress
                 and str(row.get("state") or "").strip().lower()
-                in {"leased", "preparing", "importing_media", "opening_reel_flow", "selecting_media", "publishing", "published", "needs_review", "failed"}
+                in {"leased", "preparing", "importing_media", "opening_reel_flow", "selecting_media", "selecting_cover", "publishing", "published", "needs_review", "failed"}
                 and any(
                     key in payload
                     for key in (
@@ -4243,6 +4445,11 @@ def _build_publish_dashboard_snapshot(batch_id: int) -> Optional[dict[str, Any]]
             progress_pct = _publish_live_progress_for_state(90, batch_state, updated_at=account.get("updated_at"))
             phase_label = "Выбор видео"
             phase_detail = str(account.get("job_detail") or account.get("detail") or "").strip() or "Видео выбирается внутри Instagram."
+            phase_step_key = "instagram_publish"
+        elif batch_state == "selecting_cover":
+            progress_pct = _publish_live_progress_for_state(94, batch_state, updated_at=account.get("updated_at"))
+            phase_label = "Выбор обложки"
+            phase_detail = str(account.get("job_detail") or account.get("detail") or "").strip() or "Instagram подбирает и подтверждает обложку Reel."
             phase_step_key = "instagram_publish"
         elif batch_state == "publishing":
             if publish_payload:
@@ -4357,7 +4564,7 @@ def _build_publish_dashboard_snapshot(batch_id: int) -> Optional[dict[str, Any]]
     else:
         overall_progress_pct = 0
 
-    active_publish_account = next((item for item in account_cards if str(item.get("batch_state") or "") in {"leased", "preparing", "importing_media", "opening_reel_flow", "selecting_media", "publishing"}), None)
+    active_publish_account = next((item for item in account_cards if str(item.get("batch_state") or "") in {"leased", "preparing", "importing_media", "opening_reel_flow", "selecting_media", "selecting_cover", "publishing"}), None)
     queued_publish_account = next((item for item in account_cards if str(item.get("batch_state") or "") == "queued_for_publish"), None)
     generating_account = next((item for item in account_cards if str(item.get("batch_state") or "") == "generating"), None)
     queued_generation_account = next((item for item in account_cards if str(item.get("batch_state") or "") == "queued_for_generation"), None)
@@ -4541,11 +4748,15 @@ def _decorate_publish_account(raw: dict[str, Any]) -> dict[str, Any]:
     row["mail_challenge_label"] = mail_challenge_label
     row["mail_challenge_class"] = mail_challenge_class
     row["mail_challenge_kind_label"] = ACCOUNT_MAIL_CHALLENGE_KIND_LABELS.get(str(row.get("mail_challenge_kind") or "").strip(), "")
+    _decorate_account_policy_meta(row, include_risk=True, include_shadow=True)
     owner_name = str(row.get("owner_worker_name") or "").strip()
     owner_username = str(row.get("owner_worker_username") or "").strip()
     row["owner_label"] = f"{owner_name} (@{owner_username})" if owner_username else (owner_name or "Без работника")
     row["identity_handle"] = _account_identity_handle(row)
-    row["publish_warnings"] = db.publish_account_automation_warnings(row)
+    row["publish_warnings"] = list(row.get("shadow_reasons") or []) if row.get("shadow_status") == "risk" else []
+    row["publish_warnings"].extend(
+        item for item in db.publish_account_automation_warnings(row) if item not in row["publish_warnings"]
+    )
     row["twofa_ready"] = db.account_twofa_automation_ready(row)
     batch_state = str(row.get("state") or "").strip().lower()
     if batch_state:
@@ -4784,6 +4995,19 @@ def _publishing_batch_detail_page_response(
     )
 
 
+def _publish_generator_defaults(batch_id: int, account_id: int) -> dict[str, Any]:
+    profiles = PUBLISH_GENERATOR_PROFILES or [{"topic": "отношения", "style": "живой и контрастный", "messagesCount": 8}]
+    profile = profiles[(int(batch_id) * 31 + int(account_id) * 17) % len(profiles)]
+    return {
+        "topic": str(profile.get("topic") or "отношения"),
+        "style": str(profile.get("style") or "живой и контрастный"),
+        "messagesCount": max(6, int(profile.get("messagesCount") or 8)),
+        "dry_run": False,
+        "simulate_video_fail": False,
+        "async": False,
+    }
+
+
 def _build_publish_generation_payload(
     batch_id: int,
     *,
@@ -4821,14 +5045,7 @@ def _build_publish_generation_payload(
         "shared_secret": PUBLISH_SHARED_SECRET,
         "factory_timeout_seconds": max(30, int(PUBLISH_FACTORY_TIMEOUT_SECONDS or 0)),
         "staging_dir": str(batch_dir),
-        "generator_defaults": {
-            "topic": "отношения",
-            "style": "милый + дерзкий",
-            "messagesCount": 10,
-            "dry_run": False,
-            "simulate_video_fail": False,
-            "async": False,
-        },
+        "generator_defaults": _publish_generator_defaults(int(batch_id), int(account_id)),
         "accounts": [target_account],
     }
     return payload, batch_dir, target_account
@@ -5624,6 +5841,56 @@ def account_launch_instagram(
     return RedirectResponse(url=_build_instagram_helper_open_url(str(created["ticket"])), status_code=HTTP_303_SEE_OTHER)
 
 
+@app.post("/accounts/{account_id}/check/instagram-account-status")
+def account_check_instagram_account_status(
+    request: Request,
+    account_id: int,
+    return_to: Optional[str] = Form(None),
+    _: None = Depends(require_auth),
+):
+    account = db.get_account(int(account_id))
+    if account is None:
+        return _account_detail_page_response(
+            request,
+            account_id=int(account_id),
+            return_to=return_to,
+            error="Аккаунт не найден",
+            status_code=404,
+        )
+    if not HELPER_API_KEY:
+        return _account_detail_page_response(
+            request,
+            account_id=int(account_id),
+            return_to=return_to,
+            error="HELPER_API_KEY не настроен. Автопроверка рекомендаций пока недоступна.",
+            status_code=503,
+        )
+    if str(account["type"] or "").strip().lower() != "instagram":
+        return _account_detail_page_response(
+            request,
+            account_id=int(account_id),
+            return_to=return_to,
+            error="Проверка рекомендаций доступна только для Instagram.",
+            status_code=400,
+        )
+    if not str(account["account_login"] or "").strip() or not str(account["account_password"] or "").strip():
+        return _account_detail_page_response(
+            request,
+            account_id=int(account_id),
+            return_to=return_to,
+            error="Для проверки рекомендаций нужны логин и пароль аккаунта.",
+            status_code=400,
+        )
+
+    created = db.create_helper_launch_ticket(
+        account_id=int(account_id),
+        target="instagram_account_status_check",
+        created_by_admin=ADMIN_USER,
+        ttl_seconds=HELPER_TICKET_TTL_SECONDS,
+    )
+    return RedirectResponse(url=_build_instagram_helper_open_url(str(created["ticket"])), status_code=HTTP_303_SEE_OTHER)
+
+
 @app.post("/accounts/{account_id}/publish/latest-reel")
 def account_publish_latest_reel(
     request: Request,
@@ -5662,6 +5929,15 @@ def account_publish_latest_reel(
             account_id=int(account_id),
             return_to=return_to,
             error="Для публикации нужны логин и пароль аккаунта.",
+            status_code=400,
+        )
+    readiness_issues = db.publish_account_readiness_issues(dict(account))
+    if readiness_issues:
+        return _account_detail_page_response(
+            request,
+            account_id=int(account_id),
+            return_to=return_to,
+            error=" ".join(item for item in readiness_issues if item),
             status_code=400,
         )
 
@@ -5904,7 +6180,9 @@ def helper_account_instagram_status_update(
         return JSONResponse({"detail": "Invalid status"}, status_code=400)
 
     detail = str(payload.get("detail") or "").strip()
-    db.update_account_instagram_launch_state(int(account_id), status_value, detail)
+    session_mode = str(payload.get("session_mode") or "").strip() or None
+    serial = str(payload.get("emulator_serial") or payload.get("serial") or "").strip() or None
+    db.update_account_instagram_launch_state(int(account_id), status_value, detail, session_mode=session_mode, serial=serial)
     mail_challenge_payload = payload.get("mail_challenge")
     if isinstance(mail_challenge_payload, dict) and mail_challenge_payload:
         try:
@@ -5921,6 +6199,50 @@ def helper_account_instagram_status_update(
             )
         except Exception:
             logger.warning("helper_mail_challenge_state_rejected: account_id=%s payload=%s", int(account_id), mail_challenge_payload)
+    return JSONResponse(
+        {
+            "ok": True,
+            "account_id": int(account_id),
+            "handle": _account_identity_handle(dict(account)),
+            "status": status_value,
+        }
+    )
+
+
+@app.post("/api/helper/accounts/{account_id}/instagram-account-status")
+def helper_account_instagram_account_status_update(
+    account_id: int,
+    payload: dict = Body(...),
+    _: None = Depends(require_helper_api_key),
+):
+    account = db.get_account(int(account_id))
+    if account is None:
+        return JSONResponse({"detail": "Account not found"}, status_code=404)
+
+    requested_handle = str(payload.get("handle") or "").strip()
+    if requested_handle and not _account_matches_handle(dict(account), requested_handle):
+        return JSONResponse({"detail": "Account handle mismatch"}, status_code=409)
+
+    try:
+        status_value = db.normalize_account_status_auto(str(payload.get("status") or "unknown"))
+    except ValueError:
+        return JSONResponse({"detail": "Invalid status"}, status_code=400)
+
+    checked_at_raw = payload.get("checked_at")
+    try:
+        checked_at = int(checked_at_raw or time.time())
+    except Exception:
+        return JSONResponse({"detail": "Invalid checked_at"}, status_code=400)
+
+    detail = str(payload.get("detail") or "").strip()
+    diagnostics_path = str(payload.get("diagnostics_path") or "").strip()
+    db.update_account_instagram_account_status_auto(
+        int(account_id),
+        status_value,
+        detail,
+        checked_at=checked_at,
+        diagnostics_path=diagnostics_path,
+    )
     return JSONResponse(
         {
             "ok": True,
@@ -5952,7 +6274,16 @@ def helper_account_instagram_publish_status_update(
 
     detail = str(payload.get("detail") or "").strip()
     last_file = str(payload.get("last_file") or "").strip()
-    db.update_account_instagram_publish_state(int(account_id), status_value, detail, last_file=last_file)
+    session_mode = str(payload.get("session_mode") or "").strip() or None
+    serial = str(payload.get("emulator_serial") or payload.get("serial") or "").strip() or None
+    db.update_account_instagram_publish_state(
+        int(account_id),
+        status_value,
+        detail,
+        last_file=last_file,
+        session_mode=session_mode,
+        serial=serial,
+    )
     if status_value == "published":
         helper_ticket = str(payload.get("helper_ticket") or "").strip()
         if helper_ticket:
@@ -5968,6 +6299,12 @@ def helper_account_instagram_publish_status_update(
                     "matched_slot": payload.get("matched_slot"),
                     "matched_age_seconds": payload.get("matched_age_seconds"),
                     "published_at": payload.get("published_at"),
+                    "video_sha256": str(payload.get("video_sha256") or "").strip(),
+                    "cover_fingerprint": str(payload.get("cover_fingerprint") or "").strip(),
+                    "caption_hash": str(payload.get("caption_hash") or "").strip(),
+                    "caption_text": str(payload.get("caption_text") or "").strip(),
+                    "content_fingerprint": str(payload.get("content_fingerprint") or "").strip(),
+                    "content_cluster": str(payload.get("content_cluster") or "").strip(),
                 },
             )
     return JSONResponse(
@@ -6257,6 +6594,13 @@ def publishing_job_status_update(
         "timestamp_readable",
         "diagnostics_path",
         "timings",
+        "session_mode",
+        "video_sha256",
+        "cover_fingerprint",
+        "caption_hash",
+        "caption_text",
+        "content_fingerprint",
+        "content_cluster",
     ):
         if key in payload:
             publish_payload[key] = payload.get(key)
@@ -6397,6 +6741,7 @@ def account_create(
     proxy: Optional[str] = Form(None),
     twofa: Optional[str] = Form(None),
     instagram_emulator_serial: Optional[str] = Form(None),
+    account_status_manual: Optional[str] = Form("unknown"),
     rotation_state: Optional[str] = Form("review"),
     views_state: Optional[str] = Form("unknown"),
     q: Optional[str] = Form(None),
@@ -6532,6 +6877,7 @@ def account_create(
             rotation_state=rotation_state_value,
             views_state=views_state_value,
             owner_worker_id=owner_id,
+            account_status_manual=account_status_manual,
             default_link_name=f"{ACCOUNT_TYPE_LABELS.get(account_type, account_type.title())} @{(username or '').strip() or 'account'}",
             target_url=f"https://t.me/{BOT_USERNAME}?start={{code}}",
         )
@@ -6736,6 +7082,7 @@ def account_update(
     proxy: Optional[str] = Form(None),
     twofa: Optional[str] = Form(None),
     instagram_emulator_serial: Optional[str] = Form(None),
+    account_status_manual: Optional[str] = Form("unknown"),
     rotation_state: Optional[str] = Form("review"),
     views_state: Optional[str] = Form("unknown"),
     owner_worker_id: Optional[str] = Form(None),
@@ -6832,6 +7179,7 @@ def account_update(
             proxy=proxy,
             twofa=twofa,
             instagram_emulator_serial=instagram_emulator_serial,
+            account_status_manual=account_status_manual,
             rotation_state=rotation_state_value,
             views_state=views_state_value,
             owner_worker_id=owner_id,

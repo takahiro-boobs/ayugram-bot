@@ -1,4 +1,5 @@
 import importlib
+import hashlib
 import json
 import os
 import re
@@ -198,9 +199,10 @@ class PublishingBatchTests(unittest.TestCase):
         self.assertEqual(payload["callback_url"], "http://testserver/api/internal/publishing/n8n")
         self.assertEqual(payload["progress_callback_url"], "http://testserver/api/internal/publishing/n8n")
         self.assertEqual(payload["factory_timeout_seconds"], 900)
-        self.assertEqual(payload["generator_defaults"]["topic"], "отношения")
-        self.assertEqual(payload["generator_defaults"]["style"], "милый + дерзкий")
-        self.assertEqual(payload["generator_defaults"]["messagesCount"], 10)
+        expected_defaults = self.app_module._publish_generator_defaults(batch_id, acc1)
+        self.assertEqual(payload["generator_defaults"]["topic"], expected_defaults["topic"])
+        self.assertEqual(payload["generator_defaults"]["style"], expected_defaults["style"])
+        self.assertEqual(payload["generator_defaults"]["messagesCount"], expected_defaults["messagesCount"])
         self.assertFalse(payload["generator_defaults"]["async"])
         batch_accounts = self._batch_accounts(batch_id)
         self.assertEqual([int(row["account_id"]) for row in batch_accounts], [acc1, acc2])
@@ -1195,7 +1197,7 @@ class PublishingBatchTests(unittest.TestCase):
         page = self.client.get("/publishing/start")
         self.assertEqual(page.status_code, 200)
         self.assertIn("blocked_user", page.text)
-        self.assertNotIn("2FA не заполнен", page.text)
+        self.assertIn("2FA не заполнен", page.text)
 
     def test_accounts_without_mail_automation_stay_ready_and_confirm_page_shows_warning(self) -> None:
         created = self.db.create_account_with_default_link(
@@ -1221,7 +1223,7 @@ class PublishingBatchTests(unittest.TestCase):
         start_page = self.client.get("/publishing/start")
         self.assertEqual(start_page.status_code, 200)
         self.assertIn("mail_warn_user", start_page.text)
-        self.assertNotIn("Почта не готова для auto-code", start_page.text)
+        self.assertIn("Почта не готова для auto-code", start_page.text)
         self.assertNotIn("Для IMAP-режима не заполнен пароль почты.", start_page.text)
 
         confirm_page = self.client.post(
@@ -1261,7 +1263,7 @@ class PublishingBatchTests(unittest.TestCase):
         self.assertIn("mail_placeholder_user", start_page.text)
         self.assertNotIn("Почта не задана", start_page.text)
         self.assertNotIn("Не заполнен email аккаунта.", start_page.text)
-        self.assertNotIn("Почта не готова для auto-code", start_page.text)
+        self.assertIn("Почта не готова для auto-code", start_page.text)
 
     def test_publishing_start_requires_confirmed_instagram_login(self) -> None:
         created = self.db.create_account_with_default_link(
@@ -2313,6 +2315,245 @@ class PublishingBatchTests(unittest.TestCase):
         self.assertEqual(updated["collection_stage"], "t30m")
         self.assertEqual(updated["collection_state"], "scheduled")
         self.assertEqual(int(updated["next_collect_at"]), 2600)
+
+    def test_manual_account_status_blocks_fully_auto_publish_batch(self) -> None:
+        account_id = self._create_instagram_account("manual-status", "manual_status", "emulator-5554")
+        account = dict(self.db.get_account(account_id))
+
+        changed = self.db.update_account(
+            account_id,
+            account["type"],
+            account["account_login"],
+            account["account_password"],
+            account["username"],
+            account["email"],
+            account["email_password"],
+            account["proxy"],
+            account["twofa"],
+            account["mail_provider"],
+            account["mail_auth_json"],
+            "working",
+            account["views_state"],
+            account["owner_worker_id"],
+            account["instagram_emulator_serial"],
+            "limited_recommendations",
+        )
+        self.assertTrue(changed)
+
+        refreshed = dict(self.db.get_account(account_id))
+        self.assertEqual(refreshed["account_status_manual"], "limited_recommendations")
+        issues = self.db.publish_account_readiness_issues(refreshed)
+        self.assertTrue(any("limited recommendations" in item.lower() for item in issues))
+
+        with self.assertRaisesRegex(ValueError, "limited recommendations"):
+            self.db.create_publish_batch([account_id], created_by_admin="admin", workflow_key="default")
+
+    def test_auto_account_status_limited_recommendations_blocks_fully_auto_publish_batch(self) -> None:
+        account_id = self._create_instagram_account("auto-status", "auto_status", "emulator-5554")
+
+        changed = self.db.update_account_instagram_account_status_auto(
+            account_id,
+            "limited_recommendations",
+            "Helper found limited recommendations.",
+            checked_at=1710000000,
+            diagnostics_path="/tmp/account-status.png",
+        )
+        self.assertTrue(changed)
+
+        snapshot = self.db.get_account_shadow_snapshot(account_id)
+        self.assertEqual(snapshot["shadow_status"], "shadowban_suspected")
+        self.assertTrue(snapshot["shadow_confirmed_by_instagram"])
+
+        refreshed = dict(self.db.get_account(account_id))
+        issues = self.db.publish_account_readiness_issues(refreshed)
+        self.assertTrue(any("ограничение рекомендаций" in item.lower() for item in issues))
+
+        with self.assertRaisesRegex(ValueError, "ограничение рекомендаций|limited recommendations"):
+            self.db.create_publish_batch([account_id], created_by_admin="admin", workflow_key="default")
+
+    def test_auto_account_status_inconclusive_warns_but_does_not_block_publish_batch(self) -> None:
+        account_id = self._create_instagram_account("auto-risk", "auto_risk", "emulator-5554")
+        self.db.update_account_instagram_account_status_auto(
+            account_id,
+            "inconclusive",
+            "Helper could not classify the surface.",
+            checked_at=1710000200,
+        )
+
+        snapshot = self.db.get_account_shadow_snapshot(account_id)
+        self.assertEqual(snapshot["shadow_status"], "risk")
+        self.assertFalse(snapshot["shadow_confirmed_by_instagram"])
+
+        refreshed = dict(self.db.get_account(account_id))
+        self.assertEqual(self.db.publish_account_readiness_issues(refreshed), [])
+
+        batch = self.db.create_publish_batch([account_id], created_by_admin="admin", workflow_key="default")
+        dashboard = self._progress_snapshot(int(batch["batch_id"]))
+        self.assertEqual(dashboard["accounts"][0]["shadow_status"], "risk")
+        self.assertTrue(dashboard["accounts"][0]["shadow_reasons"])
+
+    def test_reel_shadow_snapshot_stays_risk_without_comparable_baseline(self) -> None:
+        account_id = self._create_instagram_account("reel-risk", "reel_risk", "emulator-5554")
+        post = self.db.upsert_instagram_reel_post_for_standalone(
+            account_id=account_id,
+            helper_ticket="shadow-risk-ticket-1",
+            source_name="risk.mp4",
+            source_path="/tmp/risk.mp4",
+            payload={"published_at": 100, "helper_ticket": "shadow-risk-ticket-1"},
+        )
+        self.db.record_instagram_reel_metric_snapshot(
+            int(post["id"]),
+            window_key="t30m",
+            status="ok",
+            collected_at=2000,
+            accounts_reached_count=90,
+        )
+
+        snapshot = self.db.get_instagram_reel_shadow_snapshot(int(post["id"]))
+        self.assertEqual(snapshot["shadow_status"], "risk")
+        self.assertTrue(snapshot["insufficient_data"])
+        self.assertEqual(snapshot["comparable_window"], "t30m")
+
+    def test_reel_shadow_snapshot_escalates_with_comparable_baseline_collapse(self) -> None:
+        account_id = self._create_instagram_account("reel-red", "reel_red", "emulator-5554")
+        baseline_reaches = [1200, 1000]
+        for index, reach in enumerate(baseline_reaches, start=1):
+            post = self.db.upsert_instagram_reel_post_for_standalone(
+                account_id=account_id,
+                helper_ticket=f"shadow-red-ticket-{index}",
+                source_name=f"baseline-{index}.mp4",
+                source_path=f"/tmp/baseline-{index}.mp4",
+                payload={"published_at": index * 100, "helper_ticket": f"shadow-red-ticket-{index}"},
+            )
+            self.db.record_instagram_reel_metric_snapshot(
+                int(post["id"]),
+                window_key="t30m",
+                status="ok",
+                collected_at=3000 + index,
+                accounts_reached_count=max(1, reach // 4),
+            )
+            self.db.record_instagram_reel_metric_snapshot(
+                int(post["id"]),
+                window_key="t6h",
+                status="ok",
+                collected_at=4000 + index,
+                accounts_reached_count=max(1, reach // 2),
+            )
+            self.db.record_instagram_reel_metric_snapshot(
+                int(post["id"]),
+                window_key="t24h",
+                status="ok",
+                collected_at=5000 + index,
+                accounts_reached_count=reach,
+            )
+
+        latest_post = self.db.upsert_instagram_reel_post_for_standalone(
+            account_id=account_id,
+            helper_ticket="shadow-red-ticket-latest",
+            source_name="latest.mp4",
+            source_path="/tmp/latest.mp4",
+            payload={"published_at": 400, "helper_ticket": "shadow-red-ticket-latest"},
+        )
+        self.db.record_instagram_reel_metric_snapshot(
+            int(latest_post["id"]),
+            window_key="t30m",
+            status="ok",
+            collected_at=7000,
+            accounts_reached_count=60,
+        )
+        self.db.record_instagram_reel_metric_snapshot(
+            int(latest_post["id"]),
+            window_key="t6h",
+            status="ok",
+            collected_at=8000,
+            accounts_reached_count=90,
+        )
+        self.db.record_instagram_reel_metric_snapshot(
+            int(latest_post["id"]),
+            window_key="t24h",
+            status="ok",
+            collected_at=9000,
+            accounts_reached_count=120,
+        )
+
+        snapshot = self.db.get_instagram_reel_shadow_snapshot(int(latest_post["id"]))
+        self.assertEqual(snapshot["shadow_status"], "shadowban_suspected")
+        self.assertFalse(snapshot["insufficient_data"])
+        self.assertEqual(snapshot["comparable_window"], "t24h")
+        self.assertLess(float(snapshot["reach_ratio"] or 1.0), 0.2)
+
+    def test_helper_account_status_callback_persists_and_renders_account_detail(self) -> None:
+        account_id = self._create_instagram_account("callback-status", "callback_status", "emulator-5554")
+        headers = {"X-Helper-Api-Key": os.environ["HELPER_API_KEY"]}
+
+        response = self.client.post(
+            f"/api/helper/accounts/{account_id}/instagram-account-status",
+            json={
+                "status": "limited_recommendations",
+                "detail": "Instagram shows limited recommendations.",
+                "checked_at": 1710000300,
+                "diagnostics_path": "/tmp/account-status.png",
+            },
+            headers=headers,
+        )
+        self.assertEqual(response.status_code, 200)
+
+        snapshot = self.db.get_account_shadow_snapshot(account_id)
+        self.assertTrue(snapshot["shadow_confirmed_by_instagram"])
+        self.assertEqual(snapshot["account_status_auto"], "limited_recommendations")
+        account = dict(self.db.get_account(account_id))
+        self.assertEqual(account["account_status_auto"], "limited_recommendations")
+        self.assertEqual(account["account_status_auto_diagnostics_path"], "/tmp/account-status.png")
+
+        detail = self.client.get(f"/accounts/{account_id}")
+        self.assertEqual(detail.status_code, 200)
+        self.assertIn("Auto limited recommendations", detail.text)
+        self.assertIn("/tmp/account-status.png", detail.text)
+        self.assertIn("Shadowban suspected", detail.text)
+
+    def test_duplicate_video_hash_blocks_second_publish_job(self) -> None:
+        account_id = self._create_instagram_account("dup-login", "dup_user", "emulator-5554")
+        stage_path = Path(self.temp_dir.name) / "duplicate_clip.mp4"
+        payload_hash = hashlib.sha256(b"duplicate-content").hexdigest()
+        stage_path.write_bytes(b"duplicate-content")
+
+        first_batch = self.db.create_publish_batch([account_id], created_by_admin="admin", workflow_key="default")
+        first_artifact = self.db.register_publish_artifact(first_batch["batch_id"], path=str(stage_path), filename=stage_path.name)
+        self.assertEqual(first_artifact["jobs_created"], 1)
+        self.assertEqual(first_artifact["jobs_blocked"], 0)
+
+        self.db.update_publish_job_state(
+            int(first_artifact["job_ids"][0]),
+            state="published",
+            detail="ok",
+            payload={"published_at": 1, "video_sha256": payload_hash},
+        )
+
+        second_batch = self.db.create_publish_batch([account_id], created_by_admin="admin", workflow_key="default")
+        second_artifact = self.db.register_publish_artifact(second_batch["batch_id"], path=str(stage_path), filename=stage_path.name)
+        self.assertEqual(second_artifact["jobs_created"], 0)
+        self.assertEqual(second_artifact["jobs_blocked"], 1)
+
+        second_job = dict(self.db.list_publish_jobs(second_batch["batch_id"])[0])
+        self.assertEqual(second_job["state"], "canceled")
+        self.assertIn("уже публиковался", second_job["policy_reason"])
+
+    def test_launch_state_stores_session_mode_and_serial(self) -> None:
+        account_id = self._create_audit_account("session-login", "session_user", serial="emulator-5554")
+
+        changed = self.db.update_account_instagram_launch_state(
+            account_id,
+            "login_submitted",
+            "Сессия переиспользована.",
+            session_mode="session_reuse",
+            serial="emulator-5554",
+        )
+        self.assertTrue(changed)
+
+        account = dict(self.db.get_account(account_id))
+        self.assertEqual(account["last_session_mode"], "session_reuse")
+        self.assertEqual(account["last_login_serial"], "emulator-5554")
+        self.assertGreater(int(account["last_stable_login_at"] or 0), 0)
 
 
 if __name__ == "__main__":

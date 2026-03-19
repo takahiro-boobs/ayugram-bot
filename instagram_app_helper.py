@@ -486,6 +486,8 @@ def _push_account_launch_status(
     handle: str,
     *,
     mail_challenge: Optional[dict[str, Any]] = None,
+    session_mode: str = "",
+    emulator_serial: str = "",
 ) -> None:
     if not HELPER_API_KEY:
         return
@@ -494,6 +496,8 @@ def _push_account_launch_status(
             "state": (status or "").strip(),
             "detail": (detail or "").strip(),
             "handle": (handle or "").strip(),
+            "session_mode": (session_mode or "").strip(),
+            "emulator_serial": (emulator_serial or "").strip(),
         }
         if isinstance(mail_challenge, dict) and mail_challenge:
             payload["mail_challenge"] = mail_challenge
@@ -521,6 +525,8 @@ def _push_account_publish_status(
     source_path: str = "",
     helper_ticket: str = "",
     telemetry: Optional[dict[str, Any]] = None,
+    session_mode: str = "",
+    emulator_serial: str = "",
 ) -> None:
     if not HELPER_API_KEY:
         return
@@ -532,6 +538,8 @@ def _push_account_publish_status(
             "last_file": (last_file or "").strip(),
             "source_path": (source_path or "").strip(),
             "helper_ticket": (helper_ticket or "").strip(),
+            "session_mode": (session_mode or "").strip(),
+            "emulator_serial": (emulator_serial or "").strip(),
         }
         if isinstance(telemetry, dict):
             for key, value in telemetry.items():
@@ -554,6 +562,38 @@ def _push_account_publish_status(
             last_file,
             exc,
         )
+
+
+def _push_account_status_auto_result(
+    account_id: int,
+    status: str,
+    detail: str,
+    handle: str,
+    *,
+    checked_at: Optional[int] = None,
+    diagnostics_path: str = "",
+) -> None:
+    if not HELPER_API_KEY:
+        return
+    try:
+        response = http_utils.request_with_retry(
+            "POST",
+            f"{SLEZHKA_ADMIN_BASE_URL}/api/helper/accounts/{int(account_id)}/instagram-account-status",
+            headers={"X-Helper-Api-Key": HELPER_API_KEY},
+            json={
+                "status": (status or "").strip(),
+                "detail": (detail or "").strip(),
+                "handle": (handle or "").strip(),
+                "checked_at": int(checked_at or time.time()),
+                "diagnostics_path": (diagnostics_path or "").strip(),
+            },
+            timeout=25,
+            allow_retry=True,
+            log_context="helper_push_account_status_auto",
+        )
+        response.raise_for_status()
+    except Exception as exc:
+        logger.warning("account_status_auto_push_failed: account_id=%s status=%s error=%s", account_id, status, exc)
 
 
 def _resolve_account_mail_challenge(
@@ -713,6 +753,20 @@ def _publish_runner_downloads_dir() -> Path:
     root = Path(PUBLISH_RUNNER_DOWNLOADS_DIR).expanduser()
     root.mkdir(parents=True, exist_ok=True)
     return root
+
+
+def _file_sha256(path_value: str) -> str:
+    path = Path(str(path_value or "").strip())
+    if not path.exists() or not path.is_file():
+        return ""
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while True:
+            chunk = handle.read(1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _config_warnings() -> list[str]:
@@ -1206,6 +1260,44 @@ def _dismiss_system_dialogs(device: Optional[Any], serial: str, timeout_seconds:
             time.sleep(1.2)
             continue
         break
+
+
+def _android_system_anr_dialog_visible(device: Any, serial: str, *, timeout_seconds: float = 1.0) -> bool:
+    if callable(device) or hasattr(device, "dump_hierarchy"):
+        popup = _ig_find_first(
+            device,
+            [
+                {"textMatches": "(?i)(process .+ isn[’']?t responding|app isn[’']?t responding|application not responding)"},
+                {"textMatches": "(?i)(процесс .+ не отвечает|приложение не отвечает)"},
+            ],
+            timeout_seconds=timeout_seconds,
+        )
+        if popup is not None:
+            return True
+    return bool(_system_anr_windows(serial))
+
+
+def _android_system_anr_detail(serial: str) -> str:
+    anr_windows = _system_anr_windows(serial)
+    if anr_windows:
+        raw_window = str(anr_windows[0]).strip()
+        marker = "Application Not Responding:"
+        if marker in raw_window:
+            raw_window = raw_window.split(marker, 1)[1].strip()
+        if raw_window:
+            return (
+                f"Android показал системный ANR-диалог ({raw_window}). "
+                "Это сбой эмулятора/системы, а не Instagram challenge."
+            )
+    return "Android показал системный ANR-диалог. Это сбой эмулятора/системы, а не Instagram challenge."
+
+
+def _retryable_android_system_error(detail: str, reason_code: str = "") -> bool:
+    reason_value = (reason_code or "").strip().lower()
+    if reason_value == "android_system_anr":
+        return True
+    detail_value = (detail or "").strip().lower()
+    return "android показал системный anr-диалог" in detail_value or "system isn't responding" in detail_value
 
 
 def _instagram_app_rate_dialog_visible(device: Any) -> bool:
@@ -1718,6 +1810,23 @@ def _node_center(obj: Any) -> Optional[tuple[int, int]]:
         bottom = int(bounds.get("bottom") or 0)
         if right > left and bottom > top:
             return ((left + right) // 2, (top + bottom) // 2)
+    return None
+
+
+def _node_bounds(obj: Any) -> Optional[tuple[int, int, int, int]]:
+    try:
+        info = getattr(obj, "info", {}) or {}
+    except Exception:
+        info = {}
+    bounds = info.get("bounds")
+    if not isinstance(bounds, dict):
+        return None
+    left = int(bounds.get("left") or 0)
+    top = int(bounds.get("top") or 0)
+    right = int(bounds.get("right") or 0)
+    bottom = int(bounds.get("bottom") or 0)
+    if right > left and bottom > top:
+        return (left, top, right, bottom)
     return None
 
 
@@ -2793,6 +2902,126 @@ def _screen_text_snapshot(device: Any) -> list[dict[str, Any]]:
                 }
             )
     return snapshot
+
+
+def _screen_text_values(device: Any) -> list[str]:
+    return [str(entry.get("value") or "").strip() for entry in _screen_text_snapshot(device) if str(entry.get("value") or "").strip()]
+
+
+def _tap_screen_text_match(device: Any, serial: str, patterns: list[str]) -> bool:
+    for entry in _screen_text_snapshot(device):
+        value = str(entry.get("value") or "").strip()
+        if not value:
+            continue
+        if not any(re.search(pattern, value, re.IGNORECASE) for pattern in patterns):
+            continue
+        center = _snapshot_entry_center(entry)
+        if center is None:
+            continue
+        _adb_tap(serial, center[0], center[1])
+        time.sleep(1.2)
+        return True
+    return False
+
+
+def _scroll_and_tap_instagram_text(
+    device: Any,
+    serial: str,
+    *,
+    patterns: list[str],
+    timeout_seconds: float = 14.0,
+) -> bool:
+    selectors: list[dict[str, Any]] = []
+    for pattern in patterns:
+        selectors.append({"textMatches": pattern})
+        selectors.append({"descriptionMatches": pattern})
+    width, height = _device_display_size(device)
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        if _ig_click_first(device, selectors, timeout_seconds=0.6, serial=serial):
+            time.sleep(1.2)
+            return True
+        if _tap_screen_text_match(device, serial, patterns):
+            return True
+        _adb_swipe(serial, width // 2, int(height * 0.82), width // 2, int(height * 0.28), 360)
+        time.sleep(0.9)
+    return _ig_click_first(device, selectors, timeout_seconds=0.4, serial=serial) or _tap_screen_text_match(device, serial, patterns)
+
+
+def _classify_instagram_account_status_texts(texts: list[str]) -> tuple[str, str]:
+    normalized = [str(text or "").strip() for text in texts if str(text or "").strip()]
+    joined = "\n".join(normalized)
+    limited_patterns = [
+        r"limited recommendations",
+        r"can'?t be recommended",
+        r"cannot be recommended",
+        r"not eligible for recommendation",
+        r"recommendation.*limited",
+        r"ограничени[ея].*рекомендац",
+        r"не может быть рекоменд",
+        r"не рекоменду",
+        r"контент.*не рекоменд",
+    ]
+    ok_patterns = [
+        r"can be recommended",
+        r"eligible for recommendation",
+        r"nothing affecting",
+        r"good standing",
+        r"what can be recommended",
+        r"можно рекоменд",
+        r"нет ограничени",
+        r"нарушени[йя].*нет",
+        r"все публикации.*можно",
+    ]
+    surface_patterns = [
+        r"account status",
+        r"recommendation",
+        r"what can be recommended",
+        r"status",
+        r"статус аккаунта",
+        r"рекомендац",
+        r"что можно рекомендовать",
+    ]
+    if any(re.search(pattern, joined, re.IGNORECASE) for pattern in limited_patterns):
+        return "limited_recommendations", "Instagram показывает ограничение рекомендаций."
+    if any(re.search(pattern, joined, re.IGNORECASE) for pattern in ok_patterns):
+        return "ok", "Instagram показывает, что рекомендации доступны."
+    if any(re.search(pattern, joined, re.IGNORECASE) for pattern in surface_patterns):
+        return "inconclusive", "Экран рекомендаций открыт, но verdict не распознан."
+    return "inconclusive", "Не удалось открыть или уверенно распознать экран рекомендаций."
+
+
+def _open_instagram_recommendation_surface(device: Any, serial: str, timeout_seconds: float = 18.0) -> bool:
+    settings_patterns = [
+        r"settings and privacy",
+        r"settings and activity",
+        r"settings",
+        r"настройки и конфиденциальность",
+        r"настройки и действия",
+        r"настройки",
+    ]
+    account_status_patterns = [
+        r"account status",
+        r"recommendation status",
+        r"what can be recommended",
+        r"recommendation eligibility",
+        r"статус аккаунта",
+        r"статус рекомендац",
+        r"что можно рекомендовать",
+        r"рекомендац",
+    ]
+    if not _open_profile_tab(device, serial, timeout_seconds=min(timeout_seconds, 8.0)):
+        return False
+    if not _open_profile_menu(device, serial, timeout_seconds=min(timeout_seconds, 6.0)):
+        return False
+    if _scroll_and_tap_instagram_text(device, serial, patterns=account_status_patterns, timeout_seconds=4.0):
+        return True
+    if _scroll_and_tap_instagram_text(device, serial, patterns=settings_patterns, timeout_seconds=4.0):
+        if _scroll_and_tap_instagram_text(device, serial, patterns=account_status_patterns, timeout_seconds=8.0):
+            return True
+    texts = _screen_text_values(device)
+    status, _ = _classify_instagram_account_status_texts(texts)
+    return status != "inconclusive" or any("recommend" in text.casefold() or "рекомендац" in text.casefold() for text in texts)
 
 
 def _viewer_text_candidates(device: Any) -> list[str]:
@@ -4547,29 +4776,103 @@ def _press_instagram_challenge_continue(device: Any, serial: str) -> bool:
     return False
 
 
-def _select_instagram_email_challenge_option(device: Any, serial: str) -> tuple[bool, str]:
-    if _tap_instagram_challenge_email_option(device, serial):
-        time.sleep(0.8)
-        _press_instagram_challenge_continue(device, serial)
-        time.sleep(1.5)
-        return True, "На challenge-экране выбран email-канал."
+def _instagram_challenge_delivery_error_detail(device: Any) -> str:
+    if device is None or not callable(device):
+        return ""
+    selectors = [
+        {"textMatches": "(?i)(sorry, something went wrong|something went wrong|please try again|try again later)"},
+        {"textMatches": "(?i)(что-то пошло не так|попробуйте ещё раз|попробуйте еще раз|повторите попытку позже)"},
+    ]
+    popup = _ig_find_first(device, selectors, timeout_seconds=0.6)
+    if popup is None:
+        return ""
+    popup_text = _compact_ui_text(_obj_text(popup))
+    if not popup_text:
+        popup_text = "Sorry, something went wrong. Please try again."
+    return (
+        f"Instagram показал ошибку доставки challenge: {popup_text}. "
+        "Код или ссылка на email не были отправлены."
+    )
 
+
+def _dismiss_instagram_challenge_delivery_error(device: Any, serial: str) -> str:
+    detail = _instagram_challenge_delivery_error_detail(device)
+    if not detail:
+        return ""
+    ok_selectors = [
+        {"textMatches": "(?i)^ok$"},
+        {"textMatches": "(?i)^(ок|хорошо)$"},
+        {"descriptionMatches": "(?i)^ok$"},
+        {"resourceId": "android:id/button1"},
+    ]
+    if not _click_first(device, ok_selectors, timeout_seconds=0.8, serial=serial):
+        _adb_shell(serial, "input", "keyevent", "4", timeout=10, check=False)
+    time.sleep(0.8)
+    return detail
+
+
+def _await_instagram_challenge_delivery_error(
+    device: Any,
+    serial: str,
+    *,
+    timeout_seconds: float,
+) -> str:
+    deadline = time.monotonic() + max(0.0, float(timeout_seconds or 0.0))
+    while True:
+        detail = _dismiss_instagram_challenge_delivery_error(device, serial)
+        if detail:
+            return detail
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        time.sleep(min(0.6, remaining))
+    return ""
+
+
+def _select_instagram_email_challenge_option(device: Any, serial: str) -> tuple[bool, str]:
     alternate_selectors = [
         {"textMatches": "(?i)(try another way|choose another way|use a different method|another way)"},
         {"textMatches": "(?i)(i didn't get the code|didn't get the code|get a new code)"},
         {"textMatches": "(?i)(попробовать другой способ|другой способ|не приш[её]л код|получить новый код)"},
     ]
-    if not _ig_click_first(device, alternate_selectors, timeout_seconds=1.2, serial=serial):
-        return False, ""
-
-    logger.info("challenge_email_option_tapped: serial=%s action=alternate", serial)
-    time.sleep(1.2)
-    if not _tap_instagram_challenge_email_option(device, serial):
-        return False, ""
-    time.sleep(0.8)
-    _press_instagram_challenge_continue(device, serial)
-    time.sleep(1.5)
-    return True, "Через Try another way выбран email-канал."
+    last_error_detail = ""
+    for attempt in range(3):
+        used_alternate = False
+        if not _tap_instagram_challenge_email_option(device, serial):
+            if not _ig_click_first(device, alternate_selectors, timeout_seconds=1.2, serial=serial):
+                return False, last_error_detail
+            logger.info("challenge_email_option_tapped: serial=%s action=alternate", serial)
+            used_alternate = True
+            time.sleep(1.2)
+            if not _tap_instagram_challenge_email_option(device, serial):
+                return False, last_error_detail
+        time.sleep(0.8)
+        _press_instagram_challenge_continue(device, serial)
+        error_detail = _await_instagram_challenge_delivery_error(
+            device,
+            serial,
+            timeout_seconds=max(2.5, float(MAIL_CHALLENGE_RESEND_WAIT_SECONDS)),
+        )
+        if error_detail:
+            last_error_detail = (
+                f"{error_detail} Instagram несколько раз не смог отправить код или ссылку на email."
+                if attempt >= 2
+                else error_detail
+            )
+            logger.warning(
+                "challenge_email_delivery_failed: serial=%s attempt=%s detail=%s",
+                serial,
+                attempt + 1,
+                error_detail,
+            )
+            if attempt < 2:
+                time.sleep(1.0)
+                continue
+            return False, last_error_detail
+        if used_alternate:
+            return True, "Через Try another way выбран email-канал."
+        return True, "На challenge-экране выбран email-канал."
+    return False, last_error_detail
 
 
 def _open_instagram_approval_link(serial: str, link_url: str) -> str:
@@ -4620,36 +4923,64 @@ def _open_instagram_approval_link(serial: str, link_url: str) -> str:
     raise RuntimeError(f"Не удалось открыть approval link в эмуляторе: {last_output or normalized_link}")
 
 
-def _request_instagram_new_email_code(device: Any, serial: str) -> bool:
+def _request_instagram_new_email_code(device: Any, serial: str) -> tuple[bool, str]:
     primary_selectors = [
         {"textMatches": "(?i)(get a new code|resend code|send a new code|send code again|request a new code)"},
         {"textMatches": "(?i)(i didn't get the code|didn't get the code|try another way)"},
         {"textMatches": "(?i)(получить новый код|отправить код ещё раз|отправить код еще раз|не приш[её]л код|попробовать другой способ)"},
     ]
-    if not _ig_click_first(device, primary_selectors, timeout_seconds=1.5, serial=serial):
-        return False
-    logger.info("mail_code_resend_requested: serial=%s action=primary", serial)
-    time.sleep(1.5)
-
     email_channel_selectors = [
         {"textMatches": "(?i)(email|email code|send email|send to email|by email)"},
         {"textMatches": "(?i)(почт|код на почту|по email|по e-mail)"},
     ]
-    if _ig_click_first(device, email_channel_selectors, timeout_seconds=1.2, serial=serial):
-        logger.info("mail_code_resend_requested: serial=%s action=email_channel", serial)
-        time.sleep(1.0)
-
     confirm_selectors = [
         {"textMatches": "(?i)(continue|confirm|send|done|next|ok)"},
         {"textMatches": "(?i)(продолжить|подтвердить|отправить|готово|далее|ок)"},
     ]
-    if _ig_click_first(device, confirm_selectors, timeout_seconds=0.8, serial=serial):
-        logger.info("mail_code_resend_requested: serial=%s action=confirm", serial)
-    time.sleep(float(MAIL_CHALLENGE_RESEND_WAIT_SECONDS))
-    return True
+    last_error_detail = ""
+    for attempt in range(3):
+        if not _ig_click_first(device, primary_selectors, timeout_seconds=1.5, serial=serial):
+            return False, last_error_detail
+        logger.info("mail_code_resend_requested: serial=%s action=primary attempt=%s", serial, attempt + 1)
+        time.sleep(1.5)
+
+        if _ig_click_first(device, email_channel_selectors, timeout_seconds=1.2, serial=serial):
+            logger.info("mail_code_resend_requested: serial=%s action=email_channel attempt=%s", serial, attempt + 1)
+            time.sleep(1.0)
+
+        if _ig_click_first(device, confirm_selectors, timeout_seconds=0.8, serial=serial):
+            logger.info("mail_code_resend_requested: serial=%s action=confirm attempt=%s", serial, attempt + 1)
+
+        error_detail = _await_instagram_challenge_delivery_error(
+            device,
+            serial,
+            timeout_seconds=max(2.5, float(MAIL_CHALLENGE_RESEND_WAIT_SECONDS)),
+        )
+        if error_detail:
+            last_error_detail = (
+                f"{error_detail} Instagram несколько раз не смог отправить новый код на email."
+                if attempt >= 2
+                else error_detail
+            )
+            logger.warning(
+                "mail_code_resend_failed: serial=%s attempt=%s detail=%s",
+                serial,
+                attempt + 1,
+                error_detail,
+            )
+            if attempt < 2:
+                time.sleep(1.0)
+                continue
+            return False, last_error_detail
+
+        return True, "Instagram принял запрос на отправку нового кода."
+    return False, last_error_detail
 
 
 def _classify_login_challenge_screen_once(device: Any, serial: str) -> tuple[str, str]:
+    if _android_system_anr_dialog_visible(device, serial, timeout_seconds=1.0):
+        return ("system_anr", _android_system_anr_detail(serial))
+
     auth_app_prompt = _ig_find_first(
         device,
         [
@@ -4831,6 +5162,15 @@ def _attempt_mail_challenge_login(
 
     screen_kind, screen_detail = _classify_login_challenge_screen(device, serial)
     delivery_options = _challenge_delivery_option_nodes(device)
+    if screen_kind == "system_anr":
+        snapshot = _mail_challenge_snapshot(
+            status="unsupported",
+            kind="system_dialog",
+            reason_code="android_system_anr",
+            reason_text=screen_detail,
+        )
+        _emit_update("android_system_anr", snapshot["reason_text"], snapshot)
+        return ("helper_error", _join_detail_text(initial_detail, snapshot["reason_text"]), snapshot)
     if screen_kind == "phone_only":
         reason_code = "challenge_manual_recovery_only" if delivery_options["manual_recovery_nodes"] else "challenge_phone_only"
         snapshot = _mail_challenge_snapshot(
@@ -4867,6 +5207,15 @@ def _attempt_mail_challenge_login(
                 )
             screen_kind, screen_detail = _classify_login_challenge_screen(device, serial)
             delivery_options = _challenge_delivery_option_nodes(device)
+            if screen_kind == "system_anr":
+                snapshot = _mail_challenge_snapshot(
+                    status="unsupported",
+                    kind="system_dialog",
+                    reason_code="android_system_anr",
+                    reason_text=screen_detail,
+                )
+                _emit_update("android_system_anr", snapshot["reason_text"], snapshot)
+                return ("helper_error", _join_detail_text(initial_detail, snapshot["reason_text"]), snapshot)
             if screen_kind == "phone_only":
                 reason_code = "challenge_manual_recovery_only" if delivery_options["manual_recovery_nodes"] else "challenge_phone_only"
                 snapshot = _mail_challenge_snapshot(
@@ -4878,6 +5227,15 @@ def _attempt_mail_challenge_login(
                 _emit_update(reason_code, snapshot["reason_text"], snapshot)
                 return ("challenge_required", _join_detail_text(initial_detail, snapshot["reason_text"]), snapshot)
         elif screen_kind == "channel_choice":
+            if selection_detail:
+                snapshot = _mail_challenge_snapshot(
+                    status="delivery_failed",
+                    kind="numeric_code",
+                    reason_code="mail_code_send_failed",
+                    reason_text=selection_detail,
+                )
+                _emit_update("mail_code_send_failed", snapshot["reason_text"], snapshot)
+                return ("challenge_required", _join_detail_text(initial_detail, snapshot["reason_text"]), snapshot)
             snapshot = _mail_challenge_snapshot(
                 status="unsupported",
                 kind="unsupported",
@@ -4898,6 +5256,15 @@ def _attempt_mail_challenge_login(
         return ("challenge_required", _join_detail_text(initial_detail, snapshot["reason_text"]), snapshot)
 
     if screen_kind not in {"numeric_code", "approval"}:
+        if screen_kind == "system_anr":
+            snapshot = _mail_challenge_snapshot(
+                status="unsupported",
+                kind="system_dialog",
+                reason_code="android_system_anr",
+                reason_text=screen_detail,
+            )
+            _emit_update("android_system_anr", snapshot["reason_text"], snapshot)
+            return ("helper_error", _join_detail_text(initial_detail, snapshot["reason_text"]), snapshot)
         snapshot = _mail_challenge_snapshot(
             status="unsupported",
             kind="unsupported",
@@ -4909,7 +5276,8 @@ def _attempt_mail_challenge_login(
 
     next_lookup_from = int(challenge_started_at or time.time())
     mail_snapshot: dict[str, Any] = {}
-    resend_attempted = False
+    resend_attempts = 0
+    max_resend_attempts = 3
     twofa_secret = str(payload.get("twofa") or "")
     _emit_update(
         "mail_challenge_checking",
@@ -4921,8 +5289,8 @@ def _attempt_mail_challenge_login(
             "reason_text": "Проверяю свежие письма Instagram/Meta для этого аккаунта.",
         },
     )
-    for attempt in range(2):
-        resolve_timeout = MAIL_CHALLENGE_TIMEOUT_SECONDS if attempt == 0 else MAIL_CHALLENGE_RETRY_SECONDS
+    while True:
+        resolve_timeout = MAIL_CHALLENGE_TIMEOUT_SECONDS if resend_attempts == 0 else MAIL_CHALLENGE_RETRY_SECONDS
         try:
             resolved = _resolve_account_mail_challenge(
                 account_id,
@@ -4946,22 +5314,57 @@ def _attempt_mail_challenge_login(
         kind_value = str(resolved.get("kind") or "").strip().lower()
         if status_value != "resolved":
             reason_code = str(mail_snapshot.get("reason_code") or "").strip().lower()
-            if reason_code == "mail_not_found" and screen_kind == "numeric_code" and attempt == 0:
+            if reason_code == "mail_not_found" and resend_attempts > 0:
+                resend_popup_detail = _dismiss_instagram_challenge_delivery_error(device, serial)
+                if resend_popup_detail:
+                    snapshot = _mail_challenge_snapshot(
+                        resolved,
+                        status="delivery_failed",
+                        kind="numeric_code",
+                        reason_code="mail_code_send_failed",
+                        reason_text=f"{resend_popup_detail} Instagram не смог отправить код даже после повторной проверки экрана.",
+                    )
+                    _emit_update("mail_code_send_failed", snapshot["reason_text"], snapshot)
+                    return ("challenge_required", _join_detail_text(initial_detail, snapshot["reason_text"]), snapshot)
+                override_result = _override_terminal_challenge_state(device, serial, payload)
+                if override_result is not None:
+                    state, detail, snapshot = override_result
+                    _emit_update(snapshot["reason_code"] or "challenge_screen_unsupported", snapshot["reason_text"], snapshot)
+                    return (state, _join_detail_text(initial_detail, detail), snapshot)
+            if reason_code == "mail_not_found" and screen_kind == "numeric_code" and resend_attempts < max_resend_attempts:
+                resend_attempts += 1
                 _emit_update(
                     "mail_code_not_found",
-                    "Свежий код из письма пока не найден. Прошу Instagram отправить письмо повторно.",
+                    "Свежий код из письма пока не найден. Прошу Instagram отправить письмо повторно."
+                    if resend_attempts == 1
+                    else "Код всё ещё не пришёл. Прошу Instagram отправить письмо ещё раз.",
                     mail_snapshot,
                 )
-                resend_attempted = _request_instagram_new_email_code(device, serial)
+                resend_attempted, resend_detail = _request_instagram_new_email_code(device, serial)
+                if not resend_attempted:
+                    snapshot = _mail_challenge_snapshot(
+                        resolved,
+                        status="delivery_failed",
+                        kind="numeric_code",
+                        reason_code="mail_code_send_failed",
+                        reason_text=resend_detail or "Instagram не смог отправить новый код на email.",
+                    )
+                    _emit_update("mail_code_send_failed", snapshot["reason_text"], snapshot)
+                    return ("challenge_required", _join_detail_text(initial_detail, snapshot["reason_text"]), snapshot)
                 next_lookup_from = max(next_lookup_from, int(time.time()))
                 continue
-            if reason_code == "mail_not_found" and resend_attempted:
+            if reason_code == "mail_not_found" and resend_attempts > 0:
                 mail_snapshot = _mail_challenge_snapshot(
                     resolved,
                     status="not_found",
                     kind="numeric_code",
                     reason_code="mail_not_found_after_resend",
-                    reason_text="Попросил Instagram отправить новый код, но свежего письма так и не появилось.",
+                    reason_text=(
+                        f"Попросил Instagram отправить новый код {resend_attempts} раза, "
+                        "но свежего письма так и не появилось."
+                        if resend_attempts > 1
+                        else "Попросил Instagram отправить новый код, но свежего письма так и не появилось."
+                    ),
                 )
             override_result = _override_terminal_challenge_state(device, serial, payload)
             if override_result is not None:
@@ -5113,6 +5516,8 @@ def _attempt_mail_challenge_login(
 def _detect_post_login_state(device: Any, serial: str, twofa_secret: str = "") -> tuple[str, str]:
     time.sleep(3)
     _dismiss_system_dialogs(device, serial, timeout_seconds=2.0)
+    if _android_system_anr_dialog_visible(device, serial, timeout_seconds=0.8):
+        return ("helper_error", _android_system_anr_detail(serial))
     invalid_password = _ig_find_first(
         device,
         [
@@ -5163,6 +5568,8 @@ def _detect_post_login_state(device: Any, serial: str, twofa_secret: str = "") -
             screen_kind, screen_detail = _classify_login_challenge_screen(device, serial)
         except Exception as exc:
             logger.warning("login_challenge_classification_failed: serial=%s error=%s", serial, exc)
+    if screen_kind == "system_anr":
+        return ("helper_error", screen_detail or _android_system_anr_detail(serial))
     if screen_kind != "unknown":
         return ("challenge_required", screen_detail)
 
@@ -5659,6 +6066,116 @@ def _select_reel_media(device: Any, serial: str) -> None:
     raise RuntimeError("Не удалось выбрать импортированное видео для Reel.")
 
 
+def _reel_cover_target_selectors() -> list[dict[str, Any]]:
+    return [
+        {"resourceId": f"{INSTAGRAM_PACKAGE}:id/media_thumbnail_tray"},
+        {"resourceId": f"{INSTAGRAM_PACKAGE}:id/clips_edit_thumbnail_tray"},
+        {"resourceId": f"{INSTAGRAM_PACKAGE}:id/clips_review_filmstrip_view"},
+        {"resourceIdMatches": f"{INSTAGRAM_PACKAGE}:id/.*(thumbnail_tray|filmstrip|cover).*"},
+    ]
+
+
+def _reel_cover_open_selectors() -> list[dict[str, Any]]:
+    return [
+        {"resourceId": f"{INSTAGRAM_PACKAGE}:id/media_thumbnail_tray_button"},
+        {"resourceId": f"{INSTAGRAM_PACKAGE}:id/media_thumbnail_tray_button_text"},
+        {"resourceId": f"{INSTAGRAM_PACKAGE}:id/preview_clip_thumbnail"},
+        {"resourceId": f"{INSTAGRAM_PACKAGE}:id/clips_review_loading_thumbnail"},
+        {"textMatches": "(?i)(cover|edit cover|thumbnail)"},
+        {"textMatches": "(?i)(обложк|миниатюр)"},
+        {"descriptionMatches": "(?i)(cover|edit cover|thumbnail)"},
+        {"descriptionMatches": "(?i)(обложк|миниатюр)"},
+    ]
+
+
+def _reel_review_surface_visible(device: Any) -> bool:
+    if device is None or not callable(device):
+        return False
+    selectors = [
+        {"resourceId": f"{INSTAGRAM_PACKAGE}:id/clips_review_container"},
+        {"resourceId": f"{INSTAGRAM_PACKAGE}:id/clips_top_level_container"},
+        {"resourceId": f"{INSTAGRAM_PACKAGE}:id/clips_review_trim_button"},
+        {"resourceId": f"{INSTAGRAM_PACKAGE}:id/clips_review_filmstrip_view"},
+    ]
+    hits = 0
+    for selector in selectors:
+        if _ig_find_first(device, [selector], timeout_seconds=0.25) is not None:
+            hits += 1
+    return hits >= 2
+
+
+def _reel_cover_pick_ratio(source_name: str = "", source_path: str = "") -> float:
+    seed_material = f"{source_name}|{source_path}|{time.time_ns()}|{os.getpid()}"
+    digest = hashlib.sha256(seed_material.encode("utf-8", errors="ignore")).digest()
+    raw_value = int.from_bytes(digest[:8], "big")
+    unit_ratio = raw_value / float((1 << 64) - 1)
+    # Stay away from the first and last frames where black fades are common.
+    return 0.22 + (unit_ratio * 0.56)
+
+
+def _pick_random_reel_cover_frame(
+    device: Any,
+    serial: str,
+    *,
+    source_name: str = "",
+    source_path: str = "",
+) -> bool:
+    if device is None or not callable(device):
+        return False
+    _dismiss_system_dialogs(device, serial, timeout_seconds=0.8)
+    _dismiss_instagram_interstitials(device, serial, timeout_seconds=0.6)
+
+    cover_target = _ig_find_first(device, _reel_cover_target_selectors(), timeout_seconds=0.8)
+    if cover_target is None:
+        _ig_click_first(device, _reel_cover_open_selectors(), timeout_seconds=1.0, serial=serial)
+        time.sleep(0.8)
+        cover_target = _ig_find_first(device, _reel_cover_target_selectors(), timeout_seconds=0.8)
+
+    ratio = _reel_cover_pick_ratio(source_name=source_name, source_path=source_path)
+    width, height = _device_display_size(device)
+
+    target_bounds = _node_bounds(cover_target) if cover_target is not None else None
+    if target_bounds is not None:
+        left, top, right, bottom = target_bounds
+        tap_x = left + int((right - left) * ratio)
+        tap_y = top + ((bottom - top) // 2)
+        tap_x = max(48, min(width - 48, tap_x))
+        tap_y = max(180, min(height - 180, tap_y))
+        _adb_tap(serial, tap_x, tap_y)
+        time.sleep(0.7)
+        logger.info(
+            "reel_cover_selected: serial=%s source=%s method=tray ratio=%.3f x=%s y=%s",
+            serial,
+            source_name or Path(source_path).name or "-",
+            ratio,
+            tap_x,
+            tap_y,
+        )
+        return True
+
+    if not _reel_review_surface_visible(device):
+        logger.warning(
+            "reel_cover_selection_skipped: serial=%s source=%s reason=review_surface_unavailable",
+            serial,
+            source_name or Path(source_path).name or "-",
+        )
+        return False
+
+    tap_x = int(width * (0.14 + (ratio * 0.72)))
+    tap_y = int(height * 0.79)
+    _adb_tap(serial, tap_x, tap_y)
+    time.sleep(0.7)
+    logger.info(
+        "reel_cover_selected: serial=%s source=%s method=fallback ratio=%.3f x=%s y=%s",
+        serial,
+        source_name or Path(source_path).name or "-",
+        ratio,
+        tap_x,
+        tap_y,
+    )
+    return True
+
+
 def _advance_reel_next(device: Any, serial: str, steps: int = 2) -> None:
     next_selectors = [
         {"resourceId": f"{INSTAGRAM_PACKAGE}:id/clips_right_action_button"},
@@ -5937,6 +6454,8 @@ def _run_login_flow(
                     "helper_error",
                     "Instagram не установлен в эмуляторе. Сначала установи приложение, затем повтори запуск.",
                     expected_handle,
+                    session_mode="unknown",
+                    emulator_serial=serial,
                 )
             logger.info("manual_step_required: account_id=%s serial=%s reason=install_instagram", account_id, serial)
             return {
@@ -5945,6 +6464,7 @@ def _run_login_flow(
                 "device": None,
                 "state": "helper_error",
                 "detail": "Instagram не установлен в эмуляторе. Сначала установи приложение, затем повтори запуск.",
+                "session_mode": "unknown",
                 "handle": expected_handle,
             }
         raise
@@ -5952,25 +6472,31 @@ def _run_login_flow(
     next_detail = "Instagram login did not start."
     device = None
     mail_challenge_snapshot: dict[str, Any] = {}
+    session_mode = "unknown"
     for attempt in range(2):
         if force_clean_login and attempt == 0:
             _clear_instagram_data(serial)
+            session_mode = "clean_login"
         _launch_instagram_app(serial)
         device = _connect_ui(serial)
         _dismiss_system_dialogs(device, serial, timeout_seconds=2.0)
         if not force_clean_login and _wait_for_logged_in_surface(device, serial, timeout_seconds=2.5):
             next_state = "login_submitted"
             next_detail = "Instagram уже открыт в активной сессии. Повторный relogin не понадобился."
+            session_mode = "session_reuse"
             logger.info("login_session_reused: account_id=%s serial=%s attempt=%s", account_id, serial, attempt + 1)
             break
         session_prepare = _ensure_signed_out_instagram_session(device, serial, allow_destructive_fallback=True)
         logger.info("login_session_prepared: account_id=%s serial=%s action=%s attempt=%s", account_id, serial, session_prepare, attempt + 1)
         if session_prepare == "app_data_cleared":
+            session_mode = "clean_login"
             _launch_instagram_app(serial)
             device = _connect_ui(serial)
             _dismiss_system_dialogs(device, serial, timeout_seconds=2.0)
         challenge_started_at = int(time.time())
         _fill_credentials_and_submit(device, serial, login, password)
+        if session_mode != "clean_login":
+            session_mode = "fresh_login"
         next_state, next_detail = _detect_post_login_state(device, serial, str(payload.get("twofa") or ""))
         mail_challenge_snapshot = {}
         if next_state == "challenge_required":
@@ -5982,9 +6508,19 @@ def _run_login_flow(
                 initial_detail=next_detail,
                 on_update=on_mail_challenge_update,
             )
-        if next_state != "login_failed" or attempt == 1:
+        retryable_system_error = next_state == "helper_error" and _retryable_android_system_error(
+            next_detail,
+            str(mail_challenge_snapshot.get("reason_code") or ""),
+        )
+        if (next_state != "login_failed" and not retryable_system_error) or attempt == 1:
             break
-        logger.info("login_retry: account_id=%s serial=%s attempt=%s", account_id, serial, attempt + 2)
+        logger.info(
+            "login_retry: account_id=%s serial=%s attempt=%s reason=%s",
+            account_id,
+            serial,
+            attempt + 2,
+            "android_system_anr" if retryable_system_error else "login_failed",
+        )
         _dismiss_system_dialogs(device, serial, timeout_seconds=1.5)
         _adb_shell(serial, "input", "keyevent", "4", timeout=10, check=False)
         time.sleep(1.5)
@@ -5995,7 +6531,15 @@ def _run_login_flow(
         if screenshot_path:
             next_detail = f"{next_detail} Диагностика: {screenshot_path}".strip()
     if push_status:
-        _push_account_launch_status(account_id, next_state, next_detail, expected_handle, mail_challenge=mail_challenge_snapshot)
+        _push_account_launch_status(
+            account_id,
+            next_state,
+            next_detail,
+            expected_handle,
+            mail_challenge=mail_challenge_snapshot,
+            session_mode=session_mode,
+            emulator_serial=serial,
+        )
     _set_state(
         account_id=account_id,
         target=str(payload.get("target") or "instagram_app_login"),
@@ -6012,8 +6556,93 @@ def _run_login_flow(
         "state": next_state,
         "detail": next_detail,
         "mail_challenge": dict(mail_challenge_snapshot),
+        "session_mode": session_mode,
         "handle": expected_handle,
     }
+
+
+def _run_account_status_check_flow(payload: dict[str, Any]) -> None:
+    account_id = int(payload["account_id"])
+    expected_handle = str(payload.get("username") or payload.get("account_login") or "").strip()
+    preferred_serial = str(payload.get("instagram_emulator_serial") or payload.get("emulator_serial") or "").strip()
+    checked_at = int(time.time())
+    serial = preferred_serial
+    diagnostics_path = ""
+    login_result = _run_login_flow(
+        payload,
+        push_status=False,
+        finalize_runtime=False,
+        preferred_serial=preferred_serial,
+    )
+    serial = str(login_result.get("serial") or preferred_serial or "").strip()
+    device = login_result.get("device")
+    login_state = str(login_result.get("state") or "").strip()
+    login_detail = str(login_result.get("detail") or "").strip()
+
+    if login_state != "login_submitted" or device is None:
+        diagnostics = _capture_publish_diagnostics(serial, "account_status_login_failed", device=device, account_id=account_id)
+        diagnostics_path = _diagnostics_primary_path(diagnostics)
+        detail = login_detail or "Не удалось открыть Instagram в рабочей сессии для проверки рекомендаций."
+        if diagnostics_path and "Диагностика:" not in detail:
+            detail = f"{detail} Диагностика: {diagnostics_path}".strip()
+        _push_account_status_auto_result(
+            account_id,
+            "inconclusive",
+            detail,
+            expected_handle,
+            checked_at=checked_at,
+            diagnostics_path=diagnostics_path,
+        )
+        _set_state(
+            account_id=account_id,
+            target="instagram_account_status_check",
+            state="inconclusive",
+            detail=detail,
+            flow_running=False,
+            emulator_serial=serial,
+        )
+        return
+
+    try:
+        _set_state(
+            account_id=account_id,
+            target="instagram_account_status_check",
+            state="checking_account_status",
+            detail="Открываю Instagram Account Status / Recommendations.",
+            flow_running=True,
+            emulator_serial=serial,
+        )
+        opened = _open_instagram_recommendation_surface(device, serial, timeout_seconds=18.0)
+        texts = _screen_text_values(device)
+        status, detail = _classify_instagram_account_status_texts(texts)
+        if not opened and status == "inconclusive":
+            detail = "Не удалось открыть экран Instagram Account Status / Recommendations."
+        diagnostics = _capture_publish_diagnostics(serial, f"account_status_{status}", device=device, account_id=account_id)
+        diagnostics_path = _diagnostics_primary_path(diagnostics)
+        if diagnostics_path and "Диагностика:" not in detail:
+            detail = f"{detail} Диагностика: {diagnostics_path}".strip()
+        _push_account_status_auto_result(
+            account_id,
+            status,
+            detail,
+            expected_handle,
+            checked_at=checked_at,
+            diagnostics_path=diagnostics_path,
+        )
+        _set_state(
+            account_id=account_id,
+            target="instagram_account_status_check",
+            state=status,
+            detail=detail,
+            flow_running=False,
+            emulator_serial=serial,
+        )
+    finally:
+        try:
+            if device is not None and serial:
+                _recover_to_profile_surface(device, serial, timeout_seconds=4.0)
+        except Exception:
+            pass
 
 
 def _run_publish_flow(payload: dict[str, Any]) -> None:
@@ -6087,6 +6716,8 @@ def _run_publish_flow(payload: dict[str, Any]) -> None:
                 detail,
                 expected_handle,
                 last_file=source_name,
+                session_mode=str(login_result.get("session_mode") or ""),
+                emulator_serial=serial,
             )
             _set_state(
                 account_id=account_id,
@@ -6123,7 +6754,17 @@ def _run_publish_flow(payload: dict[str, Any]) -> None:
         current_stage = "selecting_media"
         _publish_progress(current_stage, f"Выбираю видео {source_name}.")
         _select_reel_media(device, serial)
-        _advance_reel_next(device, serial, steps=2)
+        _advance_reel_next(device, serial, steps=1)
+
+        current_stage = "selecting_cover"
+        _publish_progress(current_stage, f"Выбираю обложку для {source_name} из случайного кадра.")
+        try:
+            if not _pick_random_reel_cover_frame(device, serial, source_name=source_name, source_path=source_path):
+                logger.warning("publish_cover_selection_skipped: account_id=%s serial=%s source=%s", account_id, serial, source_name)
+        except Exception as exc:
+            logger.warning("publish_cover_selection_failed: account_id=%s serial=%s source=%s error=%s", account_id, serial, source_name, exc)
+
+        _advance_reel_next(device, serial, steps=1)
 
         current_stage = "publishing"
         _publish_progress(current_stage, f"Публикую Reel {source_name}.")
@@ -6193,6 +6834,8 @@ def _run_publish_flow(payload: dict[str, Any]) -> None:
                 detail,
                 expected_handle,
                 last_file=source_name,
+                session_mode=str(login_result.get("session_mode") or ""),
+                emulator_serial=serial,
             )
             _set_state(
                 account_id=account_id,
@@ -6224,6 +6867,11 @@ def _run_publish_flow(payload: dict[str, Any]) -> None:
                 else int(time.time())
             ),
         )
+        source_video_sha256 = _file_sha256(source_path)
+        if source_video_sha256:
+            publish_telemetry["video_sha256"] = source_video_sha256
+            publish_telemetry["content_fingerprint"] = source_video_sha256
+            publish_telemetry["content_cluster"] = source_video_sha256[:16]
         _push_account_publish_status(
             account_id,
             "published",
@@ -6233,6 +6881,8 @@ def _run_publish_flow(payload: dict[str, Any]) -> None:
             source_path=source_path,
             helper_ticket=helper_ticket,
             telemetry=publish_telemetry,
+            session_mode=str(login_result.get("session_mode") or ""),
+            emulator_serial=serial,
         )
         _set_state(
             account_id=account_id,
@@ -6269,6 +6919,9 @@ def _run_publish_job(job: dict[str, Any]) -> None:
     timings: dict[str, float] = {}
     profile_baseline: dict[str, Any] = {"available": False, "candidates": []}
     share_clicked_at_epoch: Optional[int] = None
+    login_session_mode = ""
+    source_video_sha256 = ""
+    force_clean_login_requested = bool(job.get("force_clean_login"))
     payload = {
         "account_id": account_id,
         "account_login": str(job.get("account_login") or "").strip(),
@@ -6279,7 +6932,7 @@ def _run_publish_job(job: dict[str, Any]) -> None:
         "mail_address": str(job.get("mail_address") or "").strip(),
         "mail_provider": str(job.get("mail_provider") or "auto").strip() or "auto",
         "target": "publish_batch_job",
-        "force_clean_login": True,
+        "force_clean_login": force_clean_login_requested,
     }
     terminal_state = "failed"
     terminal_detail = "Публикация остановлена до завершения job."
@@ -6295,6 +6948,12 @@ def _run_publish_job(job: dict[str, Any]) -> None:
         payload_value: dict[str, Any] = {}
         if timings:
             payload_value["timings"] = {key: float(value) for key, value in timings.items()}
+        if login_session_mode:
+            payload_value["session_mode"] = login_session_mode
+        if source_video_sha256:
+            payload_value["video_sha256"] = source_video_sha256
+            payload_value["content_fingerprint"] = source_video_sha256
+            payload_value["content_cluster"] = source_video_sha256[:16]
         if isinstance(extra, dict):
             for key, value in extra.items():
                 payload_value[key] = value
@@ -6368,7 +7027,7 @@ def _run_publish_job(job: dict[str, Any]) -> None:
             account_id,
             target_serial or "-",
         )
-        _reset_publish_emulator_boundary(target_serial, clear_instagram=True)
+        _reset_publish_emulator_boundary(target_serial, clear_instagram=force_clean_login_requested)
         logger.info(
             "publish_job_emulator_shutdown_completed: batch_id=%s job_id=%s account_id=%s serial=%s",
             batch_id,
@@ -6400,14 +7059,22 @@ def _run_publish_job(job: dict[str, Any]) -> None:
             )
         source_path = str(source_info["path"])
         source_name = str(source_info["name"])
+        source_video_sha256 = _file_sha256(source_path)
         if source_info.get("downloaded"):
             downloaded_source_path = source_path
         _job_progress("preparing", f"Batch job #{job_id}: готовлю Instagram app для {source_name}.")
         if _publish_boundary_reset_needed(preferred_serial):
+            # Crossing a publish-job boundary means we cannot trust the prior app session.
+            force_clean_login_requested = True
+            payload["force_clean_login"] = True
             _reset_boundary("Закрываю прошлый эмулятор перед следующим аккаунтом.")
         _job_progress(
             "preparing",
-            f"Запускаю чистый эмулятор и готовлю новый вход для {source_name}.",
+            (
+                f"Запускаю чистый эмулятор и готовлю новый вход для {source_name}."
+                if force_clean_login_requested
+                else f"Готовлю эмулятор и пытаюсь использовать стабильную сессию для {source_name}."
+            ),
             payload={
                 "publish_phase": "fresh_boot",
                 "event_kind": "publish_job_fresh_boot_started",
@@ -6421,10 +7088,11 @@ def _run_publish_job(job: dict[str, Any]) -> None:
             preferred_serial or "-",
         )
         logger.info(
-            "publish_job_clean_login_started: batch_id=%s job_id=%s account_id=%s",
+            "publish_job_login_started: batch_id=%s job_id=%s account_id=%s force_clean=%s",
             batch_id,
             job_id,
             account_id,
+            force_clean_login_requested,
         )
         login_started_at = time.monotonic()
         login_result = _run_login_flow(
@@ -6444,6 +7112,7 @@ def _run_publish_job(job: dict[str, Any]) -> None:
         )
         _record_timing("login_seconds", login_started_at)
         serial = str(login_result.get("serial") or "")
+        login_session_mode = str(login_result.get("session_mode") or "")
         terminal_serial = serial
         logger.info(
             "publish_job_fresh_boot_completed: batch_id=%s job_id=%s account_id=%s serial=%s",
@@ -6472,18 +7141,27 @@ def _run_publish_job(job: dict[str, Any]) -> None:
             )
 
         logger.info(
-            "publish_job_clean_login_completed: batch_id=%s job_id=%s account_id=%s serial=%s",
+            "publish_job_login_completed: batch_id=%s job_id=%s account_id=%s serial=%s session_mode=%s",
             batch_id,
             job_id,
             account_id,
             serial or "-",
+            login_session_mode or "unknown",
         )
         _job_progress(
             "preparing",
-            f"Чистый эмулятор готов. Вхожу в новый аккаунт для {source_name}.",
+            (
+                f"Чистый login завершён. Продолжаю публикацию {source_name}."
+                if login_session_mode == "clean_login"
+                else (
+                    f"Сессия переиспользована. Продолжаю публикацию {source_name}."
+                    if login_session_mode == "session_reuse"
+                    else f"Логин выполнен. Продолжаю публикацию {source_name}."
+                )
+            ),
             payload={
-                "publish_phase": "clean_login",
-                "event_kind": "publish_job_clean_login_completed",
+                "publish_phase": "login_completed",
+                "event_kind": "publish_job_login_completed",
             },
         )
 
@@ -6524,7 +7202,32 @@ def _run_publish_job(job: dict[str, Any]) -> None:
         _job_progress(current_stage, f"Выбираю видео {source_name}.")
         media_select_started_at = time.monotonic()
         _select_reel_media(device, serial)
-        _advance_reel_next(device, serial, steps=2)
+        _advance_reel_next(device, serial, steps=1)
+        cover_select_started_at = time.monotonic()
+        current_stage = "selecting_cover"
+        _job_progress(current_stage, f"Выбираю обложку для {source_name} из случайного кадра.")
+        try:
+            if not _pick_random_reel_cover_frame(device, serial, source_name=source_name, source_path=source_path):
+                logger.warning(
+                    "job_cover_selection_skipped: batch_id=%s job_id=%s account_id=%s serial=%s source=%s",
+                    batch_id,
+                    job_id,
+                    account_id,
+                    serial,
+                    source_name,
+                )
+        except Exception as exc:
+            logger.warning(
+                "job_cover_selection_failed: batch_id=%s job_id=%s account_id=%s serial=%s source=%s error=%s",
+                batch_id,
+                job_id,
+                account_id,
+                serial,
+                source_name,
+                exc,
+            )
+        _record_timing("select_cover_seconds", cover_select_started_at)
+        _advance_reel_next(device, serial, steps=1)
         _record_timing("media_select_seconds", media_select_started_at)
 
         current_stage = "publishing"
@@ -6799,7 +7502,11 @@ def _run_publish_job(job: dict[str, Any]) -> None:
         logger.exception("job_publish_unhandled_error: batch_id=%s job_id=%s account_id=%s error=%s", batch_id, job_id, account_id, exc)
     finally:
         try:
-            _reset_boundary("Закрываю эмулятор и очищаю Instagram после завершения job.")
+            _reset_boundary(
+                "Закрываю эмулятор после завершения job."
+                if not force_clean_login_requested
+                else "Закрываю эмулятор и очищаю Instagram после завершения job."
+            )
         except Exception as cleanup_exc:
             logger.warning(
                 "publish_job_boundary_reset_failed: batch_id=%s job_id=%s account_id=%s error=%s",
@@ -7031,6 +7738,9 @@ def _run_payload_flow(payload: dict[str, Any]) -> None:
         preferred_serial = str(payload.get("instagram_emulator_serial") or payload.get("emulator_serial") or "").strip()
         _run_login_flow(payload, push_status=True, preferred_serial=preferred_serial)
         return
+    if target == "instagram_account_status_check":
+        _run_account_status_check_flow(payload)
+        return
     if target == "instagram_publish_latest_reel":
         _run_publish_flow(payload)
         return
@@ -7052,6 +7762,7 @@ def _worker_main() -> None:
                 except Exception as exc:
                     logger.exception("helper_error: %s", exc)
                     payload = task.get("payload") or {}
+                    exc_serial = getattr(exc, "serial", "") or ""
                     account_id = int(payload.get("account_id") or 0)
                     if account_id > 0:
                         expected_handle = str(payload.get("username") or payload.get("account_login") or "").strip()
@@ -7074,6 +7785,23 @@ def _worker_main() -> None:
                                 detail,
                                 expected_handle,
                                 last_file=last_file,
+                            )
+                        elif target == "instagram_account_status_check":
+                            diagnostics = _capture_publish_diagnostics(
+                                getattr(exc, "serial", "") or str(payload.get("instagram_emulator_serial") or ""),
+                                "account_status_helper_error",
+                                account_id=account_id,
+                            )
+                            diagnostics_path = _diagnostics_primary_path(diagnostics)
+                            detail = str(exc)
+                            if diagnostics_path and "Диагностика:" not in detail:
+                                detail = f"{detail} Диагностика: {diagnostics_path}".strip()
+                            _push_account_status_auto_result(
+                                account_id,
+                                "inconclusive",
+                                detail,
+                                expected_handle,
+                                diagnostics_path=diagnostics_path,
                             )
                         else:
                             exc_serial = exc.serial if isinstance(exc, PublishFlowError) else ""
@@ -7279,7 +8007,7 @@ def helper_launch_ticket(payload: dict[str, Any] = Body(...), _: None = Depends(
     ticket = str(payload.get("ticket") or "").strip()
     if len(ticket) < 8:
         raise HTTPException(status_code=400, detail="ticket is required")
-    target_candidates = ["instagram_publish_latest_reel", "instagram_audit_login", "instagram_app_login"]
+    target_candidates = ["instagram_account_status_check", "instagram_publish_latest_reel", "instagram_audit_login", "instagram_app_login"]
     fetched_payload = None
     last_error: Optional[Exception] = None
     for target in target_candidates:
@@ -7291,7 +8019,7 @@ def helper_launch_ticket(payload: dict[str, Any] = Body(...), _: None = Depends(
     if fetched_payload is None:
         raise HTTPException(status_code=404, detail=str(last_error or "Ticket not found"))
     target = str(fetched_payload.get("target") or "").strip()
-    if target not in {"instagram_app_login", "instagram_audit_login", "instagram_publish_latest_reel"}:
+    if target not in {"instagram_app_login", "instagram_audit_login", "instagram_account_status_check", "instagram_publish_latest_reel"}:
         raise HTTPException(status_code=400, detail=f"Unsupported target: {target or 'unknown'}")
     _ensure_worker_thread()
     with STATE_LOCK:
@@ -7351,7 +8079,7 @@ def open_ticket(ticket: str = Query(..., min_length=8)) -> HTMLResponse:
         )
 
     try:
-        target_candidates = ["instagram_publish_latest_reel", "instagram_audit_login", "instagram_app_login"]
+        target_candidates = ["instagram_account_status_check", "instagram_publish_latest_reel", "instagram_audit_login", "instagram_app_login"]
         payload = None
         last_error: Optional[Exception] = None
         for target in target_candidates:
@@ -7371,10 +8099,10 @@ def open_ticket(ticket: str = Query(..., min_length=8)) -> HTMLResponse:
         )
 
     target = str(payload.get("target") or "").strip()
-    if target not in {"instagram_app_login", "instagram_audit_login", "instagram_publish_latest_reel"}:
+    if target not in {"instagram_app_login", "instagram_audit_login", "instagram_account_status_check", "instagram_publish_latest_reel"}:
         return _render_status_page(
             "Неверный тип helper-ticket",
-            "Этот helper принимает только Instagram login/publish ticket.",
+            "Этот helper принимает только Instagram login / account-status / publish ticket.",
             f"Получен target: {payload.get('target')!r}",
         )
 
@@ -7400,6 +8128,12 @@ def open_ticket(ticket: str = Query(..., min_length=8)) -> HTMLResponse:
             "Запускаю публикацию Reel",
             "Локальный helper проверит папку на этом Mac, импортирует самый новый ролик в эмулятор и попробует опубликовать его как Reel.",
             "После подтверждённого успеха локальный исходный файл будет удалён. Если helper увидит проблему, файл останется на месте.",
+        )
+    if target == "instagram_account_status_check":
+        return _render_status_page(
+            "Проверяю рекомендации Instagram",
+            "Локальный helper откроет Android emulator, войдёт в Instagram и попробует открыть Account Status / Recommendations.",
+            "Результат сохранится в админке как auto verdict: OK, limited recommendations или inconclusive вместе с диагностикой.",
         )
     if target == "instagram_audit_login":
         return _render_status_page(

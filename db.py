@@ -5,6 +5,7 @@ import time
 import hashlib
 import re
 import secrets
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from domain_states import (
@@ -34,18 +35,30 @@ ACCOUNT_VIEWS_STATE_KEYS = {"low", "good", "unknown"}
 ACCOUNT_MAIL_PROVIDER_KEYS = {"auto", "imap", "gmail_api", "microsoft_graph"}
 ACCOUNT_MAIL_STATUS_KEYS = {"never_checked", "ok", "auth_error", "connect_error", "empty", "unsupported"}
 ACCOUNT_MAIL_CHALLENGE_STATUS_KEYS = {"idle", "resolved", "not_found", "ambiguous", "mailbox_unavailable", "unsupported"}
+ACCOUNT_TRUST_STATE_KEYS = {"green", "yellow", "red"}
+ACCOUNT_STATUS_MANUAL_KEYS = {"unknown", "ok", "limited_recommendations"}
+ACCOUNT_STATUS_AUTO_KEYS = {"unknown", "ok", "limited_recommendations", "inconclusive"}
+ACCOUNT_SHADOW_STATUS_KEYS = {"ok", "risk", "shadowban_suspected"}
 ACCOUNT_TEXT_PLACEHOLDER_KEYS = {"NO_EMAIL", "NO MAIL", "NO_MAIL", "NONE", "NULL", "N/A", "NA", "-", "—"}
-HELPER_TICKET_TARGET_KEYS = {"instagram_login", "instagram_app_login", "instagram_audit_login", "instagram_publish_latest_reel"}
+HELPER_TICKET_TARGET_KEYS = {
+    "instagram_login",
+    "instagram_app_login",
+    "instagram_audit_login",
+    "instagram_account_status_check",
+    "instagram_publish_latest_reel",
+}
 INSTAGRAM_REEL_POST_ORIGIN_KIND_KEYS = {"batch_job", "standalone"}
 INSTAGRAM_REEL_COLLECTION_STAGE_KEYS = {"t30m", "t6h", "t24h", "t72h", "done"}
 INSTAGRAM_REEL_COLLECTION_STATE_KEYS = {"scheduled", "leased", "collected", "partial", "unavailable", "not_found", "failed"}
 INSTAGRAM_REEL_METRIC_SNAPSHOT_STATUS_KEYS = {"ok", "partial", "unavailable", "not_found", "failed"}
+INSTAGRAM_SESSION_MODE_KEYS = {"unknown", "session_reuse", "fresh_login", "clean_login"}
 INSTAGRAM_REEL_COLLECTION_WINDOWS = [
     ("t30m", 30 * 60),
     ("t6h", 6 * 60 * 60),
     ("t24h", 24 * 60 * 60),
     ("t72h", 72 * 60 * 60),
 ]
+INSTAGRAM_REEL_BASELINE_WINDOWS = ("t24h", "t6h", "t30m")
 INSTAGRAM_REEL_COLLECTION_RETRY_DELAYS_SECONDS = [10 * 60, 30 * 60, 2 * 60 * 60]
 RUNTIME_TASK_TYPE_KEYS = {
     "publish_batch_start",
@@ -297,6 +310,23 @@ def init_db() -> None:
             instagram_publish_detail TEXT,
             instagram_publish_updated_at INTEGER,
             instagram_publish_last_file TEXT,
+            trust_score REAL NOT NULL DEFAULT 50,
+            trust_state TEXT NOT NULL DEFAULT 'yellow',
+            pinned_proxy TEXT NOT NULL DEFAULT '',
+            last_login_serial TEXT NOT NULL DEFAULT '',
+            last_session_mode TEXT NOT NULL DEFAULT 'unknown',
+            last_session_mode_at INTEGER,
+            last_stable_login_at INTEGER,
+            last_stable_publish_at INTEGER,
+            last_clean_login_at INTEGER,
+            last_challenge_at INTEGER,
+            publish_cooldown_until INTEGER,
+            account_status_manual TEXT NOT NULL DEFAULT 'unknown',
+            account_status_auto TEXT NOT NULL DEFAULT 'unknown',
+            account_status_auto_detail TEXT NOT NULL DEFAULT '',
+            account_status_auto_checked_at INTEGER,
+            account_status_auto_diagnostics_path TEXT NOT NULL DEFAULT '',
+            account_status_updated_at INTEGER,
             owner_worker_id INTEGER,
             created_at INTEGER NOT NULL,
             updated_at INTEGER NOT NULL
@@ -605,6 +635,40 @@ def init_db() -> None:
         cur.execute("ALTER TABLE accounts ADD COLUMN mail_challenge_updated_at INTEGER")
     if "instagram_emulator_serial" not in accounts_cols:
         cur.execute("ALTER TABLE accounts ADD COLUMN instagram_emulator_serial TEXT")
+    if "trust_score" not in accounts_cols:
+        cur.execute("ALTER TABLE accounts ADD COLUMN trust_score REAL NOT NULL DEFAULT 50")
+    if "trust_state" not in accounts_cols:
+        cur.execute("ALTER TABLE accounts ADD COLUMN trust_state TEXT NOT NULL DEFAULT 'yellow'")
+    if "pinned_proxy" not in accounts_cols:
+        cur.execute("ALTER TABLE accounts ADD COLUMN pinned_proxy TEXT NOT NULL DEFAULT ''")
+    if "last_login_serial" not in accounts_cols:
+        cur.execute("ALTER TABLE accounts ADD COLUMN last_login_serial TEXT NOT NULL DEFAULT ''")
+    if "last_session_mode" not in accounts_cols:
+        cur.execute("ALTER TABLE accounts ADD COLUMN last_session_mode TEXT NOT NULL DEFAULT 'unknown'")
+    if "last_session_mode_at" not in accounts_cols:
+        cur.execute("ALTER TABLE accounts ADD COLUMN last_session_mode_at INTEGER")
+    if "last_stable_login_at" not in accounts_cols:
+        cur.execute("ALTER TABLE accounts ADD COLUMN last_stable_login_at INTEGER")
+    if "last_stable_publish_at" not in accounts_cols:
+        cur.execute("ALTER TABLE accounts ADD COLUMN last_stable_publish_at INTEGER")
+    if "last_clean_login_at" not in accounts_cols:
+        cur.execute("ALTER TABLE accounts ADD COLUMN last_clean_login_at INTEGER")
+    if "last_challenge_at" not in accounts_cols:
+        cur.execute("ALTER TABLE accounts ADD COLUMN last_challenge_at INTEGER")
+    if "publish_cooldown_until" not in accounts_cols:
+        cur.execute("ALTER TABLE accounts ADD COLUMN publish_cooldown_until INTEGER")
+    if "account_status_manual" not in accounts_cols:
+        cur.execute("ALTER TABLE accounts ADD COLUMN account_status_manual TEXT NOT NULL DEFAULT 'unknown'")
+    if "account_status_auto" not in accounts_cols:
+        cur.execute("ALTER TABLE accounts ADD COLUMN account_status_auto TEXT NOT NULL DEFAULT 'unknown'")
+    if "account_status_auto_detail" not in accounts_cols:
+        cur.execute("ALTER TABLE accounts ADD COLUMN account_status_auto_detail TEXT NOT NULL DEFAULT ''")
+    if "account_status_auto_checked_at" not in accounts_cols:
+        cur.execute("ALTER TABLE accounts ADD COLUMN account_status_auto_checked_at INTEGER")
+    if "account_status_auto_diagnostics_path" not in accounts_cols:
+        cur.execute("ALTER TABLE accounts ADD COLUMN account_status_auto_diagnostics_path TEXT NOT NULL DEFAULT ''")
+    if "account_status_updated_at" not in accounts_cols:
+        cur.execute("ALTER TABLE accounts ADD COLUMN account_status_updated_at INTEGER")
     if "owner_worker_id" not in accounts_cols:
         cur.execute("ALTER TABLE accounts ADD COLUMN owner_worker_id INTEGER")
     cur.execute("UPDATE accounts SET rotation_state = 'review' WHERE rotation_state IS NULL OR TRIM(rotation_state) = ''")
@@ -616,6 +680,15 @@ def init_db() -> None:
     cur.execute("UPDATE accounts SET mail_status = 'never_checked' WHERE mail_status IS NULL OR TRIM(mail_status) = ''")
     cur.execute("UPDATE accounts SET mail_watch_json = '' WHERE mail_watch_json IS NULL")
     cur.execute("UPDATE accounts SET mail_challenge_status = 'idle' WHERE mail_challenge_status IS NULL OR TRIM(mail_challenge_status) = ''")
+    cur.execute("UPDATE accounts SET trust_score = 50 WHERE trust_score IS NULL")
+    cur.execute("UPDATE accounts SET trust_state = 'yellow' WHERE trust_state IS NULL OR TRIM(trust_state) = ''")
+    cur.execute("UPDATE accounts SET pinned_proxy = '' WHERE pinned_proxy IS NULL")
+    cur.execute("UPDATE accounts SET last_login_serial = '' WHERE last_login_serial IS NULL")
+    cur.execute("UPDATE accounts SET last_session_mode = 'unknown' WHERE last_session_mode IS NULL OR TRIM(last_session_mode) = ''")
+    cur.execute("UPDATE accounts SET account_status_manual = 'unknown' WHERE account_status_manual IS NULL OR TRIM(account_status_manual) = ''")
+    cur.execute("UPDATE accounts SET account_status_auto = 'unknown' WHERE account_status_auto IS NULL OR TRIM(account_status_auto) = ''")
+    cur.execute("UPDATE accounts SET account_status_auto_detail = '' WHERE account_status_auto_detail IS NULL")
+    cur.execute("UPDATE accounts SET account_status_auto_diagnostics_path = '' WHERE account_status_auto_diagnostics_path IS NULL")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_accounts_owner_worker_id ON accounts(owner_worker_id, updated_at)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_accounts_rotation_state ON accounts(rotation_state)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_accounts_rotation_state_source ON accounts(rotation_state_source)")
@@ -624,6 +697,11 @@ def init_db() -> None:
     cur.execute("CREATE INDEX IF NOT EXISTS idx_accounts_mail_status ON accounts(mail_status)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_accounts_mail_challenge_status ON accounts(mail_challenge_status)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_accounts_instagram_emulator_serial ON accounts(instagram_emulator_serial)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_accounts_trust_state ON accounts(trust_state, updated_at DESC)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_accounts_publish_cooldown ON accounts(publish_cooldown_until)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_accounts_account_status_manual ON accounts(account_status_manual)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_accounts_account_status_auto ON accounts(account_status_auto)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_accounts_account_status_auto_checked_at ON accounts(account_status_auto_checked_at DESC)")
 
     cur.execute("PRAGMA table_info(account_mail_messages)")
     account_mail_cols = [row["name"] for row in cur.fetchall()]
@@ -705,6 +783,9 @@ def init_db() -> None:
             completed_at INTEGER,
             last_file TEXT,
             last_error TEXT,
+            risk_score_at_lease REAL NOT NULL DEFAULT 0,
+            blocked_by_policy INTEGER NOT NULL DEFAULT 0,
+            policy_reason TEXT NOT NULL DEFAULT '',
             created_at INTEGER NOT NULL,
             updated_at INTEGER NOT NULL,
             UNIQUE (batch_id, artifact_id, account_id)
@@ -743,6 +824,11 @@ def init_db() -> None:
             helper_ticket TEXT UNIQUE,
             source_name TEXT NOT NULL DEFAULT '',
             source_path TEXT NOT NULL DEFAULT '',
+            video_sha256 TEXT NOT NULL DEFAULT '',
+            cover_fingerprint TEXT NOT NULL DEFAULT '',
+            caption_hash TEXT NOT NULL DEFAULT '',
+            content_fingerprint TEXT NOT NULL DEFAULT '',
+            content_cluster TEXT NOT NULL DEFAULT '',
             reel_fingerprint TEXT NOT NULL DEFAULT '',
             reel_signature_text TEXT NOT NULL DEFAULT '',
             matched_slot INTEGER,
@@ -761,40 +847,6 @@ def init_db() -> None:
         )
         """
     )
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_instagram_reel_posts_account_id ON instagram_reel_posts(account_id, published_at DESC)")
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_instagram_reel_posts_batch_id ON instagram_reel_posts(publish_batch_id, published_at DESC)")
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_instagram_reel_posts_collect_due ON instagram_reel_posts(collection_stage, next_collect_at, published_at DESC)")
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_instagram_reel_posts_collect_lease ON instagram_reel_posts(collection_state, lease_expires_at)")
-
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS instagram_reel_metric_snapshots (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            post_id INTEGER NOT NULL,
-            window_key TEXT NOT NULL,
-            status TEXT NOT NULL,
-            collected_at INTEGER NOT NULL,
-            plays_count INTEGER,
-            likes_count INTEGER,
-            comments_count INTEGER,
-            shares_count INTEGER,
-            saves_count INTEGER,
-            accounts_reached_count INTEGER,
-            watch_time_seconds REAL,
-            avg_watch_time_seconds REAL,
-            three_second_views_count INTEGER,
-            completion_rate_pct REAL,
-            raw_text_json TEXT NOT NULL DEFAULT '',
-            diagnostics_path TEXT NOT NULL DEFAULT '',
-            created_at INTEGER NOT NULL,
-            UNIQUE(post_id, window_key)
-        )
-        """
-    )
-    cur.execute(
-        "CREATE INDEX IF NOT EXISTS idx_instagram_reel_metric_snapshots_post_id ON instagram_reel_metric_snapshots(post_id, collected_at DESC)"
-    )
-
     cur.execute("PRAGMA table_info(publish_batch_accounts)")
     publish_batch_accounts_cols = [row["name"] for row in cur.fetchall()]
     if "state" not in publish_batch_accounts_cols:
@@ -847,6 +899,72 @@ def init_db() -> None:
     cur.execute("CREATE INDEX IF NOT EXISTS idx_publish_job_events_batch_account ON publish_job_events(batch_id, account_id, created_at DESC)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_publish_job_events_account_id ON publish_job_events(account_id, created_at DESC)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_publish_job_events_event_hash ON publish_job_events(event_hash)")
+
+    cur.execute("PRAGMA table_info(publish_jobs)")
+    publish_jobs_cols = [row["name"] for row in cur.fetchall()]
+    if "risk_score_at_lease" not in publish_jobs_cols:
+        cur.execute("ALTER TABLE publish_jobs ADD COLUMN risk_score_at_lease REAL NOT NULL DEFAULT 0")
+    if "blocked_by_policy" not in publish_jobs_cols:
+        cur.execute("ALTER TABLE publish_jobs ADD COLUMN blocked_by_policy INTEGER NOT NULL DEFAULT 0")
+    if "policy_reason" not in publish_jobs_cols:
+        cur.execute("ALTER TABLE publish_jobs ADD COLUMN policy_reason TEXT NOT NULL DEFAULT ''")
+    cur.execute("UPDATE publish_jobs SET risk_score_at_lease = 0 WHERE risk_score_at_lease IS NULL")
+    cur.execute("UPDATE publish_jobs SET blocked_by_policy = 0 WHERE blocked_by_policy IS NULL")
+    cur.execute("UPDATE publish_jobs SET policy_reason = '' WHERE policy_reason IS NULL")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_publish_jobs_blocked_by_policy ON publish_jobs(blocked_by_policy, state)")
+
+    cur.execute("PRAGMA table_info(instagram_reel_posts)")
+    instagram_reel_posts_cols = [row["name"] for row in cur.fetchall()]
+    if "video_sha256" not in instagram_reel_posts_cols:
+        cur.execute("ALTER TABLE instagram_reel_posts ADD COLUMN video_sha256 TEXT NOT NULL DEFAULT ''")
+    if "cover_fingerprint" not in instagram_reel_posts_cols:
+        cur.execute("ALTER TABLE instagram_reel_posts ADD COLUMN cover_fingerprint TEXT NOT NULL DEFAULT ''")
+    if "caption_hash" not in instagram_reel_posts_cols:
+        cur.execute("ALTER TABLE instagram_reel_posts ADD COLUMN caption_hash TEXT NOT NULL DEFAULT ''")
+    if "content_fingerprint" not in instagram_reel_posts_cols:
+        cur.execute("ALTER TABLE instagram_reel_posts ADD COLUMN content_fingerprint TEXT NOT NULL DEFAULT ''")
+    if "content_cluster" not in instagram_reel_posts_cols:
+        cur.execute("ALTER TABLE instagram_reel_posts ADD COLUMN content_cluster TEXT NOT NULL DEFAULT ''")
+    cur.execute("UPDATE instagram_reel_posts SET video_sha256 = '' WHERE video_sha256 IS NULL")
+    cur.execute("UPDATE instagram_reel_posts SET cover_fingerprint = '' WHERE cover_fingerprint IS NULL")
+    cur.execute("UPDATE instagram_reel_posts SET caption_hash = '' WHERE caption_hash IS NULL")
+    cur.execute("UPDATE instagram_reel_posts SET content_fingerprint = '' WHERE content_fingerprint IS NULL")
+    cur.execute("UPDATE instagram_reel_posts SET content_cluster = '' WHERE content_cluster IS NULL")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_instagram_reel_posts_account_id ON instagram_reel_posts(account_id, published_at DESC)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_instagram_reel_posts_batch_id ON instagram_reel_posts(publish_batch_id, published_at DESC)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_instagram_reel_posts_collect_due ON instagram_reel_posts(collection_stage, next_collect_at, published_at DESC)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_instagram_reel_posts_collect_lease ON instagram_reel_posts(collection_state, lease_expires_at)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_instagram_reel_posts_video_sha256 ON instagram_reel_posts(video_sha256)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_instagram_reel_posts_content_cluster ON instagram_reel_posts(content_cluster)")
+
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS instagram_reel_metric_snapshots (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            post_id INTEGER NOT NULL,
+            window_key TEXT NOT NULL,
+            status TEXT NOT NULL,
+            collected_at INTEGER NOT NULL,
+            plays_count INTEGER,
+            likes_count INTEGER,
+            comments_count INTEGER,
+            shares_count INTEGER,
+            saves_count INTEGER,
+            accounts_reached_count INTEGER,
+            watch_time_seconds REAL,
+            avg_watch_time_seconds REAL,
+            three_second_views_count INTEGER,
+            completion_rate_pct REAL,
+            raw_text_json TEXT NOT NULL DEFAULT '',
+            diagnostics_path TEXT NOT NULL DEFAULT '',
+            created_at INTEGER NOT NULL,
+            UNIQUE(post_id, window_key)
+        )
+        """
+    )
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_instagram_reel_metric_snapshots_post_id ON instagram_reel_metric_snapshots(post_id, collected_at DESC)"
+    )
 
     cur.execute("PRAGMA table_info(instagram_audit_items)")
     instagram_audit_items_cols = [row["name"] for row in cur.fetchall()]
@@ -1311,6 +1429,8 @@ def toggle_link_active(code: str, active: bool) -> bool:
         (1 if active else 0, int(time.time()), code_clean),
     )
     changed = cur.rowcount > 0
+    if changed:
+        _refresh_account_policy_state_with_cursor(cur, int(account_id), now=now)
     conn.commit()
     conn.close()
     return changed
@@ -1334,6 +1454,8 @@ def soft_delete_link(code: str) -> bool:
         (int(time.time()), code_clean),
     )
     changed = cur.rowcount > 0
+    if changed:
+        _refresh_account_policy_state_with_cursor(cur, int(account_id), now=now)
     conn.commit()
     conn.close()
     return changed
@@ -1837,6 +1959,27 @@ def normalize_account_mail_provider(raw: Optional[str]) -> str:
     return value
 
 
+def normalize_account_trust_state(raw: Optional[str]) -> str:
+    value = (raw or "yellow").strip().lower() or "yellow"
+    if value not in ACCOUNT_TRUST_STATE_KEYS:
+        raise ValueError("invalid trust state")
+    return value
+
+
+def normalize_account_status_manual(raw: Optional[str]) -> str:
+    value = (raw or "unknown").strip().lower() or "unknown"
+    if value not in ACCOUNT_STATUS_MANUAL_KEYS:
+        raise ValueError("invalid account status manual")
+    return value
+
+
+def normalize_account_status_auto(raw: Optional[str]) -> str:
+    value = (raw or "unknown").strip().lower() or "unknown"
+    if value not in ACCOUNT_STATUS_AUTO_KEYS:
+        raise ValueError("invalid account status auto")
+    return value
+
+
 def normalize_account_text_field(raw: Any) -> str:
     return re.sub(r"\s+", " ", str(raw or "").strip())
 
@@ -1956,6 +2099,13 @@ def normalize_instagram_publish_status(raw: Optional[str]) -> str:
     return value
 
 
+def normalize_instagram_session_mode(raw: Optional[str]) -> str:
+    value = (raw or "unknown").strip().lower() or "unknown"
+    if value not in INSTAGRAM_SESSION_MODE_KEYS:
+        raise ValueError("invalid instagram session mode")
+    return value
+
+
 def normalize_instagram_audit_batch_state(raw: Optional[str]) -> str:
     value = (raw or "queued").strip().lower() or "queued"
     if value not in INSTAGRAM_AUDIT_BATCH_STATE_KEYS:
@@ -2033,7 +2183,46 @@ def is_valid_instagram_emulator_serial(raw: Optional[str]) -> bool:
     return True
 
 
-def publish_account_readiness_issues(account: Any, *, include_rotation_state: bool = True) -> List[str]:
+def _coerce_int(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except Exception:
+        return 0
+
+
+def _timestamp_age_seconds(raw: Any, *, now: int) -> Optional[int]:
+    timestamp = _coerce_int(raw)
+    if timestamp <= 0 or timestamp > int(now):
+        return None
+    return max(0, int(now) - timestamp)
+
+
+def _score_penalty_for_age(raw: Any, *, now: int, windows: List[tuple[int, float]]) -> float:
+    age_seconds = _timestamp_age_seconds(raw, now=int(now))
+    if age_seconds is None:
+        return 0.0
+    for max_age_seconds, penalty in windows:
+        if age_seconds <= int(max_age_seconds):
+            return float(penalty)
+    return 0.0
+
+
+def _clamp_score(raw: float, *, min_value: float = 0.0, max_value: float = 100.0) -> float:
+    return max(float(min_value), min(float(max_value), float(raw)))
+
+
+def _cooldown_remaining_label(deadline: int, *, now: int) -> str:
+    remaining = max(0, int(deadline) - int(now))
+    hours = remaining // 3600
+    minutes = (remaining % 3600) // 60
+    if hours > 0:
+        return f"{hours}ч {minutes}м"
+    if minutes > 0:
+        return f"{minutes}м"
+    return f"{remaining}с"
+
+
+def publish_account_config_issues(account: Any, *, include_rotation_state: bool = True) -> List[str]:
     issues: List[str] = []
     login = str(_publish_account_field(account, "account_login") or "").strip()
     password_present = bool(_publish_account_field(account, "has_account_password", 0))
@@ -2054,6 +2243,152 @@ def publish_account_readiness_issues(account: Any, *, include_rotation_state: bo
             issues.append("Аккаунт помечен как нерабочий и исключён из автопубликации.")
         elif rotation_state != "working":
             issues.append("Аккаунт ещё не подтверждён как рабочий и не попадает в автопубликацию.")
+    return issues
+
+
+def _account_trust_snapshot(account: Any, *, now: Optional[int] = None) -> Dict[str, Any]:
+    now_ts = int(now or time.time())
+    score = 100.0
+    reasons: List[str] = []
+
+    try:
+        manual_status = normalize_account_status_manual(_publish_account_field(account, "account_status_manual", "unknown"))
+    except ValueError:
+        manual_status = "unknown"
+    try:
+        launch_status = normalize_instagram_launch_status(_publish_account_field(account, "instagram_launch_status", "idle"))
+    except ValueError:
+        launch_status = "idle"
+    try:
+        publish_status = normalize_instagram_publish_status(_publish_account_field(account, "instagram_publish_status", "idle"))
+    except ValueError:
+        publish_status = "idle"
+    try:
+        session_mode = normalize_instagram_session_mode(_publish_account_field(account, "last_session_mode", "unknown"))
+    except ValueError:
+        session_mode = "unknown"
+    try:
+        mail_status = normalize_account_mail_status(_publish_account_field(account, "mail_status", "never_checked"))
+    except ValueError:
+        mail_status = "never_checked"
+
+    current_proxy = str(_publish_account_field(account, "proxy") or "").strip()
+    pinned_proxy = str(_publish_account_field(account, "pinned_proxy") or "").strip()
+    emulator_serial = str(_publish_account_field(account, "instagram_emulator_serial") or "").strip()
+    last_login_serial = str(_publish_account_field(account, "last_login_serial") or "").strip()
+
+    if manual_status == "limited_recommendations":
+        score -= 55
+        reasons.append("Вручную отмечено ограничение рекомендаций.")
+
+    publish_penalties = {
+        "challenge_required": 35,
+        "email_code_required": 25,
+        "manual_2fa_required": 20,
+        "invalid_password": 35,
+        "publish_error": 15,
+    }
+    launch_penalties = {
+        "challenge_required": 30,
+        "manual_2fa_required": 18,
+        "invalid_password": 35,
+        "helper_error": 10,
+    }
+    if publish_status in publish_penalties:
+        score -= float(publish_penalties[publish_status])
+        reasons.append(f"Последняя публикация закончилась статусом {publish_status}.")
+    if launch_status in launch_penalties:
+        score -= float(launch_penalties[launch_status])
+        reasons.append(f"Последний вход закончился статусом {launch_status}.")
+
+    challenge_penalty = _score_penalty_for_age(
+        _publish_account_field(account, "last_challenge_at"),
+        now=now_ts,
+        windows=[(7 * 24 * 60 * 60, 35.0), (30 * 24 * 60 * 60, 20.0)],
+    )
+    if challenge_penalty > 0:
+        score -= challenge_penalty
+        reasons.append("Недавний challenge снижает trust.")
+
+    clean_login_penalty = _score_penalty_for_age(
+        _publish_account_field(account, "last_clean_login_at"),
+        now=now_ts,
+        windows=[(72 * 60 * 60, 20.0), (7 * 24 * 60 * 60, 10.0)],
+    )
+    if clean_login_penalty > 0:
+        score -= clean_login_penalty
+        reasons.append("Недавний clean login повышает риск недоверия со стороны Instagram.")
+
+    if session_mode == "clean_login":
+        recent_mode_penalty = _score_penalty_for_age(
+            _publish_account_field(account, "last_session_mode_at"),
+            now=now_ts,
+            windows=[(72 * 60 * 60, 15.0)],
+        )
+        if recent_mode_penalty > 0:
+            score -= recent_mode_penalty
+
+    if pinned_proxy and current_proxy and pinned_proxy != current_proxy:
+        score -= 35
+        reasons.append("Текущий proxy отличается от закреплённого.")
+    if last_login_serial and emulator_serial and last_login_serial != emulator_serial:
+        score -= 25
+        reasons.append("Эмулятор отличается от последнего стабильного логина.")
+    if not emulator_serial:
+        score -= 20
+    if mail_status in {"auth_error", "connect_error"}:
+        score -= 10
+    if str(_publish_account_field(account, "twofa") or "").strip() and not account_twofa_automation_ready(account):
+        score -= 10
+
+    stable_login_age = _timestamp_age_seconds(_publish_account_field(account, "last_stable_login_at"), now=now_ts)
+    if stable_login_age is not None and stable_login_age <= 14 * 24 * 60 * 60:
+        score += 8
+    stable_publish_age = _timestamp_age_seconds(_publish_account_field(account, "last_stable_publish_at"), now=now_ts)
+    if stable_publish_age is not None and stable_publish_age <= 14 * 24 * 60 * 60:
+        score += 12
+
+    score = _clamp_score(score)
+    trust_state = "green" if score >= 75 else "yellow" if score >= 45 else "red"
+    return {
+        "trust_score": round(float(score), 1),
+        "trust_state": trust_state,
+        "reasons": reasons[:4],
+    }
+
+
+def account_trust_snapshot(account: Any, *, now: Optional[int] = None) -> Dict[str, Any]:
+    return _account_trust_snapshot(account, now=now)
+
+
+def publish_account_policy_issues(account: Any, *, now: Optional[int] = None) -> List[str]:
+    if str(_publish_account_field(account, "type") or "").strip().lower() not in {"", "instagram"}:
+        return []
+    issues: List[str] = []
+    account_id = _coerce_int(_publish_account_field(account, "id"))
+    if account_id <= 0:
+        snapshot = _account_shadow_snapshot_from_account(account, now=now)
+    else:
+        snapshot = get_account_shadow_snapshot(account_id)
+    if str(snapshot.get("shadow_status") or "ok") != "shadowban_suspected":
+        return issues
+    reasons = list(snapshot.get("shadow_reasons") or [])
+    if snapshot.get("shadow_confirmed_by_instagram"):
+        if reasons:
+            issues.append(f"Instagram подтвердил ограничение рекомендаций. {' '.join(reasons)}")
+        else:
+            issues.append("Instagram подтвердил ограничение рекомендаций.")
+        return issues
+    if reasons:
+        issues.extend(reasons[:4])
+    else:
+        issues.append("Комбинированный shadow-checker считает аккаунт слишком рискованным для publish.")
+    return issues
+
+
+def publish_account_readiness_issues(account: Any, *, include_rotation_state: bool = True) -> List[str]:
+    issues = publish_account_config_issues(account, include_rotation_state=include_rotation_state)
+    issues.extend(item for item in publish_account_policy_issues(account) if item not in issues)
     return issues
 
 
@@ -2226,7 +2561,7 @@ def _account_auto_rotation_audit_candidate(account: Any) -> Optional[Dict[str, A
 
 
 def _account_auto_rotation_config_candidate(account: Any) -> Optional[Dict[str, Any]]:
-    issues = publish_account_readiness_issues(account, include_rotation_state=False)
+    issues = publish_account_config_issues(account, include_rotation_state=False)
     if str(_publish_account_field(account, "twofa") or "").strip() and not account_twofa_automation_ready(account):
         issues.append("2FA заполнен в неверном формате. Нужен валидный base32 secret или otpauth:// URI.")
     updated_at = int(_publish_account_field(account, "updated_at") or 0)
@@ -2287,6 +2622,7 @@ def _get_account_rotation_fields_with_cursor(cur: sqlite3.Cursor, account_id: in
             type,
             account_login,
             account_password,
+            COALESCE(proxy, '') AS proxy,
             COALESCE(twofa, '') AS twofa,
             COALESCE(email, '') AS email,
             email_password,
@@ -2302,6 +2638,19 @@ def _get_account_rotation_fields_with_cursor(cur: sqlite3.Cursor, account_id: in
             COALESCE(instagram_publish_status, 'idle') AS instagram_publish_status,
             COALESCE(instagram_publish_detail, '') AS instagram_publish_detail,
             instagram_publish_updated_at,
+            COALESCE(trust_score, 50) AS trust_score,
+            COALESCE(trust_state, 'yellow') AS trust_state,
+            COALESCE(pinned_proxy, '') AS pinned_proxy,
+            COALESCE(last_login_serial, '') AS last_login_serial,
+            COALESCE(last_session_mode, 'unknown') AS last_session_mode,
+            last_session_mode_at,
+            last_stable_login_at,
+            last_stable_publish_at,
+            last_clean_login_at,
+            last_challenge_at,
+            publish_cooldown_until,
+            COALESCE(account_status_manual, 'unknown') AS account_status_manual,
+            account_status_updated_at,
             COALESCE((
                 SELECT ai.resolution_state
                 FROM instagram_audit_items ai
@@ -2334,6 +2683,682 @@ def _get_account_rotation_fields_with_cursor(cur: sqlite3.Cursor, account_id: in
         (int(account_id),),
     )
     return cur.fetchone()
+
+
+def _refresh_account_policy_state_with_cursor(cur: sqlite3.Cursor, account_id: int, *, now: Optional[int] = None) -> bool:
+    row = _get_account_rotation_fields_with_cursor(cur, int(account_id))
+    if row is None:
+        return False
+    timestamp = int(now or time.time())
+    account = dict(row)
+    snapshot = _account_trust_snapshot(account, now=timestamp)
+    try:
+        current_trust_state = normalize_account_trust_state(str(account.get("trust_state") or "yellow"))
+    except ValueError:
+        current_trust_state = "yellow"
+    current_trust_score = float(account.get("trust_score") or 50.0)
+    current_pinned_proxy = str(account.get("pinned_proxy") or "").strip()
+    current_proxy = str(account.get("proxy") or "").strip()
+    next_pinned_proxy = current_pinned_proxy or current_proxy
+    next_trust_state = normalize_account_trust_state(str(snapshot.get("trust_state") or "yellow"))
+    next_trust_score = float(snapshot.get("trust_score") or 50.0)
+    if (
+        abs(current_trust_score - next_trust_score) < 0.05
+        and current_trust_state == next_trust_state
+        and current_pinned_proxy == next_pinned_proxy
+    ):
+        return False
+    cur.execute(
+        """
+        UPDATE accounts
+        SET trust_score = ?,
+            trust_state = ?,
+            pinned_proxy = ?,
+            updated_at = ?
+        WHERE id = ?
+        """,
+        (
+            next_trust_score,
+            next_trust_state,
+            next_pinned_proxy,
+            timestamp,
+            int(account_id),
+        ),
+    )
+    return cur.rowcount > 0
+
+
+def refresh_account_policy_state(account_id: int) -> bool:
+    conn = _connect()
+    cur = conn.cursor()
+    try:
+        cur.execute("BEGIN IMMEDIATE")
+        changed = _refresh_account_policy_state_with_cursor(cur, int(account_id), now=int(time.time()))
+        conn.commit()
+        return changed
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def _append_unique_reason(reasons: List[str], text: Optional[str]) -> None:
+    value = str(text or "").strip()
+    if value and value not in reasons:
+        reasons.append(value)
+
+
+def _shadow_status_rank(raw: Optional[str]) -> int:
+    value = (raw or "ok").strip().lower() or "ok"
+    return {"ok": 0, "risk": 1, "shadowban_suspected": 2}.get(value, 0)
+
+
+def _account_distribution_rows_with_cursor(cur: sqlite3.Cursor, account_id: int, *, limit: int = 12) -> List[Dict[str, Any]]:
+    cur.execute(
+        """
+        SELECT
+            p.id AS post_id,
+            p.published_at,
+            s.window_key,
+            COALESCE(s.status, '') AS status,
+            s.accounts_reached_count
+        FROM instagram_reel_posts p
+        LEFT JOIN instagram_reel_metric_snapshots s ON s.post_id = p.id
+        WHERE p.id IN (
+            SELECT id
+            FROM instagram_reel_posts
+            WHERE account_id = ?
+            ORDER BY published_at DESC, id DESC
+            LIMIT ?
+        )
+        ORDER BY p.published_at DESC, p.id DESC
+        """,
+        (int(account_id), int(limit)),
+    )
+    rows = cur.fetchall()
+    posts: List[Dict[str, Any]] = []
+    by_post_id: Dict[int, Dict[str, Any]] = {}
+    for row in rows:
+        post_id = int(row["post_id"])
+        post = by_post_id.get(post_id)
+        if post is None:
+            post = {
+                "post_id": post_id,
+                "published_at": int(row["published_at"] or 0),
+                "snapshots": {},
+            }
+            by_post_id[post_id] = post
+            posts.append(post)
+        window_key = str(row["window_key"] or "").strip()
+        if not window_key:
+            continue
+        post["snapshots"][window_key] = {
+            "window_key": window_key,
+            "status": str(row["status"] or "").strip().lower(),
+            "accounts_reached_count": row["accounts_reached_count"],
+        }
+    return posts
+
+
+def _preferred_reel_window(snapshot_map: Dict[str, Dict[str, Any]]) -> tuple[Optional[str], Optional[Dict[str, Any]]]:
+    for window_key in INSTAGRAM_REEL_BASELINE_WINDOWS:
+        snapshot = snapshot_map.get(window_key)
+        if snapshot is None:
+            continue
+        if str(snapshot.get("status") or "").strip().lower() not in {"ok", "partial"}:
+            continue
+        if snapshot.get("accounts_reached_count") is None:
+            continue
+        return window_key, snapshot
+    return None, None
+
+
+def _baseline_risk_state_for_ratio(reach_ratio: Optional[float]) -> tuple[float, str, str]:
+    if reach_ratio is None:
+        return 48.0, "yellow", "Не хватает baseline для сопоставимого окна метрик."
+    if reach_ratio < 0.2:
+        return 92.0, "red", "Последний Reel обвалился относительно baseline по охвату."
+    if reach_ratio < 0.35:
+        return 82.0, "red", "Последний Reel сильно ниже baseline по охвату."
+    if reach_ratio < 0.6:
+        return 62.0, "yellow", "Последний Reel заметно слабее baseline по охвату."
+    if reach_ratio < 0.85:
+        return 44.0, "yellow", "Последний Reel ниже baseline по охвату."
+    return 18.0, "green", ""
+
+
+def _account_distribution_risk_with_cursor(cur: sqlite3.Cursor, account_id: int, *, trust_score: Optional[float] = None) -> Dict[str, Any]:
+    cur.execute(
+        """
+        SELECT COALESCE(trust_score, 50) AS trust_score
+        FROM accounts
+        WHERE id = ?
+        LIMIT 1
+        """,
+        (int(account_id),),
+    )
+    account_row = cur.fetchone()
+    base_trust_score = float(trust_score if trust_score is not None else (account_row["trust_score"] if account_row is not None else 50.0) or 50.0)
+    posts = _account_distribution_rows_with_cursor(cur, int(account_id))
+    if not posts:
+        return {
+            "risk_score": round(float(max(12.0, min(24.0, 100.0 - (base_trust_score * 0.25)))), 1),
+            "risk_state": "green",
+            "reasons": [],
+            "latest_reach": None,
+            "baseline_reach_avg": 0.0,
+            "reach_ratio": None,
+            "samples": 0,
+            "comparable_window": None,
+            "latest_post_id": None,
+            "insufficient_data": True,
+        }
+
+    latest_post = posts[0]
+    latest_window, latest_snapshot = _preferred_reel_window(dict(latest_post.get("snapshots") or {}))
+    if latest_window is None or latest_snapshot is None:
+        return {
+            "risk_score": 48.0,
+            "risk_state": "yellow",
+            "reasons": ["Для последнего Reel ещё нет сопоставимого окна 24h / 6h / 30m."],
+            "latest_reach": None,
+            "baseline_reach_avg": 0.0,
+            "reach_ratio": None,
+            "samples": 0,
+            "comparable_window": None,
+            "latest_post_id": int(latest_post["post_id"]),
+            "insufficient_data": True,
+        }
+
+    baseline_values: List[int] = []
+    for post in posts[1:]:
+        snapshot = dict(post.get("snapshots") or {}).get(latest_window)
+        if snapshot is None:
+            continue
+        if str(snapshot.get("status") or "").strip().lower() not in {"ok", "partial"}:
+            continue
+        reach_value = snapshot.get("accounts_reached_count")
+        if reach_value is None:
+            continue
+        try:
+            reach_int = int(reach_value)
+        except Exception:
+            continue
+        if reach_int > 0:
+            baseline_values.append(reach_int)
+
+    latest_reach_raw = latest_snapshot.get("accounts_reached_count")
+    latest_reach = int(latest_reach_raw or 0) if latest_reach_raw is not None else None
+    baseline_avg = float(sum(baseline_values) / len(baseline_values)) if baseline_values else 0.0
+    reach_ratio = (
+        float(latest_reach or 0) / baseline_avg
+        if latest_reach is not None and baseline_avg > 0
+        else None
+    )
+    risk_score, risk_state, reason = _baseline_risk_state_for_ratio(reach_ratio if baseline_values else None)
+    reasons: List[str] = []
+    if baseline_values:
+        if reason:
+            _append_unique_reason(reasons, f"{reason} Окно: {latest_window}.")
+    else:
+        _append_unique_reason(reasons, f"Недостаточно baseline Reel-метрик в окне {latest_window}.")
+    return {
+        "risk_score": round(float(risk_score), 1),
+        "risk_state": risk_state,
+        "reasons": reasons[:3],
+        "latest_reach": latest_reach,
+        "baseline_reach_avg": round(baseline_avg, 1) if baseline_avg > 0 else 0.0,
+        "reach_ratio": round(float(reach_ratio), 3) if reach_ratio is not None else None,
+        "samples": len(baseline_values),
+        "comparable_window": latest_window,
+        "latest_post_id": int(latest_post["post_id"]),
+        "insufficient_data": not baseline_values,
+    }
+
+
+def get_account_distribution_risk(account_id: int) -> Dict[str, Any]:
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute("SELECT COALESCE(trust_score, 50) AS trust_score FROM accounts WHERE id = ? LIMIT 1", (int(account_id),))
+    row = cur.fetchone()
+    snapshot = _account_distribution_risk_with_cursor(cur, int(account_id), trust_score=float(row["trust_score"] or 50.0) if row is not None else 50.0)
+    conn.close()
+    return snapshot
+
+
+def _account_shadow_snapshot_from_account(
+    account: Any,
+    *,
+    cur: Optional[sqlite3.Cursor] = None,
+    now: Optional[int] = None,
+) -> Dict[str, Any]:
+    now_ts = int(now or time.time())
+    account_id = _coerce_int(_publish_account_field(account, "id"))
+    trust_snapshot = _account_trust_snapshot(account, now=now_ts)
+    trust_score = float(trust_snapshot.get("trust_score") or 50.0)
+    try:
+        trust_state = normalize_account_trust_state(str(trust_snapshot.get("trust_state") or "yellow"))
+    except ValueError:
+        trust_state = "yellow"
+    try:
+        manual_status = normalize_account_status_manual(_publish_account_field(account, "account_status_manual", "unknown"))
+    except ValueError:
+        manual_status = "unknown"
+    try:
+        auto_status = normalize_account_status_auto(_publish_account_field(account, "account_status_auto", "unknown"))
+    except ValueError:
+        auto_status = "unknown"
+    current_proxy = str(_publish_account_field(account, "proxy") or "").strip()
+    pinned_proxy = str(_publish_account_field(account, "pinned_proxy") or "").strip()
+    emulator_serial = str(_publish_account_field(account, "instagram_emulator_serial") or "").strip()
+    last_login_serial = str(_publish_account_field(account, "last_login_serial") or "").strip()
+    cooldown_until = _coerce_int(_publish_account_field(account, "publish_cooldown_until"))
+    last_challenge_at = _coerce_int(_publish_account_field(account, "last_challenge_at"))
+    last_stable_login_at = _coerce_int(_publish_account_field(account, "last_stable_login_at"))
+    last_stable_publish_at = _coerce_int(_publish_account_field(account, "last_stable_publish_at"))
+    last_session_mode = str(_publish_account_field(account, "last_session_mode") or "unknown").strip().lower() or "unknown"
+    last_session_mode_at = _coerce_int(_publish_account_field(account, "last_session_mode_at"))
+
+    reasons: List[str] = []
+    score = 0.0
+    confirmed_by_instagram = False
+    if manual_status == "limited_recommendations":
+        confirmed_by_instagram = True
+        score = max(score, 98.0)
+        _append_unique_reason(reasons, "Instagram Account Status вручную отмечен как limited recommendations.")
+    if auto_status == "limited_recommendations":
+        confirmed_by_instagram = True
+        score = max(score, 98.0)
+        _append_unique_reason(reasons, "Автопроверка helper показала limited recommendations.")
+    if auto_status == "inconclusive":
+        score = max(score, 22.0)
+        _append_unique_reason(reasons, "Автопроверка рекомендаций не дала однозначного результата.")
+
+    distribution_snapshot = (
+        _account_distribution_risk_with_cursor(cur, account_id, trust_score=trust_score)
+        if cur is not None and account_id > 0
+        else get_account_distribution_risk(account_id)
+        if account_id > 0
+        else {}
+    )
+    distribution_state = str(distribution_snapshot.get("risk_state") or "green").strip().lower() or "green"
+    distribution_reason = next(iter(distribution_snapshot.get("reasons") or []), "")
+    if distribution_state == "red":
+        score += 36.0
+        _append_unique_reason(reasons, distribution_reason or "Сильный провал последнего Reel относительно baseline.")
+    elif distribution_state == "yellow":
+        score += 18.0
+        _append_unique_reason(reasons, distribution_reason)
+
+    if trust_state == "red":
+        score += 28.0
+        _append_unique_reason(reasons, f"Trust score слишком низкий: {int(round(trust_score))}/100.")
+    elif trust_state == "yellow" and trust_score < 55:
+        score += 12.0
+        for item in list(trust_snapshot.get("reasons") or [])[:1]:
+            _append_unique_reason(reasons, item)
+
+    if cooldown_until > now_ts:
+        # A temporary pacing cooldown is a risk signal, but not by itself proof of
+        # recommendation suppression. Keep it visible without forcing a red verdict.
+        score = max(score + 10.0, 28.0)
+        _append_unique_reason(reasons, f"Аккаунт на cooldown ещё { _cooldown_remaining_label(cooldown_until, now=now_ts) }.")
+    if pinned_proxy and current_proxy and pinned_proxy != current_proxy:
+        score += 18.0
+        _append_unique_reason(reasons, "Proxy drift: текущий proxy отличается от закреплённого.")
+    if last_login_serial and emulator_serial and last_login_serial != emulator_serial:
+        score += 15.0
+        _append_unique_reason(reasons, "Serial drift: эмулятор отличается от последнего стабильного логина.")
+    if (
+        last_challenge_at > 0
+        and last_challenge_at >= max(last_stable_login_at, last_stable_publish_at)
+        and now_ts - last_challenge_at <= 30 * 24 * 60 * 60
+    ):
+        score += 24.0
+        _append_unique_reason(reasons, "После последнего challenge ещё не было стабильного login/publish.")
+    if last_session_mode == "clean_login" and last_session_mode_at > 0 and now_ts - last_session_mode_at <= 72 * 60 * 60:
+        score += 10.0
+        _append_unique_reason(reasons, "Недавний clean login повышает риск ограничений.")
+
+    score = _clamp_score(score)
+    if confirmed_by_instagram or score >= 70:
+        shadow_status = "shadowban_suspected"
+    elif score >= 20:
+        shadow_status = "risk"
+    else:
+        shadow_status = "ok"
+    return {
+        "shadow_status": shadow_status,
+        "shadow_score": round(float(score), 1),
+        "shadow_reasons": reasons[:6],
+        "shadow_confirmed_by_instagram": confirmed_by_instagram,
+        "account_status_manual": manual_status,
+        "account_status_auto": auto_status,
+        "account_status_auto_detail": str(_publish_account_field(account, "account_status_auto_detail") or "").strip(),
+        "account_status_auto_checked_at": _coerce_int(_publish_account_field(account, "account_status_auto_checked_at")),
+        "account_status_auto_diagnostics_path": str(_publish_account_field(account, "account_status_auto_diagnostics_path") or "").strip(),
+        "distribution_risk_state": distribution_state,
+        "distribution_risk_score": distribution_snapshot.get("risk_score"),
+        "distribution_risk_reasons": list(distribution_snapshot.get("reasons") or []),
+        "distribution_risk_window": distribution_snapshot.get("comparable_window"),
+        "distribution_risk_ratio": distribution_snapshot.get("reach_ratio"),
+        "distribution_risk_samples": int(distribution_snapshot.get("samples") or 0),
+    }
+
+
+def get_account_shadow_snapshot(account_id: int) -> Dict[str, Any]:
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT
+            id,
+            type,
+            COALESCE(proxy, '') AS proxy,
+            COALESCE(instagram_emulator_serial, '') AS instagram_emulator_serial,
+            COALESCE(trust_score, 50) AS trust_score,
+            COALESCE(trust_state, 'yellow') AS trust_state,
+            COALESCE(pinned_proxy, '') AS pinned_proxy,
+            COALESCE(last_login_serial, '') AS last_login_serial,
+            COALESCE(last_session_mode, 'unknown') AS last_session_mode,
+            last_session_mode_at,
+            last_stable_login_at,
+            last_stable_publish_at,
+            last_clean_login_at,
+            last_challenge_at,
+            publish_cooldown_until,
+            COALESCE(account_status_manual, 'unknown') AS account_status_manual,
+            COALESCE(account_status_auto, 'unknown') AS account_status_auto,
+            COALESCE(account_status_auto_detail, '') AS account_status_auto_detail,
+            account_status_auto_checked_at,
+            COALESCE(account_status_auto_diagnostics_path, '') AS account_status_auto_diagnostics_path,
+            COALESCE(instagram_launch_status, 'idle') AS instagram_launch_status,
+            COALESCE(instagram_launch_detail, '') AS instagram_launch_detail,
+            instagram_launch_updated_at,
+            COALESCE(instagram_publish_status, 'idle') AS instagram_publish_status,
+            COALESCE(instagram_publish_detail, '') AS instagram_publish_detail,
+            instagram_publish_updated_at,
+            COALESCE(mail_status, 'never_checked') AS mail_status,
+            COALESCE(twofa, '') AS twofa
+        FROM accounts
+        WHERE id = ?
+        LIMIT 1
+        """,
+        (int(account_id),),
+    )
+    row = cur.fetchone()
+    if row is None:
+        conn.close()
+        raise ValueError("account not found")
+    snapshot = _account_shadow_snapshot_from_account(row, cur=cur, now=int(time.time()))
+    conn.close()
+    return snapshot
+
+
+def _reel_baseline_metrics_with_cursor(cur: sqlite3.Cursor, post_id: int) -> Dict[str, Any]:
+    cur.execute(
+        """
+        SELECT id, account_id, published_at
+        FROM instagram_reel_posts
+        WHERE id = ?
+        LIMIT 1
+        """,
+        (int(post_id),),
+    )
+    post_row = cur.fetchone()
+    if post_row is None:
+        raise ValueError("instagram reel post not found")
+    account_id = int(post_row["account_id"])
+    published_at = int(post_row["published_at"] or 0)
+
+    cur.execute(
+        """
+        SELECT
+            p.id AS post_id,
+            p.published_at,
+            s.window_key,
+            COALESCE(s.status, '') AS status,
+            s.accounts_reached_count
+        FROM instagram_reel_posts p
+        LEFT JOIN instagram_reel_metric_snapshots s ON s.post_id = p.id
+        WHERE p.account_id = ?
+          AND (
+            p.published_at < ?
+            OR (p.published_at = ? AND p.id <= ?)
+          )
+        ORDER BY p.published_at DESC, p.id DESC
+        LIMIT 80
+        """,
+        (account_id, published_at, published_at, int(post_id)),
+    )
+    posts: List[Dict[str, Any]] = []
+    by_post_id: Dict[int, Dict[str, Any]] = {}
+    for row in cur.fetchall():
+        row_post_id = int(row["post_id"])
+        post = by_post_id.get(row_post_id)
+        if post is None:
+            post = {
+                "post_id": row_post_id,
+                "published_at": int(row["published_at"] or 0),
+                "snapshots": {},
+            }
+            by_post_id[row_post_id] = post
+            posts.append(post)
+        window_key = str(row["window_key"] or "").strip()
+        if not window_key:
+            continue
+        post["snapshots"][window_key] = {
+            "status": str(row["status"] or "").strip().lower(),
+            "accounts_reached_count": row["accounts_reached_count"],
+        }
+
+    current_post = next((item for item in posts if int(item["post_id"]) == int(post_id)), {"snapshots": {}})
+    window_key, latest_snapshot = _preferred_reel_window(dict(current_post.get("snapshots") or {}))
+    if window_key is None or latest_snapshot is None:
+        return {
+            "comparable_window": None,
+            "latest_reach": None,
+            "baseline_reach_avg": 0.0,
+            "reach_ratio": None,
+            "samples": 0,
+            "insufficient_data": True,
+            "reason": "Для этого Reel ещё нет сопоставимого окна 24h / 6h / 30m.",
+        }
+
+    baseline_values: List[int] = []
+    for post in posts:
+        if int(post["post_id"]) == int(post_id):
+            continue
+        snapshot = dict(post.get("snapshots") or {}).get(window_key)
+        if snapshot is None:
+            continue
+        if str(snapshot.get("status") or "").strip().lower() not in {"ok", "partial"}:
+            continue
+        reach_value = snapshot.get("accounts_reached_count")
+        if reach_value is None:
+            continue
+        try:
+            reach_int = int(reach_value)
+        except Exception:
+            continue
+        if reach_int > 0:
+            baseline_values.append(reach_int)
+
+    latest_reach_raw = latest_snapshot.get("accounts_reached_count")
+    latest_reach = int(latest_reach_raw or 0) if latest_reach_raw is not None else None
+    baseline_avg = float(sum(baseline_values) / len(baseline_values)) if baseline_values else 0.0
+    reach_ratio = (
+        float(latest_reach or 0) / baseline_avg
+        if latest_reach is not None and baseline_avg > 0
+        else None
+    )
+    return {
+        "comparable_window": window_key,
+        "latest_reach": latest_reach,
+        "baseline_reach_avg": round(baseline_avg, 1) if baseline_avg > 0 else 0.0,
+        "reach_ratio": round(float(reach_ratio), 3) if reach_ratio is not None else None,
+        "samples": len(baseline_values),
+        "insufficient_data": not baseline_values,
+        "reason": (
+            f"Недостаточно baseline Reel-метрик в окне {window_key}."
+            if not baseline_values
+            else ""
+        ),
+    }
+
+
+def get_instagram_reel_shadow_snapshot(post_id: int) -> Dict[str, Any]:
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute(_instagram_reel_posts_query("WHERE p.id = ? LIMIT 1"), (int(post_id),))
+    post_row = cur.fetchone()
+    if post_row is None:
+        conn.close()
+        raise ValueError("instagram reel post not found")
+    post = dict(post_row)
+    cur.execute(
+        """
+        SELECT
+            id,
+            type,
+            COALESCE(proxy, '') AS proxy,
+            COALESCE(instagram_emulator_serial, '') AS instagram_emulator_serial,
+            COALESCE(trust_score, 50) AS trust_score,
+            COALESCE(trust_state, 'yellow') AS trust_state,
+            COALESCE(pinned_proxy, '') AS pinned_proxy,
+            COALESCE(last_login_serial, '') AS last_login_serial,
+            COALESCE(last_session_mode, 'unknown') AS last_session_mode,
+            last_session_mode_at,
+            last_stable_login_at,
+            last_stable_publish_at,
+            last_clean_login_at,
+            last_challenge_at,
+            publish_cooldown_until,
+            COALESCE(account_status_manual, 'unknown') AS account_status_manual,
+            COALESCE(account_status_auto, 'unknown') AS account_status_auto,
+            COALESCE(account_status_auto_detail, '') AS account_status_auto_detail,
+            account_status_auto_checked_at,
+            COALESCE(account_status_auto_diagnostics_path, '') AS account_status_auto_diagnostics_path,
+            COALESCE(instagram_launch_status, 'idle') AS instagram_launch_status,
+            COALESCE(instagram_launch_detail, '') AS instagram_launch_detail,
+            instagram_launch_updated_at,
+            COALESCE(instagram_publish_status, 'idle') AS instagram_publish_status,
+            COALESCE(instagram_publish_detail, '') AS instagram_publish_detail,
+            instagram_publish_updated_at,
+            COALESCE(mail_status, 'never_checked') AS mail_status,
+            COALESCE(twofa, '') AS twofa
+        FROM accounts
+        WHERE id = ?
+        LIMIT 1
+        """,
+        (int(post["account_id"]),),
+    )
+    account_row = cur.fetchone()
+    if account_row is None:
+        conn.close()
+        raise ValueError("account not found")
+
+    account_shadow = _account_shadow_snapshot_from_account(account_row, cur=cur, now=int(time.time()))
+    baseline = _reel_baseline_metrics_with_cursor(cur, int(post_id))
+    latest_status = str(post.get("latest_snapshot_status") or "").strip().lower()
+    collection_state = str(post.get("collection_state") or "").strip().lower()
+    reasons: List[str] = []
+    score = 0.0
+
+    if baseline["insufficient_data"]:
+        score = max(score, 32.0)
+        _append_unique_reason(reasons, str(baseline.get("reason") or "Недостаточно данных для shadow-check по Reel."))
+    else:
+        ratio = baseline.get("reach_ratio")
+        risk_score, risk_state, reason = _baseline_risk_state_for_ratio(float(ratio) if ratio is not None else None)
+        score += max(0.0, float(risk_score) - 12.0)
+        if reason:
+            _append_unique_reason(reasons, f"{reason} Окно: {baseline['comparable_window']}.")
+
+    if latest_status in {"unavailable", "not_found", "failed"}:
+        score = max(score, 34.0)
+        _append_unique_reason(reasons, "Метрики Reel недоступны или не собраны полностью.")
+    elif collection_state in {"scheduled", "leased"}:
+        score = max(score, 24.0)
+        _append_unique_reason(reasons, "Сбор Reel-метрик ещё не завершён.")
+
+    cur.execute(
+        """
+        SELECT
+            COUNT(CASE WHEN id <> ? AND ? <> '' AND COALESCE(video_sha256, '') = ? THEN 1 END) AS duplicate_video_sha256_count,
+            COUNT(CASE WHEN id <> ? AND ? <> '' AND COALESCE(content_fingerprint, '') = ? THEN 1 END) AS duplicate_content_fingerprint_count,
+            COUNT(CASE WHEN id <> ? AND ? <> '' AND COALESCE(content_cluster, '') = ? THEN 1 END) AS duplicate_content_cluster_count,
+            COUNT(CASE WHEN id <> ? AND ? <> '' AND COALESCE(caption_hash, '') = ? THEN 1 END) AS duplicate_caption_hash_count
+        FROM instagram_reel_posts
+        """,
+        (
+            int(post_id),
+            str(post.get("video_sha256") or "").strip(),
+            str(post.get("video_sha256") or "").strip(),
+            int(post_id),
+            str(post.get("content_fingerprint") or "").strip(),
+            str(post.get("content_fingerprint") or "").strip(),
+            int(post_id),
+            str(post.get("content_cluster") or "").strip(),
+            str(post.get("content_cluster") or "").strip(),
+            int(post_id),
+            str(post.get("caption_hash") or "").strip(),
+            str(post.get("caption_hash") or "").strip(),
+        ),
+    )
+    duplicate_row = cur.fetchone()
+    duplicate_video_hash_count = int(duplicate_row["duplicate_video_sha256_count"] or 0) if duplicate_row is not None else 0
+    duplicate_content_fingerprint_count = int(duplicate_row["duplicate_content_fingerprint_count"] or 0) if duplicate_row is not None else 0
+    duplicate_content_cluster_count = int(duplicate_row["duplicate_content_cluster_count"] or 0) if duplicate_row is not None else 0
+    duplicate_caption_hash_count = int(duplicate_row["duplicate_caption_hash_count"] or 0) if duplicate_row is not None else 0
+
+    if duplicate_video_hash_count > 0:
+        score += 24.0
+        _append_unique_reason(reasons, "Видео уже встречалось в опубликованных Reel по точному hash.")
+    if duplicate_content_fingerprint_count > 0:
+        score += 12.0
+        _append_unique_reason(reasons, "Контент визуально похож на уже опубликованный Reel.")
+    if duplicate_content_cluster_count > 0:
+        score += 10.0
+        _append_unique_reason(reasons, "Reel попадает в уже использованный content cluster.")
+    if duplicate_caption_hash_count > 0:
+        score += 8.0
+        _append_unique_reason(reasons, "Подпись совпадает с уже опубликованным Reel.")
+
+    if str(account_shadow.get("shadow_status") or "ok") == "shadowban_suspected":
+        score = max(score, 34.0)
+        _append_unique_reason(reasons, "У аккаунта уже есть сильные shadowban-сигналы.")
+    elif str(account_shadow.get("shadow_status") or "ok") == "risk":
+        score = max(score, 22.0)
+        _append_unique_reason(reasons, "Аккаунт уже в зоне риска по shadow-сигналам.")
+
+    score = _clamp_score(score)
+    if baseline["insufficient_data"]:
+        shadow_status = "risk"
+    elif score >= 70:
+        shadow_status = "shadowban_suspected"
+    elif score >= 20:
+        shadow_status = "risk"
+    else:
+        shadow_status = "ok"
+
+    conn.close()
+    return {
+        "shadow_status": shadow_status,
+        "shadow_score": round(float(score), 1),
+        "shadow_reasons": reasons[:6],
+        "comparable_window": baseline.get("comparable_window"),
+        "latest_reach": baseline.get("latest_reach"),
+        "baseline_reach_avg": baseline.get("baseline_reach_avg"),
+        "reach_ratio": baseline.get("reach_ratio"),
+        "samples": int(baseline.get("samples") or 0),
+        "insufficient_data": bool(baseline.get("insufficient_data")),
+        "duplicate_video_sha256_count": duplicate_video_hash_count,
+        "duplicate_content_fingerprint_count": duplicate_content_fingerprint_count,
+        "duplicate_content_cluster_count": duplicate_content_cluster_count,
+        "duplicate_caption_hash_count": duplicate_caption_hash_count,
+    }
 
 
 def _sync_account_auto_rotation_state_with_cursor(cur: sqlite3.Cursor, account_id: int, *, now: Optional[int] = None) -> bool:
@@ -2567,6 +3592,19 @@ def list_accounts(
             COALESCE(a.instagram_publish_detail, '') AS instagram_publish_detail,
             a.instagram_publish_updated_at,
             COALESCE(a.instagram_publish_last_file, '') AS instagram_publish_last_file,
+            COALESCE(a.trust_score, 50) AS trust_score,
+            COALESCE(a.trust_state, 'yellow') AS trust_state,
+            COALESCE(a.pinned_proxy, '') AS pinned_proxy,
+            COALESCE(a.last_login_serial, '') AS last_login_serial,
+            COALESCE(a.last_session_mode, 'unknown') AS last_session_mode,
+            a.last_session_mode_at,
+            a.last_stable_login_at,
+            a.last_stable_publish_at,
+            a.last_clean_login_at,
+            a.last_challenge_at,
+            a.publish_cooldown_until,
+            COALESCE(a.account_status_manual, 'unknown') AS account_status_manual,
+            a.account_status_updated_at,
             a.owner_worker_id,
             COALESCE(w.name, '') AS owner_worker_name,
             COALESCE(w.username, '') AS owner_worker_username,
@@ -2666,6 +3704,19 @@ def list_accounts_compact(
             COALESCE(a.instagram_publish_detail, '') AS instagram_publish_detail,
             a.instagram_publish_updated_at,
             COALESCE(a.instagram_publish_last_file, '') AS instagram_publish_last_file,
+            COALESCE(a.trust_score, 50) AS trust_score,
+            COALESCE(a.trust_state, 'yellow') AS trust_state,
+            COALESCE(a.pinned_proxy, '') AS pinned_proxy,
+            COALESCE(a.last_login_serial, '') AS last_login_serial,
+            COALESCE(a.last_session_mode, 'unknown') AS last_session_mode,
+            a.last_session_mode_at,
+            a.last_stable_login_at,
+            a.last_stable_publish_at,
+            a.last_clean_login_at,
+            a.last_challenge_at,
+            a.publish_cooldown_until,
+            COALESCE(a.account_status_manual, 'unknown') AS account_status_manual,
+            a.account_status_updated_at,
             a.owner_worker_id,
             COALESCE(w.name, '') AS owner_worker_name,
             COALESCE(w.username, '') AS owner_worker_username,
@@ -2756,6 +3807,23 @@ def get_account(account_id: int, owner_worker_id: Optional[int] = None) -> Optio
                 COALESCE(a.instagram_publish_detail, '') AS instagram_publish_detail,
                 a.instagram_publish_updated_at,
                 COALESCE(a.instagram_publish_last_file, '') AS instagram_publish_last_file,
+                COALESCE(a.trust_score, 50) AS trust_score,
+                COALESCE(a.trust_state, 'yellow') AS trust_state,
+                COALESCE(a.pinned_proxy, '') AS pinned_proxy,
+                COALESCE(a.last_login_serial, '') AS last_login_serial,
+                COALESCE(a.last_session_mode, 'unknown') AS last_session_mode,
+                a.last_session_mode_at,
+                a.last_stable_login_at,
+                a.last_stable_publish_at,
+                a.last_clean_login_at,
+                a.last_challenge_at,
+                a.publish_cooldown_until,
+                COALESCE(a.account_status_manual, 'unknown') AS account_status_manual,
+                COALESCE(a.account_status_auto, 'unknown') AS account_status_auto,
+                COALESCE(a.account_status_auto_detail, '') AS account_status_auto_detail,
+                a.account_status_auto_checked_at,
+                COALESCE(a.account_status_auto_diagnostics_path, '') AS account_status_auto_diagnostics_path,
+                a.account_status_updated_at,
                 a.owner_worker_id,
                 COALESCE(w.name, '') AS owner_worker_name,
                 COALESCE(w.username, '') AS owner_worker_username,
@@ -2808,6 +3876,23 @@ def get_account(account_id: int, owner_worker_id: Optional[int] = None) -> Optio
                 COALESCE(a.instagram_publish_detail, '') AS instagram_publish_detail,
                 a.instagram_publish_updated_at,
                 COALESCE(a.instagram_publish_last_file, '') AS instagram_publish_last_file,
+                COALESCE(a.trust_score, 50) AS trust_score,
+                COALESCE(a.trust_state, 'yellow') AS trust_state,
+                COALESCE(a.pinned_proxy, '') AS pinned_proxy,
+                COALESCE(a.last_login_serial, '') AS last_login_serial,
+                COALESCE(a.last_session_mode, 'unknown') AS last_session_mode,
+                a.last_session_mode_at,
+                a.last_stable_login_at,
+                a.last_stable_publish_at,
+                a.last_clean_login_at,
+                a.last_challenge_at,
+                a.publish_cooldown_until,
+                COALESCE(a.account_status_manual, 'unknown') AS account_status_manual,
+                COALESCE(a.account_status_auto, 'unknown') AS account_status_auto,
+                COALESCE(a.account_status_auto_detail, '') AS account_status_auto_detail,
+                a.account_status_auto_checked_at,
+                COALESCE(a.account_status_auto_diagnostics_path, '') AS account_status_auto_diagnostics_path,
+                a.account_status_updated_at,
                 a.owner_worker_id,
                 COALESCE(w.name, '') AS owner_worker_name,
                 COALESCE(w.username, '') AS owner_worker_username,
@@ -3015,6 +4100,7 @@ def update_account_mail_challenge_state(
             int(account_id),
         ),
     )
+    _refresh_account_policy_state_with_cursor(cur, int(account_id), now=now)
     changed = cur.rowcount > 0
     conn.commit()
     conn.close()
@@ -3142,6 +4228,7 @@ def update_account_instagram_emulator_serial(account_id: int, instagram_emulator
     )
     changed = cur.rowcount > 0
     if changed:
+        _refresh_account_policy_state_with_cursor(cur, int(account_id), now=now)
         _sync_account_auto_rotation_state_with_cursor(cur, int(account_id), now=now)
     conn.commit()
     conn.close()
@@ -4347,6 +5434,7 @@ def create_account(
     views_state: Optional[str] = None,
     owner_worker_id: Optional[int] = None,
     instagram_emulator_serial: Optional[str] = None,
+    account_status_manual: Optional[str] = None,
 ) -> int:
     t = _normalize_account_type(account_type)
     rotation_state_value = normalize_account_rotation_state(rotation_state)
@@ -4354,12 +5442,14 @@ def create_account(
     mail_provider_value = normalize_account_mail_provider(mail_provider)
     mail_auth_json_value = normalize_account_mail_auth_json(mail_auth_json)
     twofa_value = normalize_account_twofa_secret(twofa)
+    account_status_manual_value = normalize_account_status_manual(account_status_manual)
     login_clean = (account_login or "").strip()
     emulator_serial_clean = normalize_instagram_emulator_serial(instagram_emulator_serial)
     duplicate = find_duplicate_account(t, login_clean)
     if duplicate is not None:
         raise ValueError("duplicate account")
     now = int(time.time())
+    publish_cooldown_until = now + (12 * 60 * 60) if account_status_manual_value == "limited_recommendations" else None
     owner_id = int(owner_worker_id) if owner_worker_id is not None else None
     if owner_id is not None and get_worker(owner_id) is None:
         raise ValueError("worker not found")
@@ -4383,11 +5473,14 @@ def create_account(
             rotation_state_source,
             rotation_state_reason,
             views_state,
+            account_status_manual,
+            account_status_updated_at,
+            publish_cooldown_until,
             owner_worker_id,
             created_at,
             updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             t,
@@ -4405,12 +5498,16 @@ def create_account(
             "manual",
             "",
             views_state_value,
+            account_status_manual_value,
+            now,
+            publish_cooldown_until,
             owner_id,
             now,
             now,
         ),
     )
     new_id = int(cur.lastrowid)
+    _refresh_account_policy_state_with_cursor(cur, new_id, now=now)
     _sync_account_auto_rotation_state_with_cursor(cur, new_id, now=now)
     conn.commit()
     conn.close()
@@ -4434,13 +5531,16 @@ def create_account_with_default_link(
     instagram_emulator_serial: Optional[str] = None,
     default_link_name: Optional[str] = None,
     target_url: str = "https://t.me/checkayugrambot?start={code}",
+    account_status_manual: Optional[str] = None,
 ) -> Dict[str, Any]:
     t = _normalize_account_type(account_type)
     rotation_state_value = normalize_account_rotation_state(rotation_state)
     views_state_value = normalize_account_views_state(views_state)
     mail_provider_value = normalize_account_mail_provider(mail_provider)
     mail_auth_json_value = normalize_account_mail_auth_json(mail_auth_json)
+    account_status_manual_value = normalize_account_status_manual(account_status_manual)
     now = int(time.time())
+    publish_cooldown_until = now + (12 * 60 * 60) if account_status_manual_value == "limited_recommendations" else None
     owner_id = int(owner_worker_id) if owner_worker_id is not None else None
     if owner_id is not None and get_worker(owner_id) is None:
         raise ValueError("worker not found")
@@ -4480,11 +5580,14 @@ def create_account_with_default_link(
                 rotation_state_source,
                 rotation_state_reason,
                 views_state,
+                account_status_manual,
+                account_status_updated_at,
+                publish_cooldown_until,
                 owner_worker_id,
                 created_at,
                 updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 t,
@@ -4502,12 +5605,16 @@ def create_account_with_default_link(
                 "manual",
                 "",
                 views_state_value,
+                account_status_manual_value,
+                now,
+                publish_cooldown_until,
                 owner_id,
                 now,
                 now,
             ),
         )
         account_id = int(cur.lastrowid)
+        _refresh_account_policy_state_with_cursor(cur, account_id, now=now)
         _sync_account_auto_rotation_state_with_cursor(cur, account_id, now=now)
         code = _generate_unique_link_code_with_cursor(cur, length=6)
         cur.execute(
@@ -4544,6 +5651,7 @@ def update_account(
     views_state: Optional[str] = None,
     owner_worker_id: Optional[int] = None,
     instagram_emulator_serial: Optional[str] = None,
+    account_status_manual: Optional[str] = None,
 ) -> bool:
     t = _normalize_account_type(account_type)
     rotation_state_value = normalize_account_rotation_state(rotation_state)
@@ -4551,12 +5659,14 @@ def update_account(
     mail_provider_value = normalize_account_mail_provider(mail_provider)
     mail_auth_json_value = normalize_account_mail_auth_json(mail_auth_json)
     twofa_value = normalize_account_twofa_secret(twofa)
+    account_status_manual_value = normalize_account_status_manual(account_status_manual) if account_status_manual is not None else None
     login_clean = (account_login or "").strip()
     emulator_serial_clean = normalize_instagram_emulator_serial(instagram_emulator_serial)
     duplicate = find_duplicate_account(t, login_clean, exclude_account_id=int(account_id))
     if duplicate is not None:
         raise ValueError("duplicate account")
     now = int(time.time())
+    publish_cooldown_until = now + (12 * 60 * 60) if account_status_manual_value == "limited_recommendations" else None
     owner_id = int(owner_worker_id) if owner_worker_id is not None else None
     if owner_id is not None and get_worker(owner_id) is None:
         raise ValueError("worker not found")
@@ -4580,6 +5690,15 @@ def update_account(
             rotation_state_source = 'manual',
             rotation_state_reason = '',
             views_state = ?,
+            account_status_manual = COALESCE(?, account_status_manual),
+            account_status_updated_at = CASE
+                WHEN ? IS NOT NULL AND COALESCE(account_status_manual, 'unknown') <> ? THEN ?
+                ELSE account_status_updated_at
+            END,
+            publish_cooldown_until = CASE
+                WHEN ? IS NOT NULL AND COALESCE(publish_cooldown_until, 0) < ? THEN ?
+                ELSE publish_cooldown_until
+            END,
             owner_worker_id = ?,
             updated_at = ?
         WHERE id = ?
@@ -4598,6 +5717,13 @@ def update_account(
             emulator_serial_clean,
             rotation_state_value,
             views_state_value,
+            account_status_manual_value,
+            account_status_manual_value,
+            account_status_manual_value,
+            now,
+            publish_cooldown_until,
+            publish_cooldown_until,
+            publish_cooldown_until,
             owner_id,
             now,
             int(account_id),
@@ -4605,6 +5731,7 @@ def update_account(
     )
     changed = cur.rowcount > 0
     if changed:
+        _refresh_account_policy_state_with_cursor(cur, int(account_id), now=now)
         _sync_account_auto_rotation_state_with_cursor(cur, int(account_id), now=now)
     conn.commit()
     conn.close()
@@ -4672,9 +5799,21 @@ def update_account_rotation_state(account_id: int, rotation_state: Optional[str]
     return changed
 
 
-def update_account_instagram_launch_state(account_id: int, status: str, detail: Optional[str] = None) -> bool:
+def update_account_instagram_launch_state(
+    account_id: int,
+    status: str,
+    detail: Optional[str] = None,
+    *,
+    session_mode: Optional[str] = None,
+    serial: Optional[str] = None,
+) -> bool:
     status_value = normalize_instagram_launch_status(status)
+    session_mode_value = normalize_instagram_session_mode(session_mode) if session_mode is not None else None
+    serial_value = normalize_instagram_emulator_serial(serial) if str(serial or "").strip() else ""
     now = int(time.time())
+    stable_login_at = now if status_value == "login_submitted" else None
+    clean_login_at = now if session_mode_value == "clean_login" else None
+    challenge_at = now if status_value in {"challenge_required", "manual_2fa_required"} else None
     conn = _connect()
     cur = conn.cursor()
     try:
@@ -4685,12 +5824,37 @@ def update_account_instagram_launch_state(account_id: int, status: str, detail: 
             SET instagram_launch_status = ?,
                 instagram_launch_detail = ?,
                 instagram_launch_updated_at = ?,
+                last_login_serial = CASE WHEN ? <> '' THEN ? ELSE last_login_serial END,
+                last_session_mode = CASE WHEN ? IS NOT NULL THEN ? ELSE last_session_mode END,
+                last_session_mode_at = CASE WHEN ? IS NOT NULL THEN ? ELSE last_session_mode_at END,
+                last_stable_login_at = CASE WHEN ? IS NOT NULL THEN ? ELSE last_stable_login_at END,
+                last_clean_login_at = CASE WHEN ? IS NOT NULL THEN ? ELSE last_clean_login_at END,
+                last_challenge_at = CASE WHEN ? IS NOT NULL THEN ? ELSE last_challenge_at END,
                 updated_at = ?
             WHERE id = ?
             """,
-            (status_value, (detail or "").strip(), now, now, int(account_id)),
+            (
+                status_value,
+                (detail or "").strip(),
+                now,
+                serial_value,
+                serial_value,
+                session_mode_value,
+                session_mode_value,
+                session_mode_value,
+                now,
+                stable_login_at,
+                stable_login_at,
+                clean_login_at,
+                clean_login_at,
+                challenge_at,
+                challenge_at,
+                now,
+                int(account_id),
+            ),
         )
         changed = cur.rowcount > 0
+        _refresh_account_policy_state_with_cursor(cur, int(account_id), now=now)
         _sync_account_auto_rotation_state_with_cursor(cur, int(account_id), now=now)
         conn.commit()
         return changed
@@ -4707,9 +5871,21 @@ def update_account_instagram_publish_state(
     detail: Optional[str] = None,
     *,
     last_file: Optional[str] = None,
+    session_mode: Optional[str] = None,
+    serial: Optional[str] = None,
 ) -> bool:
     status_value = normalize_instagram_publish_status(status)
+    session_mode_value = normalize_instagram_session_mode(session_mode) if session_mode is not None else None
+    serial_value = normalize_instagram_emulator_serial(serial) if str(serial or "").strip() else ""
     now = int(time.time())
+    stable_publish_at = now if status_value == "published" else None
+    clean_login_at = now if session_mode_value == "clean_login" else None
+    challenge_at = now if status_value in {"challenge_required", "manual_2fa_required", "email_code_required"} else None
+    publish_cooldown_until = None
+    if status_value in {"published", "needs_review"}:
+        publish_cooldown_until = now + (3 * 60 * 60)
+    elif status_value in {"challenge_required", "manual_2fa_required", "email_code_required"}:
+        publish_cooldown_until = now + (12 * 60 * 60)
     conn = _connect()
     cur = conn.cursor()
     try:
@@ -4721,6 +5897,16 @@ def update_account_instagram_publish_state(
                 instagram_publish_detail = ?,
                 instagram_publish_updated_at = ?,
                 instagram_publish_last_file = ?,
+                last_login_serial = CASE WHEN ? <> '' THEN ? ELSE last_login_serial END,
+                last_session_mode = CASE WHEN ? IS NOT NULL THEN ? ELSE last_session_mode END,
+                last_session_mode_at = CASE WHEN ? IS NOT NULL THEN ? ELSE last_session_mode_at END,
+                last_stable_publish_at = CASE WHEN ? IS NOT NULL THEN ? ELSE last_stable_publish_at END,
+                last_clean_login_at = CASE WHEN ? IS NOT NULL THEN ? ELSE last_clean_login_at END,
+                last_challenge_at = CASE WHEN ? IS NOT NULL THEN ? ELSE last_challenge_at END,
+                publish_cooldown_until = CASE
+                    WHEN ? IS NOT NULL AND COALESCE(publish_cooldown_until, 0) < ? THEN ?
+                    ELSE publish_cooldown_until
+                END,
                 updated_at = ?
             WHERE id = ?
             """,
@@ -4729,12 +5915,82 @@ def update_account_instagram_publish_state(
                 (detail or "").strip(),
                 now,
                 (last_file or "").strip(),
+                serial_value,
+                serial_value,
+                session_mode_value,
+                session_mode_value,
+                session_mode_value,
+                now,
+                stable_publish_at,
+                stable_publish_at,
+                clean_login_at,
+                clean_login_at,
+                challenge_at,
+                challenge_at,
+                publish_cooldown_until,
+                publish_cooldown_until,
+                publish_cooldown_until,
                 now,
                 int(account_id),
             ),
         )
         changed = cur.rowcount > 0
+        _refresh_account_policy_state_with_cursor(cur, int(account_id), now=now)
         _sync_account_auto_rotation_state_with_cursor(cur, int(account_id), now=now)
+        conn.commit()
+        return changed
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def update_account_instagram_account_status_auto(
+    account_id: int,
+    status: str,
+    detail: Optional[str] = None,
+    *,
+    checked_at: Optional[int] = None,
+    diagnostics_path: Optional[str] = None,
+) -> bool:
+    status_value = normalize_account_status_auto(status)
+    timestamp = int(checked_at or time.time())
+    diagnostics_value = str(diagnostics_path or "").strip()
+    publish_cooldown_until = timestamp + (12 * 60 * 60) if status_value == "limited_recommendations" else None
+    conn = _connect()
+    cur = conn.cursor()
+    try:
+        cur.execute("BEGIN IMMEDIATE")
+        cur.execute(
+            """
+            UPDATE accounts
+            SET account_status_auto = ?,
+                account_status_auto_detail = ?,
+                account_status_auto_checked_at = ?,
+                account_status_auto_diagnostics_path = ?,
+                publish_cooldown_until = CASE
+                    WHEN ? IS NOT NULL AND COALESCE(publish_cooldown_until, 0) < ? THEN ?
+                    ELSE publish_cooldown_until
+                END,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                status_value,
+                str(detail or "").strip(),
+                timestamp,
+                diagnostics_value,
+                publish_cooldown_until,
+                publish_cooldown_until,
+                publish_cooldown_until,
+                timestamp,
+                int(account_id),
+            ),
+        )
+        changed = cur.rowcount > 0
+        _refresh_account_policy_state_with_cursor(cur, int(account_id), now=timestamp)
+        _sync_account_auto_rotation_state_with_cursor(cur, int(account_id), now=timestamp)
         conn.commit()
         return changed
     except Exception:
@@ -4873,7 +6129,7 @@ def _publish_batch_account_metrics_with_cursor(cur: sqlite3.Cursor, batch_id: in
             COALESCE(SUM(CASE WHEN state = 'queued_for_generation' THEN 1 ELSE 0 END), 0) AS queued_generation_accounts,
             COALESCE(SUM(CASE WHEN state = 'generating' THEN 1 ELSE 0 END), 0) AS generating_accounts,
             COALESCE(SUM(CASE WHEN state = 'queued_for_publish' THEN 1 ELSE 0 END), 0) AS queued_publish_accounts,
-            COALESCE(SUM(CASE WHEN state IN ('leased', 'preparing', 'importing_media', 'opening_reel_flow', 'selecting_media', 'publishing') THEN 1 ELSE 0 END), 0) AS active_publish_accounts,
+            COALESCE(SUM(CASE WHEN state IN ('leased', 'preparing', 'importing_media', 'opening_reel_flow', 'selecting_media', 'selecting_cover', 'publishing') THEN 1 ELSE 0 END), 0) AS active_publish_accounts,
             COALESCE(SUM(CASE WHEN state = 'published' THEN 1 ELSE 0 END), 0) AS published_accounts,
             COALESCE(SUM(CASE WHEN state = 'needs_review' THEN 1 ELSE 0 END), 0) AS needs_review_accounts,
             COALESCE(SUM(CASE WHEN state = 'generation_failed' THEN 1 ELSE 0 END), 0) AS generation_failed_accounts,
@@ -4915,7 +6171,7 @@ def _publish_batch_metrics_with_cursor(cur: sqlite3.Cursor, batch_id: int) -> Di
             COALESCE((SELECT COUNT(*) FROM publish_jobs WHERE batch_id = ? AND state = 'needs_review'), 0) AS needs_review_jobs,
             COALESCE((SELECT COUNT(*) FROM publish_jobs WHERE batch_id = ? AND state = 'failed'), 0) AS failed_jobs,
             COALESCE((SELECT COUNT(*) FROM publish_jobs WHERE batch_id = ? AND state = 'canceled'), 0) AS canceled_jobs,
-            COALESCE((SELECT COUNT(*) FROM publish_jobs WHERE batch_id = ? AND state IN ('preparing', 'importing_media', 'opening_reel_flow', 'selecting_media', 'publishing')), 0) AS running_jobs
+            COALESCE((SELECT COUNT(*) FROM publish_jobs WHERE batch_id = ? AND state IN ('preparing', 'importing_media', 'opening_reel_flow', 'selecting_media', 'selecting_cover', 'publishing')), 0) AS running_jobs
         """,
         (int(batch_id),) * 9,
     )
@@ -5072,6 +6328,19 @@ def list_publish_ready_accounts(limit: int = 500) -> List[sqlite3.Row]:
             COALESCE(a.instagram_publish_status, 'idle') AS instagram_publish_status,
             COALESCE(a.instagram_publish_detail, '') AS instagram_publish_detail,
             a.instagram_publish_updated_at,
+            COALESCE(a.trust_score, 50) AS trust_score,
+            COALESCE(a.trust_state, 'yellow') AS trust_state,
+            COALESCE(a.pinned_proxy, '') AS pinned_proxy,
+            COALESCE(a.last_login_serial, '') AS last_login_serial,
+            COALESCE(a.last_session_mode, 'unknown') AS last_session_mode,
+            a.last_session_mode_at,
+            a.last_stable_login_at,
+            a.last_stable_publish_at,
+            a.last_clean_login_at,
+            a.last_challenge_at,
+            a.publish_cooldown_until,
+            COALESCE(a.account_status_manual, 'unknown') AS account_status_manual,
+            a.account_status_updated_at,
             COALESCE(a.rotation_state, 'review') AS rotation_state,
             COALESCE(a.rotation_state_source, 'manual') AS rotation_state_source,
             COALESCE(a.rotation_state_reason, '') AS rotation_state_reason,
@@ -5145,6 +6414,19 @@ def list_publish_blocked_accounts(limit: int = 500) -> List[sqlite3.Row]:
             COALESCE(a.instagram_publish_status, 'idle') AS instagram_publish_status,
             COALESCE(a.instagram_publish_detail, '') AS instagram_publish_detail,
             a.instagram_publish_updated_at,
+            COALESCE(a.trust_score, 50) AS trust_score,
+            COALESCE(a.trust_state, 'yellow') AS trust_state,
+            COALESCE(a.pinned_proxy, '') AS pinned_proxy,
+            COALESCE(a.last_login_serial, '') AS last_login_serial,
+            COALESCE(a.last_session_mode, 'unknown') AS last_session_mode,
+            a.last_session_mode_at,
+            a.last_stable_login_at,
+            a.last_stable_publish_at,
+            a.last_clean_login_at,
+            a.last_challenge_at,
+            a.publish_cooldown_until,
+            COALESCE(a.account_status_manual, 'unknown') AS account_status_manual,
+            a.account_status_updated_at,
             COALESCE(a.rotation_state, 'review') AS rotation_state,
             COALESCE(a.rotation_state_source, 'manual') AS rotation_state_source,
             COALESCE(a.rotation_state_reason, '') AS rotation_state_reason,
@@ -5215,9 +6497,57 @@ def create_publish_batch(
             account_login,
             account_password,
             username,
+            COALESCE(proxy, '') AS proxy,
+            COALESCE(email, '') AS email,
+            email_password,
+            COALESCE(mail_provider, 'auto') AS mail_provider,
+            COALESCE(mail_auth_json, '') AS mail_auth_json,
+            COALESCE(mail_status, 'never_checked') AS mail_status,
             COALESCE(rotation_state, 'review') AS rotation_state,
+            COALESCE(rotation_state_source, 'manual') AS rotation_state_source,
+            COALESCE(rotation_state_reason, '') AS rotation_state_reason,
             COALESCE(instagram_emulator_serial, '') AS instagram_emulator_serial,
-            COALESCE(twofa, '') AS twofa
+            COALESCE(instagram_launch_status, 'idle') AS instagram_launch_status,
+            COALESCE(instagram_launch_detail, '') AS instagram_launch_detail,
+            instagram_launch_updated_at,
+            COALESCE(instagram_publish_status, 'idle') AS instagram_publish_status,
+            COALESCE(instagram_publish_detail, '') AS instagram_publish_detail,
+            instagram_publish_updated_at,
+            COALESCE(twofa, '') AS twofa,
+            COALESCE(trust_score, 50) AS trust_score,
+            COALESCE(trust_state, 'yellow') AS trust_state,
+            COALESCE(pinned_proxy, '') AS pinned_proxy,
+            COALESCE(last_login_serial, '') AS last_login_serial,
+            COALESCE(last_session_mode, 'unknown') AS last_session_mode,
+            last_session_mode_at,
+            last_stable_login_at,
+            last_stable_publish_at,
+            last_clean_login_at,
+            last_challenge_at,
+            publish_cooldown_until,
+            COALESCE(account_status_manual, 'unknown') AS account_status_manual,
+            account_status_updated_at,
+            COALESCE((
+                SELECT ai.resolution_state
+                FROM instagram_audit_items ai
+                WHERE ai.account_id = accounts.id
+                ORDER BY ai.updated_at DESC, ai.id DESC
+                LIMIT 1
+            ), '') AS latest_audit_resolution_state,
+            COALESCE((
+                SELECT ai.resolution_detail
+                FROM instagram_audit_items ai
+                WHERE ai.account_id = accounts.id
+                ORDER BY ai.updated_at DESC, ai.id DESC
+                LIMIT 1
+            ), '') AS latest_audit_resolution_detail,
+            (
+                SELECT ai.updated_at
+                FROM instagram_audit_items ai
+                WHERE ai.account_id = accounts.id
+                ORDER BY ai.updated_at DESC, ai.id DESC
+                LIMIT 1
+            ) AS latest_audit_updated_at
         FROM accounts
         WHERE id IN ({placeholders})
         """,
@@ -5294,7 +6624,7 @@ def get_publish_batch(batch_id: int) -> Optional[sqlite3.Row]:
             COALESCE((SELECT COUNT(*) FROM publish_batch_accounts pba WHERE pba.batch_id = b.id AND pba.state = 'queued_for_generation'), 0) AS queued_generation_accounts,
             COALESCE((SELECT COUNT(*) FROM publish_batch_accounts pba WHERE pba.batch_id = b.id AND pba.state = 'generating'), 0) AS generating_accounts,
             COALESCE((SELECT COUNT(*) FROM publish_batch_accounts pba WHERE pba.batch_id = b.id AND pba.state = 'queued_for_publish'), 0) AS queued_publish_accounts,
-            COALESCE((SELECT COUNT(*) FROM publish_batch_accounts pba WHERE pba.batch_id = b.id AND pba.state IN ('leased', 'preparing', 'importing_media', 'opening_reel_flow', 'selecting_media', 'publishing')), 0) AS active_publish_accounts,
+            COALESCE((SELECT COUNT(*) FROM publish_batch_accounts pba WHERE pba.batch_id = b.id AND pba.state IN ('leased', 'preparing', 'importing_media', 'opening_reel_flow', 'selecting_media', 'selecting_cover', 'publishing')), 0) AS active_publish_accounts,
             COALESCE((SELECT COUNT(*) FROM publish_batch_accounts pba WHERE pba.batch_id = b.id AND pba.state = 'published'), 0) AS published_accounts,
             COALESCE((SELECT COUNT(*) FROM publish_batch_accounts pba WHERE pba.batch_id = b.id AND pba.state = 'needs_review'), 0) AS needs_review_accounts,
             COALESCE((SELECT COUNT(*) FROM publish_batch_accounts pba WHERE pba.batch_id = b.id AND pba.state = 'generation_failed'), 0) AS generation_failed_accounts,
@@ -5304,7 +6634,7 @@ def get_publish_batch(batch_id: int) -> Optional[sqlite3.Row]:
             COALESCE((SELECT COUNT(*) FROM publish_jobs pj WHERE pj.batch_id = b.id), 0) AS jobs_total,
             COALESCE((SELECT COUNT(*) FROM publish_jobs pj WHERE pj.batch_id = b.id AND pj.state = 'queued'), 0) AS queued_jobs,
             COALESCE((SELECT COUNT(*) FROM publish_jobs pj WHERE pj.batch_id = b.id AND pj.state = 'leased'), 0) AS leased_jobs,
-            COALESCE((SELECT COUNT(*) FROM publish_jobs pj WHERE pj.batch_id = b.id AND pj.state IN ('preparing', 'importing_media', 'opening_reel_flow', 'selecting_media', 'publishing')), 0) AS running_jobs,
+            COALESCE((SELECT COUNT(*) FROM publish_jobs pj WHERE pj.batch_id = b.id AND pj.state IN ('preparing', 'importing_media', 'opening_reel_flow', 'selecting_media', 'selecting_cover', 'publishing')), 0) AS running_jobs,
             COALESCE((SELECT COUNT(*) FROM publish_jobs pj WHERE pj.batch_id = b.id AND pj.state = 'published'), 0) AS published_jobs,
             COALESCE((SELECT COUNT(*) FROM publish_jobs pj WHERE pj.batch_id = b.id AND pj.state = 'needs_review'), 0) AS needs_review_jobs,
             COALESCE((SELECT COUNT(*) FROM publish_jobs pj WHERE pj.batch_id = b.id AND pj.state = 'failed'), 0) AS failed_jobs,
@@ -5340,7 +6670,7 @@ def list_publish_batches(limit: int = 25) -> List[sqlite3.Row]:
             COALESCE((SELECT COUNT(*) FROM publish_batch_accounts pba WHERE pba.batch_id = b.id AND pba.state = 'queued_for_generation'), 0) AS queued_generation_accounts,
             COALESCE((SELECT COUNT(*) FROM publish_batch_accounts pba WHERE pba.batch_id = b.id AND pba.state = 'generating'), 0) AS generating_accounts,
             COALESCE((SELECT COUNT(*) FROM publish_batch_accounts pba WHERE pba.batch_id = b.id AND pba.state = 'queued_for_publish'), 0) AS queued_publish_accounts,
-            COALESCE((SELECT COUNT(*) FROM publish_batch_accounts pba WHERE pba.batch_id = b.id AND pba.state IN ('leased', 'preparing', 'importing_media', 'opening_reel_flow', 'selecting_media', 'publishing')), 0) AS active_publish_accounts,
+            COALESCE((SELECT COUNT(*) FROM publish_batch_accounts pba WHERE pba.batch_id = b.id AND pba.state IN ('leased', 'preparing', 'importing_media', 'opening_reel_flow', 'selecting_media', 'selecting_cover', 'publishing')), 0) AS active_publish_accounts,
             COALESCE((SELECT COUNT(*) FROM publish_batch_accounts pba WHERE pba.batch_id = b.id AND pba.state = 'published'), 0) AS published_accounts,
             COALESCE((SELECT COUNT(*) FROM publish_batch_accounts pba WHERE pba.batch_id = b.id AND pba.state = 'needs_review'), 0) AS needs_review_accounts,
             COALESCE((SELECT COUNT(*) FROM publish_batch_accounts pba WHERE pba.batch_id = b.id AND pba.state = 'generation_failed'), 0) AS generation_failed_accounts,
@@ -5394,6 +6724,19 @@ def list_publish_batch_accounts(batch_id: int) -> List[sqlite3.Row]:
             COALESCE(a.instagram_publish_status, 'idle') AS instagram_publish_status,
             COALESCE(a.instagram_publish_detail, '') AS instagram_publish_detail,
             a.instagram_publish_updated_at,
+            COALESCE(a.trust_score, 50) AS trust_score,
+            COALESCE(a.trust_state, 'yellow') AS trust_state,
+            COALESCE(a.pinned_proxy, '') AS pinned_proxy,
+            COALESCE(a.last_login_serial, '') AS last_login_serial,
+            COALESCE(a.last_session_mode, 'unknown') AS last_session_mode,
+            a.last_session_mode_at,
+            a.last_stable_login_at,
+            a.last_stable_publish_at,
+            a.last_clean_login_at,
+            a.last_challenge_at,
+            a.publish_cooldown_until,
+            COALESCE(a.account_status_manual, 'unknown') AS account_status_manual,
+            a.account_status_updated_at,
             COALESCE(w.name, '') AS owner_worker_name,
             COALESCE(w.username, '') AS owner_worker_username,
             COALESCE(pba.queue_position, 0) AS queue_position,
@@ -5542,10 +6885,15 @@ def list_publish_jobs(batch_id: int) -> List[sqlite3.Row]:
             j.completed_at,
             COALESCE(j.last_file, '') AS last_file,
             COALESCE(j.last_error, '') AS last_error,
+            COALESCE(j.risk_score_at_lease, 0) AS risk_score_at_lease,
+            COALESCE(j.blocked_by_policy, 0) AS blocked_by_policy,
+            COALESCE(j.policy_reason, '') AS policy_reason,
             j.created_at,
             j.updated_at,
             COALESCE(a.username, '') AS account_username,
             COALESCE(a.account_login, '') AS account_login,
+            COALESCE(a.trust_score, 50) AS account_trust_score,
+            COALESCE(a.trust_state, 'yellow') AS account_trust_state,
             COALESCE(pa.filename, '') AS artifact_filename
         FROM publish_jobs j
         JOIN accounts a ON a.id = j.account_id
@@ -5582,10 +6930,15 @@ def get_publish_job(job_id: int) -> Optional[sqlite3.Row]:
             j.completed_at,
             COALESCE(j.last_file, '') AS last_file,
             COALESCE(j.last_error, '') AS last_error,
+            COALESCE(j.risk_score_at_lease, 0) AS risk_score_at_lease,
+            COALESCE(j.blocked_by_policy, 0) AS blocked_by_policy,
+            COALESCE(j.policy_reason, '') AS policy_reason,
             j.created_at,
             j.updated_at,
             COALESCE(a.username, '') AS account_username,
             COALESCE(a.account_login, '') AS account_login,
+            COALESCE(a.trust_score, 50) AS account_trust_score,
+            COALESCE(a.trust_state, 'yellow') AS account_trust_state,
             COALESCE(pa.filename, '') AS artifact_filename
         FROM publish_jobs j
         JOIN accounts a ON a.id = j.account_id
@@ -5698,6 +7051,62 @@ def _instagram_reel_payload_timestamp(payload: Optional[Dict[str, Any]], key: st
     return int(value if value and value > 0 else default)
 
 
+def _sha256_text(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _sha256_file(path_value: str) -> str:
+    path = Path(str(path_value or "").strip())
+    if not path.exists() or not path.is_file():
+        return ""
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while True:
+            chunk = handle.read(1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _instagram_reel_hash_fields(
+    *,
+    source_path: str,
+    source_name: str,
+    payload: Optional[Dict[str, Any]],
+) -> Dict[str, str]:
+    video_sha256 = _instagram_reel_payload_text(payload, "video_sha256") or _sha256_file(source_path)
+    cover_fingerprint = _instagram_reel_payload_text(payload, "cover_fingerprint")
+    caption_hash = _instagram_reel_payload_text(payload, "caption_hash")
+    if not caption_hash:
+        caption_hash = _sha256_text(_instagram_reel_payload_text(payload, "caption_text"))
+    content_fingerprint = _instagram_reel_payload_text(payload, "content_fingerprint")
+    if not content_fingerprint:
+        seed = "|".join(
+            item
+            for item in (
+                video_sha256,
+                _instagram_reel_payload_text(payload, "reel_fingerprint"),
+                _instagram_reel_payload_text(payload, "reel_signature_text"),
+                caption_hash,
+                (source_name or "").strip(),
+            )
+            if item
+        )
+        content_fingerprint = _sha256_text(seed)
+    content_cluster = _instagram_reel_payload_text(payload, "content_cluster") or (content_fingerprint[:16] if content_fingerprint else "")
+    return {
+        "video_sha256": video_sha256,
+        "cover_fingerprint": cover_fingerprint,
+        "caption_hash": caption_hash,
+        "content_fingerprint": content_fingerprint,
+        "content_cluster": content_cluster,
+    }
+
+
 def _instagram_reel_snapshot_status_to_collection_state(status: str) -> str:
     value = normalize_instagram_reel_metric_snapshot_status(status)
     return {
@@ -5721,6 +7130,11 @@ def _instagram_reel_posts_query(where_sql: str) -> str:
             COALESCE(p.helper_ticket, '') AS helper_ticket,
             COALESCE(p.source_name, '') AS source_name,
             COALESCE(p.source_path, '') AS source_path,
+            COALESCE(p.video_sha256, '') AS video_sha256,
+            COALESCE(p.cover_fingerprint, '') AS cover_fingerprint,
+            COALESCE(p.caption_hash, '') AS caption_hash,
+            COALESCE(p.content_fingerprint, '') AS content_fingerprint,
+            COALESCE(p.content_cluster, '') AS content_cluster,
             COALESCE(p.reel_fingerprint, '') AS reel_fingerprint,
             COALESCE(p.reel_signature_text, '') AS reel_signature_text,
             p.matched_slot,
@@ -5783,6 +7197,7 @@ def _upsert_instagram_reel_post_for_published_job_with_cursor(
     helper_ticket = _instagram_reel_payload_text(payload, "helper_ticket") or None
     reel_fingerprint = _instagram_reel_payload_text(payload, "reel_fingerprint")
     reel_signature_text = _instagram_reel_payload_text(payload, "reel_signature_text")
+    hash_fields = _instagram_reel_hash_fields(source_path=source_path, source_name=source_name, payload=payload)
     matched_slot = _instagram_reel_payload_int(payload, "matched_slot")
     matched_age_seconds = _instagram_reel_payload_int(payload, "matched_age_seconds")
     first_stage = "t30m"
@@ -5810,6 +7225,11 @@ def _upsert_instagram_reel_post_for_published_job_with_cursor(
                 helper_ticket,
                 source_name,
                 source_path,
+                video_sha256,
+                cover_fingerprint,
+                caption_hash,
+                content_fingerprint,
+                content_cluster,
                 reel_fingerprint,
                 reel_signature_text,
                 matched_slot,
@@ -5826,7 +7246,7 @@ def _upsert_instagram_reel_post_for_published_job_with_cursor(
                 created_at,
                 updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 't30m', 'scheduled', ?, NULL, '', 0, NULL, NULL, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 't30m', 'scheduled', ?, NULL, '', 0, NULL, NULL, ?, ?)
             """,
             (
                 "batch_job",
@@ -5837,6 +7257,11 @@ def _upsert_instagram_reel_post_for_published_job_with_cursor(
                 helper_ticket,
                 (source_name or "").strip(),
                 (source_path or "").strip(),
+                hash_fields["video_sha256"],
+                hash_fields["cover_fingerprint"],
+                hash_fields["caption_hash"],
+                hash_fields["content_fingerprint"],
+                hash_fields["content_cluster"],
                 reel_fingerprint,
                 reel_signature_text,
                 matched_slot,
@@ -5860,6 +7285,11 @@ def _upsert_instagram_reel_post_for_published_job_with_cursor(
             helper_ticket = COALESCE(?, helper_ticket),
             source_name = ?,
             source_path = ?,
+            video_sha256 = ?,
+            cover_fingerprint = ?,
+            caption_hash = ?,
+            content_fingerprint = ?,
+            content_cluster = ?,
             reel_fingerprint = ?,
             reel_signature_text = ?,
             matched_slot = ?,
@@ -5875,6 +7305,11 @@ def _upsert_instagram_reel_post_for_published_job_with_cursor(
             helper_ticket,
             (source_name or "").strip(),
             (source_path or "").strip(),
+            hash_fields["video_sha256"],
+            hash_fields["cover_fingerprint"],
+            hash_fields["caption_hash"],
+            hash_fields["content_fingerprint"],
+            hash_fields["content_cluster"],
             reel_fingerprint,
             reel_signature_text,
             matched_slot,
@@ -5902,6 +7337,7 @@ def upsert_instagram_reel_post_for_standalone(
     published_at = _instagram_reel_payload_timestamp(payload, "published_at", default=now)
     reel_fingerprint = _instagram_reel_payload_text(payload, "reel_fingerprint")
     reel_signature_text = _instagram_reel_payload_text(payload, "reel_signature_text")
+    hash_fields = _instagram_reel_hash_fields(source_path=source_path, source_name=source_name, payload=payload)
     matched_slot = _instagram_reel_payload_int(payload, "matched_slot")
     matched_age_seconds = _instagram_reel_payload_int(payload, "matched_age_seconds")
     first_stage = "t30m"
@@ -5933,6 +7369,11 @@ def upsert_instagram_reel_post_for_standalone(
                     helper_ticket,
                     source_name,
                     source_path,
+                    video_sha256,
+                    cover_fingerprint,
+                    caption_hash,
+                    content_fingerprint,
+                    content_cluster,
                     reel_fingerprint,
                     reel_signature_text,
                     matched_slot,
@@ -5946,17 +7387,22 @@ def upsert_instagram_reel_post_for_standalone(
                     collection_attempt_count,
                     lease_owner,
                     lease_expires_at,
-                    created_at,
-                    updated_at
-                )
-                VALUES (?, ?, NULL, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?, 't30m', 'scheduled', ?, NULL, '', 0, NULL, NULL, ?, ?)
-                """,
-                (
-                    "standalone",
-                    int(account_id),
+                created_at,
+                updated_at
+            )
+            VALUES (?, ?, NULL, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 't30m', 'scheduled', ?, NULL, '', 0, NULL, NULL, ?, ?)
+            """,
+            (
+                "standalone",
+                int(account_id),
                     ticket_value,
                     (source_name or "").strip(),
                     (source_path or "").strip(),
+                    hash_fields["video_sha256"],
+                    hash_fields["cover_fingerprint"],
+                    hash_fields["caption_hash"],
+                    hash_fields["content_fingerprint"],
+                    hash_fields["content_cluster"],
                     reel_fingerprint,
                     reel_signature_text,
                     matched_slot,
@@ -5977,6 +7423,11 @@ def upsert_instagram_reel_post_for_standalone(
                     account_id = ?,
                     source_name = ?,
                     source_path = ?,
+                    video_sha256 = ?,
+                    cover_fingerprint = ?,
+                    caption_hash = ?,
+                    content_fingerprint = ?,
+                    content_cluster = ?,
                     reel_fingerprint = ?,
                     reel_signature_text = ?,
                     matched_slot = ?,
@@ -5989,6 +7440,11 @@ def upsert_instagram_reel_post_for_standalone(
                     int(account_id),
                     (source_name or "").strip(),
                     (source_path or "").strip(),
+                    hash_fields["video_sha256"],
+                    hash_fields["cover_fingerprint"],
+                    hash_fields["caption_hash"],
+                    hash_fields["content_fingerprint"],
+                    hash_fields["content_cluster"],
                     reel_fingerprint,
                     reel_signature_text,
                     matched_slot,
@@ -6828,6 +8284,135 @@ def mark_publish_generation_progress(
         conn.close()
 
 
+def _find_duplicate_reel_post_by_hash_with_cursor(cur: sqlite3.Cursor, video_sha256: str) -> Optional[sqlite3.Row]:
+    checksum = (video_sha256 or "").strip()
+    if not checksum:
+        return None
+    cur.execute(
+        """
+        SELECT
+            p.id,
+            p.account_id,
+            p.published_at,
+            COALESCE(a.username, '') AS username,
+            COALESCE(a.account_login, '') AS account_login
+        FROM instagram_reel_posts p
+        JOIN accounts a ON a.id = p.account_id
+        WHERE COALESCE(p.video_sha256, '') = ?
+        ORDER BY p.published_at DESC, p.id DESC
+        LIMIT 1
+        """,
+        (checksum,),
+    )
+    return cur.fetchone()
+
+
+def _cancel_publish_job_for_policy_with_cursor(
+    cur: sqlite3.Cursor,
+    *,
+    batch_id: int,
+    account_id: int,
+    artifact_id: int,
+    source_path: str,
+    source_name: str,
+    emulator_serial: str,
+    detail: str,
+    now: int,
+    risk_score: float = 0.0,
+) -> Optional[int]:
+    detail_value = (detail or "").strip() or "Job отменён policy gate."
+    cur.execute(
+        """
+        INSERT OR IGNORE INTO publish_jobs (
+            batch_id,
+            artifact_id,
+            account_id,
+            emulator_serial,
+            state,
+            detail,
+            source_path,
+            source_name,
+            completed_at,
+            risk_score_at_lease,
+            blocked_by_policy,
+            policy_reason,
+            created_at,
+            updated_at
+        )
+        VALUES (?, ?, ?, ?, 'canceled', ?, ?, ?, ?, ?, 1, ?, ?, ?)
+        """,
+        (
+            int(batch_id),
+            int(artifact_id),
+            int(account_id),
+            (emulator_serial or "").strip(),
+            detail_value,
+            (source_path or "").strip(),
+            (source_name or "").strip(),
+            int(now),
+            float(risk_score or 0.0),
+            detail_value,
+            int(now),
+            int(now),
+        ),
+    )
+    cur.execute(
+        """
+        UPDATE publish_jobs
+        SET state = 'canceled',
+            detail = ?,
+            completed_at = COALESCE(completed_at, ?),
+            blocked_by_policy = 1,
+            policy_reason = ?,
+            risk_score_at_lease = ?,
+            updated_at = ?
+        WHERE batch_id = ? AND artifact_id = ? AND account_id = ?
+        """,
+        (
+            detail_value,
+            int(now),
+            detail_value,
+            float(risk_score or 0.0),
+            int(now),
+            int(batch_id),
+            int(artifact_id),
+            int(account_id),
+        ),
+    )
+    cur.execute(
+        """
+        SELECT id
+        FROM publish_jobs
+        WHERE batch_id = ? AND artifact_id = ? AND account_id = ?
+        LIMIT 1
+        """,
+        (int(batch_id), int(artifact_id), int(account_id)),
+    )
+    row = cur.fetchone()
+    job_id_value = int(row["id"]) if row is not None else None
+    _set_publish_batch_account_state_with_cursor(
+        cur,
+        batch_id=int(batch_id),
+        account_id=int(account_id),
+        state="canceled",
+        detail=detail_value,
+        artifact_id=int(artifact_id),
+        job_id=job_id_value,
+        updated_at=int(now),
+    )
+    _append_publish_job_event_with_cursor(
+        cur,
+        batch_id=int(batch_id),
+        job_id=job_id_value,
+        account_id=int(account_id),
+        state="canceled",
+        detail=detail_value,
+        payload={"blocked_by_policy": True, "policy_reason": detail_value, "risk_score_at_lease": float(risk_score or 0.0)},
+        created_at=int(now),
+    )
+    return job_id_value
+
+
 def register_publish_artifact(
     batch_id: int,
     *,
@@ -6842,6 +8427,7 @@ def register_publish_artifact(
     now = int(time.time())
     path_value = (path or "").strip()
     filename_value = (filename or "").strip()
+    checksum_value = (checksum or "").strip() or _sha256_file(path_value) or None
     if not path_value or not filename_value:
         raise ValueError("artifact path required")
 
@@ -6876,7 +8462,7 @@ def register_publish_artifact(
                     int(batch_id),
                     path_value,
                     filename_value,
-                    (checksum or "").strip() or None,
+                    checksum_value,
                     int(size_bytes) if size_bytes is not None else None,
                     float(duration_seconds) if duration_seconds is not None else None,
                     now,
@@ -6898,7 +8484,7 @@ def register_publish_artifact(
                 """,
                 (
                     filename_value,
-                    (checksum or "").strip() or None,
+                    checksum_value,
                     int(size_bytes) if size_bytes is not None else None,
                     float(duration_seconds) if duration_seconds is not None else None,
                     now,
@@ -6914,11 +8500,66 @@ def register_publish_artifact(
         cur.execute(
             f"""
             SELECT
+                a.id,
+                a.type,
                 pba.account_id,
                 pba.artifact_id,
                 pba.job_id,
                 pba.state,
-                COALESCE(a.instagram_emulator_serial, '') AS instagram_emulator_serial
+                a.account_login,
+                a.account_password,
+                COALESCE(a.proxy, '') AS proxy,
+                COALESCE(a.twofa, '') AS twofa,
+                COALESCE(a.email, '') AS email,
+                a.email_password,
+                COALESCE(a.mail_provider, 'auto') AS mail_provider,
+                COALESCE(a.mail_auth_json, '') AS mail_auth_json,
+                COALESCE(a.mail_status, 'never_checked') AS mail_status,
+                COALESCE(a.instagram_emulator_serial, '') AS instagram_emulator_serial,
+                COALESCE(a.instagram_launch_status, 'idle') AS instagram_launch_status,
+                COALESCE(a.instagram_launch_detail, '') AS instagram_launch_detail,
+                a.instagram_launch_updated_at,
+                COALESCE(a.instagram_publish_status, 'idle') AS instagram_publish_status,
+                COALESCE(a.instagram_publish_detail, '') AS instagram_publish_detail,
+                a.instagram_publish_updated_at,
+                COALESCE(a.rotation_state, 'review') AS rotation_state,
+                COALESCE(a.rotation_state_source, 'manual') AS rotation_state_source,
+                COALESCE(a.rotation_state_reason, '') AS rotation_state_reason,
+                COALESCE(a.trust_score, 50) AS trust_score,
+                COALESCE(a.trust_state, 'yellow') AS trust_state,
+                COALESCE(a.pinned_proxy, '') AS pinned_proxy,
+                COALESCE(a.last_login_serial, '') AS last_login_serial,
+                COALESCE(a.last_session_mode, 'unknown') AS last_session_mode,
+                a.last_session_mode_at,
+                a.last_stable_login_at,
+                a.last_stable_publish_at,
+                a.last_clean_login_at,
+                a.last_challenge_at,
+                a.publish_cooldown_until,
+                COALESCE(a.account_status_manual, 'unknown') AS account_status_manual,
+                a.account_status_updated_at,
+                COALESCE((
+                    SELECT ai.resolution_state
+                    FROM instagram_audit_items ai
+                    WHERE ai.account_id = a.id
+                    ORDER BY ai.updated_at DESC, ai.id DESC
+                    LIMIT 1
+                ), '') AS latest_audit_resolution_state,
+                COALESCE((
+                    SELECT ai.resolution_detail
+                    FROM instagram_audit_items ai
+                    WHERE ai.account_id = a.id
+                    ORDER BY ai.updated_at DESC, ai.id DESC
+                    LIMIT 1
+                ), '') AS latest_audit_resolution_detail,
+                (
+                    SELECT ai.updated_at
+                    FROM instagram_audit_items ai
+                    WHERE ai.account_id = a.id
+                    ORDER BY ai.updated_at DESC, ai.id DESC
+                    LIMIT 1
+                ) AS latest_audit_updated_at,
+                CASE WHEN TRIM(COALESCE(a.account_password, '')) <> '' THEN 1 ELSE 0 END AS has_account_password
             FROM publish_batch_accounts pba
             JOIN accounts a ON a.id = pba.account_id
             {account_where}
@@ -6930,13 +8571,46 @@ def register_publish_artifact(
         if account_id is not None and not account_rows:
             raise ValueError("batch account not found")
         jobs_created = 0
+        jobs_blocked = 0
         job_ids: List[int] = []
         target_account_ids: List[int] = []
         for row in account_rows:
+            account_row = dict(row)
             emulator_serial = str(row["instagram_emulator_serial"] or "").strip()
-            if not emulator_serial:
-                continue
             target_account_id = int(row["account_id"])
+            target_account_ids.append(target_account_id)
+            risk_snapshot = _account_distribution_risk_with_cursor(
+                cur,
+                target_account_id,
+                trust_score=float(account_row.get("trust_score") or 50.0),
+            )
+            policy_issues = publish_account_readiness_issues(account_row)
+            duplicate_row = _find_duplicate_reel_post_by_hash_with_cursor(cur, str(checksum_value or ""))
+            duplicate_reason = ""
+            if duplicate_row is not None:
+                duplicate_handle = str(duplicate_row["username"] or duplicate_row["account_login"] or f"account-{int(duplicate_row['account_id'])}").strip()
+                if int(duplicate_row["account_id"]) == target_account_id:
+                    duplicate_reason = f"Policy gate: ролик уже публиковался у этого аккаунта (@{duplicate_handle})."
+                else:
+                    duplicate_reason = f"Policy gate: ролик уже публиковался у @{duplicate_handle}. Повторный upload заблокирован."
+            block_reason = duplicate_reason or " ".join(item for item in policy_issues if item).strip()
+            if block_reason:
+                job_id_value = _cancel_publish_job_for_policy_with_cursor(
+                    cur,
+                    batch_id=int(batch_id),
+                    account_id=target_account_id,
+                    artifact_id=int(artifact_id),
+                    source_path=path_value,
+                    source_name=filename_value,
+                    emulator_serial=emulator_serial,
+                    detail=block_reason,
+                    now=now,
+                    risk_score=float(risk_snapshot.get("risk_score") or 0.0),
+                )
+                if job_id_value is not None:
+                    job_ids.append(job_id_value)
+                jobs_blocked += 1
+                continue
             cur.execute(
                 """
                 INSERT OR IGNORE INTO publish_jobs (
@@ -7003,11 +8677,10 @@ def register_publish_artifact(
                 )
             if job_id_value is not None:
                 job_ids.append(job_id_value)
-            target_account_ids.append(target_account_id)
         detail_value = (
-            f"Получен файл {filename_value} для account_id={int(account_id)}. Создано jobs: {jobs_created}."
+            f"Получен файл {filename_value} для account_id={int(account_id)}. Создано jobs: {jobs_created}. Заблокировано policy: {jobs_blocked}."
             if account_id is not None
-            else f"Получен файл {filename_value}. Создано jobs: {jobs_created}."
+            else f"Получен файл {filename_value}. Создано jobs: {jobs_created}. Заблокировано policy: {jobs_blocked}."
         )
 
         _append_publish_job_event_with_cursor(
@@ -7019,7 +8692,9 @@ def register_publish_artifact(
                 "artifact_id": artifact_id,
                 "path": path_value,
                 "filename": filename_value,
+                "checksum": checksum_value,
                 "jobs_created": jobs_created,
+                "jobs_blocked": jobs_blocked,
                 "created": created,
                 "account_id": int(account_id) if account_id is not None else None,
                 "job_ids": job_ids,
@@ -7039,6 +8714,7 @@ def register_publish_artifact(
         "artifact_id": artifact_id,
         "created": created,
         "jobs_created": jobs_created,
+        "jobs_blocked": jobs_blocked,
         "job_ids": job_ids,
         "account_ids": target_account_ids,
         **metrics,
@@ -7148,8 +8824,72 @@ def lease_next_publish_job(
         expired_jobs = _expire_stale_publish_jobs_with_cursor(cur, now=now)
         cur.execute(
             """
-            SELECT j.id
+            SELECT
+                j.id,
+                j.batch_id,
+                j.artifact_id,
+                j.account_id,
+                j.emulator_serial,
+                j.source_path,
+                j.source_name,
+                COALESCE(a.type, 'instagram') AS type,
+                COALESCE(a.account_login, '') AS account_login,
+                a.account_password,
+                COALESCE(a.username, '') AS username,
+                COALESCE(a.proxy, '') AS proxy,
+                COALESCE(a.twofa, '') AS twofa,
+                COALESCE(a.email, '') AS email,
+                a.email_password,
+                COALESCE(a.mail_provider, 'auto') AS mail_provider,
+                COALESCE(a.mail_auth_json, '') AS mail_auth_json,
+                COALESCE(a.mail_status, 'never_checked') AS mail_status,
+                COALESCE(a.instagram_emulator_serial, '') AS instagram_emulator_serial,
+                COALESCE(a.instagram_launch_status, 'idle') AS instagram_launch_status,
+                COALESCE(a.instagram_launch_detail, '') AS instagram_launch_detail,
+                a.instagram_launch_updated_at,
+                COALESCE(a.instagram_publish_status, 'idle') AS instagram_publish_status,
+                COALESCE(a.instagram_publish_detail, '') AS instagram_publish_detail,
+                a.instagram_publish_updated_at,
+                COALESCE(a.rotation_state, 'review') AS rotation_state,
+                COALESCE(a.rotation_state_source, 'manual') AS rotation_state_source,
+                COALESCE(a.rotation_state_reason, '') AS rotation_state_reason,
+                COALESCE(a.trust_score, 50) AS trust_score,
+                COALESCE(a.trust_state, 'yellow') AS trust_state,
+                COALESCE(a.pinned_proxy, '') AS pinned_proxy,
+                COALESCE(a.last_login_serial, '') AS last_login_serial,
+                COALESCE(a.last_session_mode, 'unknown') AS last_session_mode,
+                a.last_session_mode_at,
+                a.last_stable_login_at,
+                a.last_stable_publish_at,
+                a.last_clean_login_at,
+                a.last_challenge_at,
+                a.publish_cooldown_until,
+                COALESCE(a.account_status_manual, 'unknown') AS account_status_manual,
+                a.account_status_updated_at,
+                COALESCE((
+                    SELECT ai.resolution_state
+                    FROM instagram_audit_items ai
+                    WHERE ai.account_id = a.id
+                    ORDER BY ai.updated_at DESC, ai.id DESC
+                    LIMIT 1
+                ), '') AS latest_audit_resolution_state,
+                COALESCE((
+                    SELECT ai.resolution_detail
+                    FROM instagram_audit_items ai
+                    WHERE ai.account_id = a.id
+                    ORDER BY ai.updated_at DESC, ai.id DESC
+                    LIMIT 1
+                ), '') AS latest_audit_resolution_detail,
+                (
+                    SELECT ai.updated_at
+                    FROM instagram_audit_items ai
+                    WHERE ai.account_id = a.id
+                    ORDER BY ai.updated_at DESC, ai.id DESC
+                    LIMIT 1
+                ) AS latest_audit_updated_at,
+                CASE WHEN TRIM(COALESCE(a.account_password, '')) <> '' THEN 1 ELSE 0 END AS has_account_password
             FROM publish_jobs j
+            JOIN accounts a ON a.id = j.account_id
             WHERE (
                 j.state = 'queued'
                 OR (j.state = 'leased' AND COALESCE(j.lease_expires_at, 0) < ?)
@@ -7160,18 +8900,47 @@ def lease_next_publish_job(
                 WHERE active.emulator_serial = j.emulator_serial
                   AND active.id <> j.id
                   AND (
-                    active.state IN ('preparing', 'importing_media', 'opening_reel_flow', 'selecting_media', 'publishing')
+                    active.state IN ('preparing', 'importing_media', 'opening_reel_flow', 'selecting_media', 'selecting_cover', 'publishing')
                     OR (active.state = 'leased' AND COALESCE(active.lease_expires_at, 0) >= ?)
                   )
               )
             ORDER BY j.created_at ASC, j.id ASC
-            LIMIT 1
+            LIMIT 25
             """,
             (now, now),
         )
-        candidate = cur.fetchone()
+        candidate_rows = cur.fetchall()
+        candidate: Optional[sqlite3.Row] = None
+        candidate_risk_score = 0.0
+        policy_blocked = 0
+        for row in candidate_rows:
+            risk_snapshot = _account_distribution_risk_with_cursor(
+                cur,
+                int(row["account_id"]),
+                trust_score=float(row["trust_score"] or 50.0),
+            )
+            issues = publish_account_readiness_issues(row)
+            if issues:
+                _cancel_publish_job_for_policy_with_cursor(
+                    cur,
+                    batch_id=int(row["batch_id"]),
+                    account_id=int(row["account_id"]),
+                    artifact_id=int(row["artifact_id"]),
+                    source_path=str(row["source_path"] or ""),
+                    source_name=str(row["source_name"] or ""),
+                    emulator_serial=str(row["emulator_serial"] or ""),
+                    detail=" ".join(item for item in issues if item).strip(),
+                    now=now,
+                    risk_score=float(risk_snapshot.get("risk_score") or 0.0),
+                )
+                _refresh_publish_batch_state_with_cursor(cur, int(row["batch_id"]), now=now)
+                policy_blocked += 1
+                continue
+            candidate = row
+            candidate_risk_score = float(risk_snapshot.get("risk_score") or 0.0)
+            break
         if candidate is None:
-            if expired_jobs > 0:
+            if expired_jobs > 0 or policy_blocked > 0:
                 conn.commit()
             else:
                 conn.rollback()
@@ -7185,10 +8954,13 @@ def lease_next_publish_job(
                 leased_by = ?,
                 leased_at = ?,
                 lease_expires_at = ?,
+                risk_score_at_lease = ?,
+                blocked_by_policy = 0,
+                policy_reason = '',
                 updated_at = ?
             WHERE id = ?
             """,
-            (f"Runner {runner} взял job в работу.", runner, now, now + lease_ttl, now, job_id),
+            (f"Runner {runner} взял job в работу.", runner, now, now + lease_ttl, candidate_risk_score, now, job_id),
         )
         cur.execute(
             """
@@ -7205,6 +8977,9 @@ def lease_next_publish_job(
                 COALESCE(j.leased_by, '') AS leased_by,
                 j.leased_at,
                 j.lease_expires_at,
+                COALESCE(j.risk_score_at_lease, 0) AS risk_score_at_lease,
+                COALESCE(j.blocked_by_policy, 0) AS blocked_by_policy,
+                COALESCE(j.policy_reason, '') AS policy_reason,
                 a.account_login,
                 a.account_password,
                 COALESCE(a.username, '') AS username,
@@ -7213,6 +8988,18 @@ def lease_next_publish_job(
                 a.email_password,
                 COALESCE(a.mail_provider, 'auto') AS mail_provider,
                 COALESCE(a.mail_auth_json, '') AS mail_auth_json,
+                COALESCE(a.trust_score, 50) AS trust_score,
+                COALESCE(a.trust_state, 'yellow') AS trust_state,
+                COALESCE(a.pinned_proxy, '') AS pinned_proxy,
+                COALESCE(a.last_login_serial, '') AS last_login_serial,
+                COALESCE(a.last_session_mode, 'unknown') AS last_session_mode,
+                a.last_session_mode_at,
+                a.last_stable_login_at,
+                a.last_stable_publish_at,
+                a.last_clean_login_at,
+                a.last_challenge_at,
+                a.publish_cooldown_until,
+                COALESCE(a.account_status_manual, 'unknown') AS account_status_manual,
                 pa.filename AS artifact_filename,
                 b.workflow_key
             FROM publish_jobs j
@@ -7232,6 +9019,7 @@ def lease_next_publish_job(
         job_payload["mail_enabled"] = account_mail_automation_ready(job_payload)
         job_payload["mail_address"] = str(job_payload.pop("email", "") or "")
         job_payload["mail_provider"] = str(job_payload.get("mail_provider") or "auto")
+        job_payload["force_clean_login"] = False
         job_payload.pop("email_password", None)
         job_payload.pop("mail_auth_json", None)
         _set_publish_batch_account_state_with_cursor(
@@ -7319,6 +9107,24 @@ def update_publish_job_state(
         completed_at = timestamp if state_value in {"published", "needs_review", "failed", "canceled"} else None
         lease_expires_at = timestamp + lease_ttl if state_value in ACTIVE_PUBLISH_JOB_STATES else None
         last_error = detail_value if state_value in {"failed", "canceled"} else ""
+        account_publish_state = _publish_job_state_to_account_publish_state(state_value, payload)
+        session_mode_value = None
+        if isinstance(payload, dict) and "session_mode" in payload:
+            try:
+                session_mode_value = normalize_instagram_session_mode(str(payload.get("session_mode") or "unknown"))
+            except ValueError:
+                session_mode_value = None
+        serial_value = ""
+        if isinstance(payload, dict) and str(payload.get("emulator_serial") or "").strip():
+            serial_value = normalize_instagram_emulator_serial(str(payload.get("emulator_serial") or "").strip())
+        stable_publish_at = timestamp if account_publish_state == "published" else None
+        clean_login_at = timestamp if session_mode_value == "clean_login" else None
+        challenge_at = timestamp if account_publish_state in {"challenge_required", "manual_2fa_required", "email_code_required"} else None
+        publish_cooldown_until = None
+        if account_publish_state in {"published", "needs_review"}:
+            publish_cooldown_until = timestamp + (3 * 60 * 60)
+        elif account_publish_state in {"challenge_required", "manual_2fa_required", "email_code_required"}:
+            publish_cooldown_until = timestamp + (12 * 60 * 60)
 
         cur.execute(
             """
@@ -7356,14 +9162,39 @@ def update_publish_job_state(
                 instagram_publish_detail = ?,
                 instagram_publish_updated_at = ?,
                 instagram_publish_last_file = ?,
+                last_login_serial = CASE WHEN ? <> '' THEN ? ELSE last_login_serial END,
+                last_session_mode = CASE WHEN ? IS NOT NULL THEN ? ELSE last_session_mode END,
+                last_session_mode_at = CASE WHEN ? IS NOT NULL THEN ? ELSE last_session_mode_at END,
+                last_stable_publish_at = CASE WHEN ? IS NOT NULL THEN ? ELSE last_stable_publish_at END,
+                last_clean_login_at = CASE WHEN ? IS NOT NULL THEN ? ELSE last_clean_login_at END,
+                last_challenge_at = CASE WHEN ? IS NOT NULL THEN ? ELSE last_challenge_at END,
+                publish_cooldown_until = CASE
+                    WHEN ? IS NOT NULL AND COALESCE(publish_cooldown_until, 0) < ? THEN ?
+                    ELSE publish_cooldown_until
+                END,
                 updated_at = ?
             WHERE id = ?
             """,
             (
-                _publish_job_state_to_account_publish_state(state_value, payload),
+                account_publish_state,
                 detail_value,
                 timestamp,
                 last_file_value,
+                serial_value,
+                serial_value,
+                session_mode_value,
+                session_mode_value,
+                session_mode_value,
+                timestamp,
+                stable_publish_at,
+                stable_publish_at,
+                clean_login_at,
+                clean_login_at,
+                challenge_at,
+                challenge_at,
+                publish_cooldown_until,
+                publish_cooldown_until,
+                publish_cooldown_until,
                 timestamp,
                 int(row["account_id"]),
             ),
@@ -7386,6 +9217,7 @@ def update_publish_job_state(
                 )
             except Exception:
                 pass
+        _refresh_account_policy_state_with_cursor(cur, int(row["account_id"]), now=timestamp)
         _sync_account_auto_rotation_state_with_cursor(cur, int(row["account_id"]), now=timestamp)
         _set_publish_batch_account_state_with_cursor(
             cur,

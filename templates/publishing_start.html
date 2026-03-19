@@ -38,6 +38,14 @@
                   <label class="listitem__title" for="publish-account-{{ account.id }}" style="cursor:pointer;">
                     @{{ account.username }}
                   </label>
+                  <div class="listitem__meta">
+                    <span class="status-pill {{ account.trust_state_class }}">{{ account.trust_state_label }}</span>
+                    <span class="status-pill {{ account.risk_state_class }}">{{ account.risk_state_label }}</span>
+                    <span class="status-pill {{ account.shadow_status_class }}">{{ account.shadow_status_label }}</span>
+                  </div>
+                  {% if account.publish_warnings %}
+                    <div class="hint mt-sm">{{ account.publish_warnings|join(' · ') }}</div>
+                  {% endif %}
                 </div>
                 <a class="btn action sm" href="{{ urlp('/accounts') }}/{{ account.id }}">Открыть</a>
               </div>
@@ -77,6 +85,9 @@
                   <div class="listitem__title">@{{ account.username }}</div>
                   {% if account.compact_block_reason %}
                     <div class="hint mt-sm">Причина: {{ account.compact_block_reason }}</div>
+                  {% endif %}
+                  {% if account.publish_blockers %}
+                    <div class="hint mt-sm">{{ account.publish_blockers|join(' · ') }}</div>
                   {% endif %}
                 </div>
                 <a class="btn action sm" href="{{ urlp('/accounts') }}/{{ account.id }}">Открыть</a>
