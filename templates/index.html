@@ -1,26 +1,31 @@
 {% extends "base.html" %}
 {% block title %}Обзор{% endblock %}
+{% block page_subtitle %}
+  <p class="page-subtitle">Короткая сводка по пользователям, воронке и текущей операционной нагрузке без лишних служебных деталей на первом экране.</p>
+{% endblock %}
 {% block content %}
   {% set funnel_data = funnel if funnel is defined and funnel else {"updated_at": None, "total_users": 0, "start_users": 0, "final_users": 0, "steps": []} %}
   {% set workers_data = workers_overview if workers_overview is defined and workers_overview else {"workers_total": 0, "assigned_accounts_total": 0, "worker_starts_unique_total": 0} %}
   {% set start_users = funnel_data.start_users or 0 %}
   {% set final_users = funnel_data.final_users or 0 %}
   {% set conversion = ((final_users / start_users) * 100) if start_users else 0 %}
-  <div class="grid">
+
+  <div class="stack">
     <section class="card">
-      <header class="card__header">
-        <h2 class="card__title">Обзор</h2>
-      </header>
       <div class="card__body">
-        <div class="detail-stats mb-sm">
-          <span class="pill" id="funnel-updated">
-            Обновлено: {% if funnel_data.updated_at %}{{ funnel_data.updated_at|dt }}{% else %}-{% endif %}
-          </span>
-          <span class="pill">Работников: {{ workers_data.workers_total or 0 }}</span>
-          <span class="pill">Аккаунты: {{ workers_data.assigned_accounts_total or 0 }}</span>
-          <span class="pill">Переходов: {{ workers_data.worker_starts_unique_total or 0 }}</span>
+        <div class="section-heading">
+          <div>
+            <h2 class="section-heading__title">Обзор</h2>
+            <p class="section-heading__text">Главные цифры по воронке и по рабочему контуру.</p>
+          </div>
+          <div class="detail-stats">
+            <span class="pill" id="funnel-updated">
+              Обновлено: {% if funnel_data.updated_at %}{{ funnel_data.updated_at|dt }}{% else %}-{% endif %}
+            </span>
+          </div>
         </div>
-        <div class="grid cols-4">
+
+        <div class="metric-strip">
           <div class="kpi">
             <div class="kpi__label">Всего пользователей</div>
             <div class="kpi__value" id="kpi-total-users">{{ funnel_data.total_users or 0 }}</div>
@@ -30,22 +35,38 @@
             <div class="kpi__value" id="kpi-start-users">{{ start_users }}</div>
           </div>
           <div class="kpi">
-            <div class="kpi__label">Дошли до финала</div>
+            <div class="kpi__label">Финал</div>
             <div class="kpi__value" id="kpi-final-users">{{ final_users }}</div>
           </div>
           <div class="kpi">
             <div class="kpi__label">Конверсия</div>
             <div class="kpi__value" id="kpi-conversion">{{ "%.2f"|format(conversion) }}%</div>
           </div>
+          <div class="kpi">
+            <div class="kpi__label">Работники</div>
+            <div class="kpi__value">{{ workers_data.workers_total or 0 }}</div>
+          </div>
+          <div class="kpi">
+            <div class="kpi__label">Аккаунты</div>
+            <div class="kpi__value">{{ workers_data.assigned_accounts_total or 0 }}</div>
+          </div>
+          <div class="kpi">
+            <div class="kpi__label">Переходы</div>
+            <div class="kpi__value">{{ workers_data.worker_starts_unique_total or 0 }}</div>
+          </div>
         </div>
       </div>
     </section>
 
     <section class="card">
-      <header class="card__header">
-        <h2 class="card__title">Воронка</h2>
-      </header>
       <div class="card__body">
+        <div class="section-heading">
+          <div>
+            <h2 class="section-heading__title">Воронка</h2>
+            <p class="section-heading__text">Путь пользователя от старта до финального шага.</p>
+          </div>
+        </div>
+
         <div class="tablewrap">
           <table class="table funnel-table">
             <thead>
@@ -65,10 +86,11 @@
               {% endfor %}
             </tbody>
           </table>
-          {% if funnel_data.steps|length == 0 %}
-            <div class="hint mt-sm">Данных по воронке пока нет.</div>
-          {% endif %}
         </div>
+
+        {% if funnel_data.steps|length == 0 %}
+          <div class="empty-state mt-sm">Данных по воронке пока нет.</div>
+        {% endif %}
       </div>
     </section>
   </div>

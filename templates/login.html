@@ -9,11 +9,16 @@
   <body>
     <div class="auth-wrap">
       <section class="card">
-        <header class="card__header">
-          <h2 class="card__title">Вход в админку</h2>
-        </header>
         <div class="card__body">
+          <div class="section-heading">
+            <div>
+              <h1 class="section-heading__title">Вход в админку</h1>
+              <p class="section-heading__text">Минимальный экран входа без лишних блоков и отвлекающих элементов.</p>
+            </div>
+          </div>
+
           {% include "_flash.html" %}
+
           <form method="post" action="{{ urlp('/login') }}" class="grid form-gap-md mt-sm">
             <div class="field">
               <label class="label">Логин</label>

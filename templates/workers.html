@@ -1,75 +1,103 @@
 {% extends "base.html" %}
 {% block title %}Работники{% endblock %}
+{% block page_subtitle %}
+  <p class="page-subtitle">Управление людьми и доступами в одной понятной схеме: список слева, создание справа.</p>
+{% endblock %}
 {% block content %}
-  <div class="grid">
+  <div class="stack">
     <section class="card">
-      <header class="card__header">
-        <h2 class="card__title">Работники</h2>
-      </header>
       <div class="card__body">
         {% with extra_class='mb-sm' %}{% include "_flash.html" %}{% endwith %}
-        <div class="detail-stats mb-sm">
-          <span class="pill">Всего: {{ overview.workers_total or 0 }}</span>
-          <span class="pill">Аккаунты: {{ overview.assigned_accounts_total or 0 }}</span>
-          <span class="pill">Переходов: {{ overview.worker_starts_unique_total or 0 }}</span>
+        <div class="metric-strip">
+          <div class="kpi">
+            <div class="kpi__label">Работники</div>
+            <div class="kpi__value">{{ overview.workers_total or 0 }}</div>
+          </div>
+          <div class="kpi">
+            <div class="kpi__label">Аккаунты</div>
+            <div class="kpi__value">{{ overview.assigned_accounts_total or 0 }}</div>
+          </div>
+          <div class="kpi">
+            <div class="kpi__label">Переходы</div>
+            <div class="kpi__value">{{ overview.worker_starts_unique_total or 0 }}</div>
+          </div>
         </div>
+      </div>
+    </section>
 
-        <form method="get" action="{{ urlp('/workers') }}" class="row filters-row">
-          <input class="input input-sm" name="q" value="{{ q or '' }}" placeholder="Поиск">
-          <button class="btn primary sm" type="submit">Применить</button>
-          {% if q %}
-            <a class="btn ghost sm" href="{{ urlp('/workers') }}">Сброс</a>
+    <div class="page-layout page-layout--sidebar">
+      <section class="card">
+        <div class="card__body">
+          <div class="section-heading">
+            <div>
+              <h2 class="section-heading__title">Список работников</h2>
+              <p class="section-heading__text">Поиск и быстрый переход в карточку работника.</p>
+            </div>
+          </div>
+
+          <form method="get" action="{{ urlp('/workers') }}" class="toolbar toolbar--filters filters-row">
+            <input class="input input-sm" name="q" value="{{ q or '' }}" placeholder="Поиск">
+            <button class="btn primary sm" type="submit">Применить</button>
+            {% if q %}
+              <a class="btn ghost sm" href="{{ urlp('/workers') }}">Сброс</a>
+            {% endif %}
+          </form>
+
+          {% if workers|length > 0 %}
+            <div class="workers-grid">
+              {% for w in workers %}
+                <article class="worker-card">
+                  <div class="worker-card__head">
+                    <div>
+                      <div class="listitem__title">{{ w.name }}</div>
+                      <div class="hint mono">@{{ w.username }}</div>
+                    </div>
+                    <a class="btn primary sm" href="{{ urlp('/workers') }}/{{ w.id }}">Открыть</a>
+                  </div>
+                  <div class="worker-meta">
+                    <span class="pill">Аккаунтов: {{ w.accounts_total }}</span>
+                    <span class="pill">Переходов: {{ w.starts_unique_total }}</span>
+                  </div>
+                </article>
+              {% endfor %}
+            </div>
+          {% else %}
+            <div class="empty-state">Работников пока нет.</div>
           {% endif %}
-        </form>
-
-        <div class="workers-grid">
-          {% for w in workers %}
-            <article class="worker-card">
-              <div class="worker-card__head">
-                <div>
-                  <div class="listitem__title">{{ w.name }}</div>
-                  <div class="hint mono">@{{ w.username }}</div>
-                </div>
-                <a class="btn primary sm" href="{{ urlp('/workers') }}/{{ w.id }}">Открыть</a>
-              </div>
-              <div class="worker-meta">
-                <span class="pill">Аккаунтов: {{ w.accounts_total }}</span>
-                <span class="pill">Переходов: {{ w.starts_unique_total }}</span>
-              </div>
-            </article>
-          {% endfor %}
         </div>
+      </section>
 
-        {% if workers|length == 0 %}
-          <div class="hint mt-sm">Работников пока нет.</div>
-        {% endif %}
-      </div>
-    </section>
+      <aside class="stack">
+        <section class="card">
+          <div class="card__body">
+            <div class="section-heading">
+              <div>
+                <h2 class="section-heading__title">Добавить работника</h2>
+                <p class="section-heading__text">Только обязательные поля, без лишнего.</p>
+              </div>
+            </div>
 
-    <section class="card">
-      <header class="card__header">
-        <h2 class="card__title">Добавить работника</h2>
-      </header>
-      <div class="card__body">
-        <form method="post" action="{{ urlp('/workers') }}" class="grid accounts-grid">
-          <input type="hidden" name="q" value="{{ q or '' }}">
-          <div class="field">
-            <label class="label">Имя</label>
-            <input class="input" name="name" required>
+            <form method="post" action="{{ urlp('/workers') }}" class="grid accounts-grid">
+              <input type="hidden" name="q" value="{{ q or '' }}">
+              <div class="field">
+                <label class="label">Имя</label>
+                <input class="input" name="name" required>
+              </div>
+              <div class="field">
+                <label class="label">Логин</label>
+                <input class="input" name="username" required>
+              </div>
+              <div class="field accounts-grid-wide">
+                <label class="label">Пароль</label>
+                <input class="input" name="password" required>
+              </div>
+              <div class="accounts-grid-wide row">
+                <button class="btn primary" type="submit">Создать работника</button>
+              </div>
+            </form>
           </div>
-          <div class="field">
-            <label class="label">Логин</label>
-            <input class="input" name="username" required>
-          </div>
-          <div class="field accounts-grid-wide">
-            <label class="label">Пароль</label>
-            <input class="input" name="password" required>
-          </div>
-          <div class="accounts-grid-wide row">
-            <button class="btn primary" type="submit">Создать работника</button>
-          </div>
-        </form>
-      </div>
-    </section>
+        </section>
+      </aside>
+    </div>
   </div>
 {% endblock %}

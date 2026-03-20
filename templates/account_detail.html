@@ -148,6 +148,9 @@
                     <span class="status-pill {{ account.risk_state_class }}">{{ account.risk_state_label }}</span>
                     <span class="pill">Risk: {{ account.risk_score_value }}/100</span>
                     <span class="status-pill {{ account.shadow_status_class }}">Shadow: {{ account.shadow_status_label }}</span>
+                    {% if account.shadow_quarantine_active %}
+                      <span class="status-pill off">Shadow quarantine</span>
+                    {% endif %}
                     <span class="pill">Shadow: {{ account.shadow_score_value }}/100</span>
                     <span class="status-pill {{ account.account_status_manual_class }}">Account Status: {{ account.account_status_manual_label }}</span>
                     <span class="status-pill {{ account.account_status_auto_class }}">Auto: {{ account.account_status_auto_label }}</span>
@@ -158,6 +161,9 @@
                   </div>
                   {% if account.rotation_state_reason %}
                     <div class="hint mt-sm">{{ account.rotation_state_reason }}</div>
+                  {% endif %}
+                  {% if account.shadow_quarantine_active and account.shadow_quarantine_hold_until_label %}
+                    <div class="hint mt-sm">Manual recovery only. Hold до: {{ account.shadow_quarantine_hold_until_label }}</div>
                   {% endif %}
                   {% if account.risk_reasons %}
                     <div class="hint mt-sm">Risk signals: {{ account.risk_reasons|join(' · ') }}</div>
@@ -395,7 +401,9 @@
                       <div class="hint mt-sm" data-role="source-status">Если helper недоступен, кнопка публикации всё равно запустит проверку папки.</div>
                     </div>
                   </div>
-                  {% if account.can_publish_instagram %}
+                  {% if account.shadow_quarantine_active %}
+                    <div class="hint mt-sm">Автопубликация отключена: аккаунт в shadow quarantine. Верни `rotation_state` вручную только после ручной проверки Account Status.</div>
+                  {% elif account.can_publish_instagram %}
                     <div class="row mt-sm">
                       <form method="post" action="{{ urlp('/accounts') }}/{{ account.id }}/publish/latest-reel" class="inline-form">
                         <input type="hidden" name="return_to" value="{{ return_to }}">

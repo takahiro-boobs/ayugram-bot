@@ -1,145 +1,164 @@
 {% extends "base.html" %}
 {% block title %}Работник{% endblock %}
+{% block page_subtitle %}
+  <p class="page-subtitle">Карточка работника с понятным разделением: состояние, аккаунты, доступ и редактирование.</p>
+{% endblock %}
+{% block page_actions %}
+  <a class="btn ghost sm" href="{{ urlp('/workers') }}">Назад к списку</a>
+{% endblock %}
 {% block content %}
-  <div class="grid">
-    <div class="row">
-      <a class="btn ghost sm" href="{{ urlp('/workers') }}">Назад к списку</a>
-    </div>
+  <div class="stack">
     {% with extra_class='' %}{% include "_flash.html" %}{% endwith %}
 
     {% if not worker %}
       <section class="card">
         <div class="card__body">
-          <div class="hint">Работник не найден.</div>
+          <div class="empty-state">Работник не найден.</div>
         </div>
       </section>
     {% else %}
       <section class="card">
         <div class="card__body">
-          <div class="row row-between row-start">
+          <div class="section-heading">
             <div>
-              <div class="listitem__title">{{ worker.name }}</div>
-              <div class="hint mono">@{{ worker.username }}</div>
+              <h2 class="section-heading__title">{{ worker.name }}</h2>
+              <p class="section-heading__text mono">@{{ worker.username }}</p>
             </div>
-            <div class="detail-stats">
-              <span class="pill">Аккаунтов: {{ stats.accounts_total }}</span>
-              <span class="pill">Переходов: {{ stats.starts_unique_total }}</span>
-              <span class="pill">Старты: {{ stats.starts_total }}</span>
+          </div>
+
+          <div class="metric-strip">
+            <div class="kpi">
+              <div class="kpi__label">Аккаунты</div>
+              <div class="kpi__value">{{ stats.accounts_total }}</div>
+            </div>
+            <div class="kpi">
+              <div class="kpi__label">Переходы</div>
+              <div class="kpi__value">{{ stats.starts_unique_total }}</div>
+            </div>
+            <div class="kpi">
+              <div class="kpi__label">Старты</div>
+              <div class="kpi__value">{{ stats.starts_total }}</div>
+            </div>
+            <div class="kpi">
+              <div class="kpi__label">Первый контакт</div>
+              <div class="kpi__value">{{ stats.first_touch_total }}</div>
             </div>
           </div>
         </div>
       </section>
 
-      <section class="card">
-        <header class="card__header">
-          <h2 class="card__title">Аккаунты</h2>
-        </header>
-        <div class="card__body">
-          <form method="get" action="{{ urlp('/workers') }}/{{ worker.id }}" class="row filters-row">
-            <input class="input input-sm" name="q" value="{{ q or '' }}" placeholder="Поиск">
-            <select class="input input-sm" name="type">
-              <option value="">Все типы</option>
-              {% for t in type_options %}
-                <option value="{{ t.key }}" {% if type == t.key %}selected{% endif %}>{{ t.label }}</option>
-              {% endfor %}
-            </select>
-            <select class="input input-sm" name="sort">
-              {% for item in sort_options %}
-                <option value="{{ item.key }}" {% if sort == item.key %}selected{% endif %}>{{ item.label }}</option>
-              {% endfor %}
-            </select>
-            <button class="btn primary sm" type="submit">Применить</button>
-            {% if q or type or (sort and sort != 'recent') %}
-              <a class="btn ghost sm" href="{{ urlp('/workers') }}/{{ worker.id }}">Сброс</a>
+      <div class="page-layout page-layout--sidebar">
+        <section class="card">
+          <div class="card__body">
+            <div class="section-heading">
+              <div>
+                <h2 class="section-heading__title">Аккаунты</h2>
+                <p class="section-heading__text">Все аккаунты этого работника и их базовый статус.</p>
+              </div>
+            </div>
+
+            <form method="get" action="{{ urlp('/workers') }}/{{ worker.id }}" class="toolbar toolbar--filters filters-row">
+              <input class="input input-sm" name="q" value="{{ q or '' }}" placeholder="Поиск">
+              <select class="input input-sm" name="type">
+                <option value="">Все типы</option>
+                {% for t in type_options %}
+                  <option value="{{ t.key }}" {% if type == t.key %}selected{% endif %}>{{ t.label }}</option>
+                {% endfor %}
+              </select>
+              <select class="input input-sm" name="sort">
+                {% for item in sort_options %}
+                  <option value="{{ item.key }}" {% if sort == item.key %}selected{% endif %}>{{ item.label }}</option>
+                {% endfor %}
+              </select>
+              <button class="btn primary sm" type="submit">Применить</button>
+              {% if q or type or (sort and sort != 'recent') %}
+                <a class="btn ghost sm" href="{{ urlp('/workers') }}/{{ worker.id }}">Сброс</a>
+              {% endif %}
+            </form>
+
+            {% if accounts|length > 0 %}
+              <div class="accounts-cards">
+                {% for a in accounts %}
+                  <article class="account-card" id="{{ a.card_id }}">
+                    <div class="account-card__head">
+                      <div>
+                        <div class="listitem__title">Аккаунт {{ a.type_label }}</div>
+                        <div class="hint mono">@{{ a.username }}</div>
+                      </div>
+                      <a class="btn primary sm" href="{{ urlp(a.detail_url) }}">Открыть</a>
+                    </div>
+                    <div class="account-card__meta">
+                      <span class="pill">Переходов: {{ a.starts_unique_total }}</span>
+                      <span class="status-pill {{ a.rotation_state_class }}">{{ a.rotation_state_label }}</span>
+                    </div>
+                    {% if a.rotation_state_reason %}
+                      <div class="hint mt-sm">{{ a.rotation_state_reason }}</div>
+                    {% endif %}
+                  </article>
+                {% endfor %}
+              </div>
+            {% else %}
+              <div class="empty-state">У работника пока нет аккаунтов.</div>
             {% endif %}
-          </form>
-
-          <div class="accounts-cards">
-            {% for a in accounts %}
-              <article class="account-card" id="{{ a.card_id }}">
-                <div class="account-card__head">
-                  <div>
-                    <div class="listitem__title">Аккаунт {{ a.type_label }}</div>
-                    <div class="hint mono">@{{ a.username }}</div>
-                  </div>
-                  <a class="btn primary sm" href="{{ urlp(a.detail_url) }}">Открыть</a>
-                </div>
-                <div class="account-card__meta">
-                  <span class="pill">Переходов: {{ a.starts_unique_total }}</span>
-                  <span class="status-pill {{ a.rotation_state_class }}">{{ a.rotation_state_label }}</span>
-                </div>
-                {% if a.rotation_state_reason %}
-                  <div class="hint mt-sm">{{ a.rotation_state_reason }}</div>
-                {% endif %}
-              </article>
-            {% endfor %}
           </div>
+        </section>
 
-          {% if accounts|length == 0 %}
-            <div class="hint">У работника пока нет аккаунтов.</div>
-          {% endif %}
-        </div>
-      </section>
-
-      <section class="card">
-        <div class="card__body">
-          <details class="service-details">
-            <summary class="service-details__summary">Служебное</summary>
-            <div class="service-details__body service-stack">
-              <details class="service-details">
-                <summary class="service-details__summary">Сводка</summary>
-                <div class="service-details__body">
-                  <div class="detail-stats">
-                    <span class="pill">Первый контакт: {{ stats.first_touch_total }}</span>
-                    <span class="pill">Аккаунтов: {{ stats.accounts_total }}</span>
-                  </div>
+        <aside class="stack">
+          <section class="card">
+            <div class="card__body">
+              <div class="section-heading">
+                <div>
+                  <h2 class="section-heading__title">Доступ</h2>
+                  <p class="section-heading__text">Текущие данные для входа.</p>
                 </div>
-              </details>
-
-              <details class="service-details">
-                <summary class="service-details__summary">Доступ</summary>
-                <div class="service-details__body">
-                  <div class="secret-row">
-                    <span class="secret-row__value mono">Логин: {{ worker.username }}</span>
-                    <button class="btn action copy" type="button" onclick='copyToClipboard({{ worker.username|tojson }})'>Копировать логин</button>
-                  </div>
-                  <div class="secret-row mt-sm">
-                    <span class="secret-row__value mono">Пароль: {{ worker.plain_password }}</span>
-                    <button class="btn action copy" type="button" onclick='copyToClipboard({{ worker.plain_password|tojson }})'>Копировать пароль</button>
-                  </div>
+              </div>
+              <div class="stack-sm">
+                <div class="secret-row">
+                  <span class="secret-row__value mono">Логин: {{ worker.username }}</span>
+                  <button class="btn action copy" type="button" onclick='copyToClipboard({{ worker.username|tojson }})'>Копировать логин</button>
                 </div>
-              </details>
-
-              <details class="service-details">
-                <summary class="service-details__summary">Редактирование</summary>
-                <div class="service-details__body">
-                  <form method="post" action="{{ urlp('/workers') }}/{{ worker.id }}/update" class="grid accounts-grid">
-                    <div class="field">
-                      <label class="label">Имя</label>
-                      <input class="input" name="name" value="{{ worker.name }}" required>
-                    </div>
-                    <div class="field">
-                      <label class="label">Логин</label>
-                      <input class="input" name="username" value="{{ worker.username }}" required>
-                    </div>
-                    <div class="field accounts-grid-wide">
-                      <label class="label">Новый пароль</label>
-                      <input class="input" name="password" placeholder="Оставь пустым, чтобы не менять">
-                    </div>
-                    <div class="accounts-grid-wide row">
-                      <button class="btn primary sm" type="submit">Сохранить</button>
-                    </div>
-                  </form>
-
-                  <form method="post" action="{{ urlp('/workers') }}/{{ worker.id }}/delete" class="mt-sm">
-                    <button class="btn danger sm" type="submit">Удалить работника</button>
-                  </form>
+                <div class="secret-row">
+                  <span class="secret-row__value mono">Пароль: {{ worker.plain_password }}</span>
+                  <button class="btn action copy" type="button" onclick='copyToClipboard({{ worker.plain_password|tojson }})'>Копировать пароль</button>
                 </div>
-              </details>
+              </div>
             </div>
-          </details>
-        </div>
-      </section>
+          </section>
+
+          <section class="card">
+            <div class="card__body">
+              <div class="section-heading">
+                <div>
+                  <h2 class="section-heading__title">Редактирование</h2>
+                  <p class="section-heading__text">Изменение имени, логина и пароля.</p>
+                </div>
+              </div>
+
+              <form method="post" action="{{ urlp('/workers') }}/{{ worker.id }}/update" class="grid accounts-grid">
+                <div class="field">
+                  <label class="label">Имя</label>
+                  <input class="input" name="name" value="{{ worker.name }}" required>
+                </div>
+                <div class="field">
+                  <label class="label">Логин</label>
+                  <input class="input" name="username" value="{{ worker.username }}" required>
+                </div>
+                <div class="field accounts-grid-wide">
+                  <label class="label">Новый пароль</label>
+                  <input class="input" name="password" placeholder="Оставь пустым, чтобы не менять">
+                </div>
+                <div class="accounts-grid-wide row">
+                  <button class="btn primary sm" type="submit">Сохранить</button>
+                </div>
+              </form>
+
+              <form method="post" action="{{ urlp('/workers') }}/{{ worker.id }}/delete" class="mt-sm">
+                <button class="btn danger sm" type="submit">Удалить работника</button>
+              </form>
+            </div>
+          </section>
+        </aside>
+      </div>
     {% endif %}
   </div>
 {% endblock %}

@@ -1,60 +1,80 @@
 {% extends "base.html" %}
 {% block title %}Публикации{% endblock %}
+{% block page_subtitle %}
+  <p class="page-subtitle">Пакеты публикации, готовность аккаунтов и служебные параметры без перегруженного первого экрана.</p>
+{% endblock %}
+{% block page_actions %}
+  <a class="btn primary sm" href="{{ urlp('/publishing/start') }}">Начать публикацию</a>
+{% endblock %}
 {% block content %}
-  <div class="grid cols-2">
+  <div class="stack">
     <section class="card">
-      <header class="card__header">
-        <h2 class="card__title">Публикации</h2>
-      </header>
       <div class="card__body">
         {% with extra_class='mb-sm' %}{% include "_flash.html" %}{% endwith %}
-
-        <div class="detail-stats mb-sm">
-          <span class="pill">Готово: {{ ready_accounts_count }}</span>
-          <span class="pill">Неполные: {{ blocked_accounts_count }}</span>
-          <span class="pill">Пакетов: {{ batches|length }}</span>
-        </div>
-
-        <div class="row">
-          <a class="btn primary" href="{{ urlp('/publishing/start') }}">Начать публикацию</a>
+        <div class="metric-strip">
+          <div class="kpi">
+            <div class="kpi__label">Готово</div>
+            <div class="kpi__value">{{ ready_accounts_count }}</div>
+          </div>
+          <div class="kpi">
+            <div class="kpi__label">Неполные</div>
+            <div class="kpi__value">{{ blocked_accounts_count }}</div>
+          </div>
+          <div class="kpi">
+            <div class="kpi__label">Shadow quarantine</div>
+            <div class="kpi__value">{{ shadow_quarantine_accounts_count }}</div>
+          </div>
+          <div class="kpi">
+            <div class="kpi__label">Пакеты</div>
+            <div class="kpi__value">{{ batches|length }}</div>
+          </div>
         </div>
       </div>
     </section>
 
-    <section class="card">
-      <header class="card__header">
-        <h2 class="card__title">Последние пакеты</h2>
-      </header>
-      <div class="card__body">
-        <div class="list">
-          {% for batch in batches %}
-            <div class="listitem">
-              <div class="row row-between row-start">
-                <div>
-                  <div class="listitem__title">Пакет #{{ batch.id }}</div>
-                  <div class="listitem__meta">
-                    <span class="status-pill {{ batch.state_class }}">{{ batch.state_label }}</span>
-                    <span class="pill">Аккаунтов: {{ batch.accounts_total }}</span>
-                    <span class="hint">{{ batch.created_at|dt }}</span>
+    <div class="page-layout page-layout--sidebar">
+      <section class="card">
+        <div class="card__body">
+          <div class="section-heading">
+            <div>
+              <h2 class="section-heading__title">Последние пакеты</h2>
+              <p class="section-heading__text">История запусков и быстрый переход в детали пакета.</p>
+            </div>
+          </div>
+
+          {% if batches|length > 0 %}
+            <div class="list">
+              {% for batch in batches %}
+                <div class="listitem">
+                  <div class="row row-between row-start">
+                    <div>
+                      <div class="listitem__title">Пакет #{{ batch.id }}</div>
+                      <div class="listitem__meta">
+                        <span class="status-pill {{ batch.state_class }}">{{ batch.state_label }}</span>
+                        <span class="pill">Аккаунтов: {{ batch.accounts_total }}</span>
+                        <span class="hint">{{ batch.created_at|dt }}</span>
+                      </div>
+                    </div>
+                    <a class="btn primary sm" href="{{ urlp('/publishing/batches') }}/{{ batch.id }}">Открыть</a>
                   </div>
                 </div>
-                <a class="btn primary sm" href="{{ urlp('/publishing/batches') }}/{{ batch.id }}">Открыть</a>
+              {% endfor %}
+            </div>
+          {% else %}
+            <div class="empty-state">История публикаций пока пустая.</div>
+          {% endif %}
+        </div>
+      </section>
+
+      <aside class="stack">
+        <section class="card">
+          <div class="card__body">
+            <div class="section-heading">
+              <div>
+                <h2 class="section-heading__title">Служебное</h2>
+                <p class="section-heading__text">Текущая конфигурация publishing-контура.</p>
               </div>
             </div>
-          {% endfor %}
-        </div>
-
-        {% if batches|length == 0 %}
-          <div class="hint">История публикаций пока пустая.</div>
-        {% endif %}
-      </div>
-    </section>
-
-    <section class="card">
-      <div class="card__body">
-        <details class="service-details">
-          <summary class="service-details__summary">Служебное</summary>
-          <div class="service-details__body">
             <div class="detail-stats">
               <span class="status-pill {% if n8n_webhook_configured %}on{% else %}off{% endif %}">
                 {% if n8n_webhook_configured %}Автозапуск готов{% else %}Автозапуск не настроен{% endif %}
@@ -63,8 +83,23 @@
               <span class="pill mono">Staging: {{ staging_root }}</span>
             </div>
           </div>
-        </details>
-      </div>
-    </section>
+        </section>
+
+        <section class="card">
+          <div class="card__body">
+            <div class="section-heading">
+              <div>
+                <h2 class="section-heading__title">Обслуживание</h2>
+                <p class="section-heading__text">Ручной backfill для shadow quarantine.</p>
+              </div>
+            </div>
+            <form method="post" action="{{ urlp('/publishing') }}/shadow-quarantine/backfill" class="inline-form">
+              <button class="btn ghost" type="submit">Shadow quarantine backfill</button>
+            </form>
+            <div class="hint mt-sm">Backfill помечает рискованные Instagram-аккаунты как `not_working` c manual-only recovery.</div>
+          </div>
+        </section>
+      </aside>
+    </div>
   </div>
 {% endblock %}

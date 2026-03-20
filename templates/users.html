@@ -1,5 +1,8 @@
 {% extends "base.html" %}
 {% block title %}Пользователи{% endblock %}
+{% block page_subtitle %}
+  <p class="page-subtitle">Простой список пользователей с фильтром по username, ID и этапу воронки.</p>
+{% endblock %}
 {% block content %}
   {% set selected_step = step if step is defined else "" %}
   {% set options = step_options if step_options is defined else [] %}
@@ -9,13 +12,15 @@
       {% set ns.selected_step_label = s.label %}
     {% endif %}
   {% endfor %}
-  <div class="grid">
-    <section class="card">
-      <header class="card__header">
-        <h2 class="card__title">Пользователи</h2>
-      </header>
-      <div class="card__body">
-        <div class="detail-stats mb-sm">
+
+  <section class="card">
+    <div class="card__body">
+      <div class="section-heading">
+        <div>
+          <h2 class="section-heading__title">Пользователи</h2>
+          <p class="section-heading__text">Без лишних вторичных блоков: сначала фильтр, затем результат.</p>
+        </div>
+        <div class="detail-stats">
           <span class="pill">Найдено: {{ users|length }}</span>
           {% if ns.selected_step_label %}
             <span class="pill">Шаг: {{ ns.selected_step_label }}</span>
@@ -24,21 +29,23 @@
             <span class="pill mono">Поиск: {{ q }}</span>
           {% endif %}
         </div>
+      </div>
 
-        <form method="get" action="{{ urlp('/users') }}" class="row filters-row">
-          <input class="input input-sm" name="q" value="{{ q or '' }}" placeholder="Поиск по username или ID">
-          <select class="input input-sm" name="step">
-            <option value="">Дошли до шага: любой</option>
-            {% for s in options %}
-              <option value="{{ s.key }}" {% if selected_step == s.key %}selected{% endif %}>{{ s.label }}</option>
-            {% endfor %}
-          </select>
-          <button class="btn primary sm" type="submit">Применить</button>
-          {% if q or selected_step %}
-            <a class="btn ghost sm" href="{{ urlp('/users') }}">Сброс</a>
-          {% endif %}
-        </form>
+      <form method="get" action="{{ urlp('/users') }}" class="toolbar toolbar--filters filters-row">
+        <input class="input input-sm" name="q" value="{{ q or '' }}" placeholder="Поиск по username или ID">
+        <select class="input input-sm" name="step">
+          <option value="">Дошли до шага: любой</option>
+          {% for s in options %}
+            <option value="{{ s.key }}" {% if selected_step == s.key %}selected{% endif %}>{{ s.label }}</option>
+          {% endfor %}
+        </select>
+        <button class="btn primary sm" type="submit">Применить</button>
+        {% if q or selected_step %}
+          <a class="btn ghost sm" href="{{ urlp('/users') }}">Сброс</a>
+        {% endif %}
+      </form>
 
+      {% if users|length > 0 %}
         <div class="list">
           {% for u in users %}
             <div class="listitem">
@@ -54,11 +61,9 @@
             </div>
           {% endfor %}
         </div>
-
-        {% if users|length == 0 %}
-          <div class="hint mt-sm">Ничего не найдено.</div>
-        {% endif %}
-      </div>
-    </section>
-  </div>
+      {% else %}
+        <div class="empty-state">Ничего не найдено.</div>
+      {% endif %}
+    </div>
+  </section>
 {% endblock %}

@@ -2,7 +2,7 @@
 <html lang="ru">
   <head>
     <meta charset="utf-8">
-    <title>СЛЕЖКА</title>
+    <title>{% block meta_title %}{% block title %}Панель{% endblock %} · СЛЕЖКА{% endblock %}</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
     <link rel="stylesheet" href="{{ urlp('/static/ios26.css') }}">
   </head>
@@ -11,7 +11,9 @@
     <div class="app">
       <aside class="sidebar">
         <div class="brand">
+          <div class="brand__eyebrow">Admin</div>
           <div class="brand__title">СЛЕЖКА</div>
+          <div class="brand__meta">Чистая панель управления</div>
         </div>
         <nav class="nav">
           <a href="{{ urlp('/') }}" class="{% if path == '/' %}active{% endif %}">
@@ -62,18 +64,24 @@
             <span>Публикации</span>
           </a>
         </nav>
+        <div class="sidebar__footer">
+          <span class="sidebar__footer-label">Сессия</span>
+          <a class="btn ghost sm" href="{{ urlp('/logout') }}">Выйти</a>
+        </div>
       </aside>
 
       <section class="content">
         <header class="topbar">
-          <div>
-            <h1 class="topbar__title">{% block title %}Панель{% endblock %}</h1>
+          <div class="page-head">
+            <div class="page-head__eyebrow">{% block section_label %}Админка{% endblock %}</div>
+            <h1 class="topbar__title">{% block page_title %}{{ self.title() }}{% endblock %}</h1>
+            {% block page_subtitle %}{% endblock %}
           </div>
-          <div class="row topbar__right">
-            <a class="btn ghost sm" href="{{ urlp('/logout') }}">Выйти</a>
+          <div class="topbar__right page-actions">
+            {% block page_actions %}{% endblock %}
           </div>
         </header>
-        <main class="main">
+        <main class="main {% block main_class %}{% endblock %}">
           {% block content %}{% endblock %}
         </main>
       </section>
